@@ -1,0 +1,10 @@
+good night	yes
+I'm heading to bed	yes
+I'm really tired, going to sleep	yes
+catch you tomorrow	yes
+it's bedtime	yes
+I need to finish this code before the deadline	no
+this function returns a list of users	no
+the phrase means something specific in context	no
+let's review the codebase together	no
+stories are a genre of children's literature	no

@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  socket-activated LaunchAgent template (R1, D7.1-01).
+  Rendered by scripts/install.sh: substitutes {PYTHON_PATH} + {HOME},
+  writes to ~/Library/LaunchAgents/com.iai-mcp.daemon.plist, then
+  `launchctl load -w` registers it.
+
+  DO NOT edit ~/Library/LaunchAgents/com.iai-mcp.daemon.plist directly —
+  re-run scripts/install.sh after changes here.
+
+  RunAtLoad=false + Sockets.Listener = TRUE socket activation: launchd
+  pre-binds the unix socket and spawns iai_mcp.daemon ONLY on first
+  connection. KeepAlive.SuccessfulExit=false preserves Phase 7's idle
+  shutdown semantics (no respawn after clean idle exit).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.iai-mcp.daemon</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>{PYTHON_PATH}</string>
+    <string>-m</string>
+    <string>iai_mcp.daemon</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+    <key>HOME</key>
+    <string>{HOME}</string>
+    <key>IAI_MCP_LAUNCHD_MANAGED</key>
+    <string>1</string>
+  </dict>
+
+  <key>Sockets</key>
+  <dict>
+    <key>Listener</key>
+    <dict>
+      <key>SockPathName</key>
+      <string>{HOME}/.iai-mcp/.daemon.sock</string>
+      <key>SockType</key>
+      <string>stream</string>
+      <key>SockFamily</key>
+      <string>Unix</string>
+      <key>SockPathMode</key>
+      <integer>384</integer>
+    </dict>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <key>ProcessType</key>
+  <string>Adaptive</string>
+
+  <key>StandardOutPath</key>
+  <string>{HOME}/.iai-mcp/logs/launchd-stdout.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>{HOME}/.iai-mcp/logs/launchd-stderr.log</string>
+
+  <key>WorkingDirectory</key>
+  <string>{HOME}</string>
+</dict>
+</plist>

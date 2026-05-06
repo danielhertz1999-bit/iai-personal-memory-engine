@@ -1,0 +1,39 @@
+# IAI-MCP Sleep Daemon -- systemd user unit (Plan 04-01, DAEMON-01)
+#
+# Install at ~/.config/systemd/user/iai-mcp-daemon.service, then:
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now iai-mcp-daemon.service
+#
+# For survival past logout (headless servers):
+#   loginctl enable-linger $USER
+#
+# C3 / guard: NO paid-API env var in Environment= lines. host_cli.py
+# scrubs the subprocess env at spawn time; the unit env is intentionally minimal.
+
+[Unit]
+Description=IAI-MCP Sleep Daemon -- autonomous neural consolidation between sessions
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -m iai_mcp.daemon
+Restart=on-failure
+RestartSec=30
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+Environment="IAI_MCP_STORE=%h/.iai-mcp"
+Environment="LANG=en_US.UTF-8"
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=iai-mcp-daemon
+
+# Graceful shutdown: systemd default TimeoutStopSec is 90s; we tighten to 60s
+# so stop never kills us mid-Claude (subprocess timeout is 120s but the
+# daemon aborts the pending call cleanly on SIGTERM).
+TimeoutStopSec=60
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=default.target

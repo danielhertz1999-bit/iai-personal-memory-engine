@@ -1,0 +1,10 @@
+bonne nuit	yes
+je vais me coucher	yes
+je suis fatigué	yes
+à demain	yes
+il est l'heure de dormir	yes
+le héros dit au revoir et partit	no
+l'expression café au lait en français	no
+ce code est très compliqué	no
+un titre de film intéressant	no
+les enfants aiment les histoires	no

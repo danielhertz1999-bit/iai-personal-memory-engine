@@ -1,0 +1,10 @@
+buenas noches	yes
+me voy a dormir	yes
+estoy cansado	yes
+hasta mañana	yes
+hora de dormir	yes
+el villano dijo adiós y se fue	no
+la frase café con leche en español	no
+este código es muy complicado	no
+un título de película interesante	no
+los niños necesitan rutinas	no
