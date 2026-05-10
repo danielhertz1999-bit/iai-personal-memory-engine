@@ -62,7 +62,7 @@ I built this for myself. It worked. I've been running it daily for months, and n
 - [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) as the MCP host
 - ~500 MB free disk
 
-Windows and Linux not supported.
+Windows and Linux not supported yet but I'm working on it.
 
 ### Install
 
