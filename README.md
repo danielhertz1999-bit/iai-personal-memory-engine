@@ -7,11 +7,17 @@
 <p align="center">Every claim ships with the harness that proves it. Run the benchmarks yourself.</p>
 
 <p align="center">
+  <a href="https://github.com/CodeAbra/iai-mcp/issues"><img src="https://img.shields.io/github/issues/CodeAbra/iai-mcp?style=flat" alt="GitHub issues"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg" alt="Python 3.11 | 3.12">
-  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg" alt="Platform: macOS | Linux">
+  <img src="https://img.shields.io/badge/platform-macOS-lightgrey.svg" alt="Platform: macOS">
+</p>
+<p align="center">
   <img src="https://img.shields.io/badge/verbatim%20recall-%E2%89%A599%25%20at%2010k-brightgreen.svg" alt="Verbatim recall >= 99%">
   <img src="https://img.shields.io/badge/p95%20latency-%3C100ms-brightgreen.svg" alt="p95 < 100ms">
+  <img src="https://img.shields.io/badge/encryption-AES--256--GCM-green.svg" alt="AES-256-GCM">
+  <img src="https://img.shields.io/badge/local--only-no%20telemetry-green.svg" alt="Local only, no telemetry">
+  <img src="https://img.shields.io/badge/MCP-compatible-purple.svg" alt="MCP compatible">
 </p>
 
 ---
