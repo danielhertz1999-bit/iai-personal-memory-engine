@@ -371,6 +371,10 @@ By Areg Aramovich Noya, in collaboration with the team at [lcgc.dev](https://lcg
 
 I built this because I needed it. It works for me. If it works for you, take it.
 
+## Acknowledgements
+
+v0.2.0 — thanks to Reddit user [u/BeginningReflection4](https://www.reddit.com/user/BeginningReflection4) for the feedback and testing that shaped this release.
+
 ## License
 
 [MIT](LICENSE)
