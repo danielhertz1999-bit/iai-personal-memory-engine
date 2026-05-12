@@ -1279,8 +1279,46 @@ def recall_for_response(
         profile_state=profile_state, turn=turn, mode=mode,
         knobs_applied=knobs_applied,
     )
+
+    # Enrich + downweight + re-sort BEFORE the budget-pack loop so a stale
+    # high-cosine hit does not consume budget that should go to a fresh
+    # lower-cosine record. Order is load-bearing. core.anti_hits is empty
+    # on the regular path (_recall_core line 1014); anti_hits are built
+    # later inside _apply_post_rank_pipeline. The L0 fast-path early-return
+    # below DOES use core.anti_hits, so enrich both to cover both paths
+    # cleanly.
+    #
+    # Perf-critical: build the (outgoing, ts_by_id) maps ONCE per recall
+    # and pass them into the helper for BOTH the pre-budget enrichment
+    # (here) and the post-pipeline anti_hits enrichment below. One
+    # records.to_pandas() scan instead of two -- keeps the cost under
+    # the M-02 p95 gate at N=100.
+    #
+    # NOTE: deliberately NOT consuming core._records_cache for created_at --
+    # SimpleRecordView.created_at is a wall-clock placeholder (Plan 05-12
+    # graph node payload does not carry record.created_at), which would
+    # poison the derived valid_from / valid_to. Plumbing created_at into
+    # graph node attrs is follow-up.
+    from iai_mcp.retrieve import (
+        apply_stale_downweight,
+        build_temporal_validity_maps,
+        derive_temporal_validity,
+    )
+    _tv_maps = build_temporal_validity_maps(store)
+    _tv_outgoing, _tv_ts = (_tv_maps if _tv_maps is not None else ({}, {}))
+    derive_temporal_validity(
+        None, core.scored_hits, outgoing=_tv_outgoing, ts_by_id=_tv_ts,
+    )
+    derive_temporal_validity(
+        None, core.anti_hits, outgoing=_tv_outgoing, ts_by_id=_tv_ts,
+    )
+    apply_stale_downweight(core.scored_hits)
+    apply_stale_downweight(core.anti_hits)
+    core.scored_hits.sort(key=lambda h: h.score, reverse=True)
+
     # If the L0 fast-path fired, _recall_core returned an already-packed
     # single-hit result. Surface it directly as a RecallResponse.
+    # scored_hits / anti_hits already enriched + downweighted upstream.
     if (
         len(core.scored_hits) == 1
         and any(h.get("kind") == "retrieval_skipped" for h in core.hints)
@@ -1332,6 +1370,20 @@ def recall_for_response(
         budget_used=budget_used, path_label="recall_for_response",
         knobs_applied=knobs_applied,
     )
+
+    # anti_hits are constructed INSIDE _apply_post_rank_pipeline
+    # (_find_anti_hits) from contradicts-edge neighbours with score=0.0.
+    # They never pass through the pre-budget enrichment above, so enrich
+    # them here so the JSON wire carries valid_from/valid_to on the
+    # anti_hits surface too. Score downweight is a no-op on score=0.0
+    # baseline anti-hits; the value is the valid_from/valid_to fields
+    # + " · stale" reason marker. anti_hits intentionally NOT re-sorted:
+    # they are an inhibitory tail. Reuses the (outgoing, ts_by_id) maps
+    # built once per recall above -- no second records-table scan.
+    derive_temporal_validity(
+        None, anti_hits, outgoing=_tv_outgoing, ts_by_id=_tv_ts,
+    )
+    apply_stale_downweight(anti_hits)
 
     return RecallResponse(
         hits=hits,

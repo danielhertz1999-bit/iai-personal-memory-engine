@@ -11,7 +11,7 @@ English form. The schema retains the `language` ISO-639-1 column as a
 historical marker on legacy rows; new records are tagged `"en"`.
 
 Phase 2 schema additions (backward-compatible for migration):
-- language: str (ISO-639-1, required)                     -- D-08a
+- language: str (ISO-639-1, required)
 - s5_trust_score: float [0,1] (default 0.5 neutral prior) -- prep
 - profile_modulation_gain: dict[str, float] (default {})  -- runtime gain
 - schema_version: int (1 legacy | 2 phase-2)              -- migration marker
@@ -73,7 +73,7 @@ TIER_ENUM = frozenset({
 
 @dataclass
 class MemoryRecord:
-    """Canonical memory record (D-08a native-language, D-14, MEM-01..06, prep).
+    """Canonical memory record.
 
     Constitutional invariants:
     - `literal_surface` is always raw verbatim. Per the canonical
@@ -92,7 +92,7 @@ class MemoryRecord:
     id: UUID                              # stable UUID4 at creation
     tier: str                             # "working" | "episodic" | "semantic" | "procedural" | "parametric" | "semantic_pruned"
 
-    # content (constitutional: raw verbatim in the user's language, D-08a)
+    # content (constitutional: raw verbatim in the user's language)
     literal_surface: str                  # raw verbatim; language tag below
     aaak_index: str                       # AAAK metadata line (Plan 03 populates; default "")
 
@@ -150,7 +150,7 @@ class MemoryRecord:
         if not self.language or not isinstance(self.language, str):
             raise ValueError(
                 "language is a required non-empty ISO-639-1 string field "
-                "(constitutional violation: D-08a)"
+                "(constitutional violation)"
             )
         # prep: s5_trust_score in [0, 1].
         if not (0.0 <= self.s5_trust_score <= 1.0):
@@ -179,13 +179,31 @@ class MemoryRecord:
 
 @dataclass
 class MemoryHit:
-    """Single retrieval result (MCP-01 shape, + D-13)."""
+    """Single retrieval result.
+
+    `valid_from` and `valid_to` are DERIVED at recall time from the
+    contradiction-edge graph, never stored on the underlying MemoryRecord
+    (episodic write-once invariant preserved). None defaults preserve
+    back-compat for callers (tests, bench harness, recall_for_benchmark)
+    that don't run derivation.
+
+    Semantic:
+      valid_from = record.created_at when derivation runs; None on
+                   back-compat paths.
+      valid_to   = oldest newer-contradicter's created_at; None if no
+                   newer record points at this one via a contradicts edge.
+    """
 
     record_id: UUID
     score: float                          # cosine + weighted bonuses (Plan 02 fills full formula)
     reason: str                           # human-readable "cosine 0.87 + rich-club 0.05"
-    literal_surface: str                  # verbatim content (MCP-01 returns content, not only id)
+    literal_surface: str                  # verbatim content (returns content, not only id)
     adjacent_suggestions: list[UUID]      # cued-recognition (Plan 03 populates)
+    # Derived temporal validity. Set by retrieve.derive_temporal_validity()
+    # at recall time; None on paths that don't enrich (recall_for_benchmark,
+    # any caller constructing MemoryHit directly without enrichment).
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
 
 
 @dataclass

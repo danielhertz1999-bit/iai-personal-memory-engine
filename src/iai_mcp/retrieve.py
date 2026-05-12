@@ -46,6 +46,19 @@ log = logging.getLogger(__name__)
 _GRAPH_DECRYPT_WARN_LAST: dict[str, float] = {}
 _GRAPH_DECRYPT_WARN_INTERVAL_SEC = 300.0
 
+# Downweight factor applied to MemoryHit.score when the derived valid_to < now
+# (record was superseded by a newer contradicting record). 0.5 chosen as:
+# aggressive enough that a fresh lower-cosine record can outrank a stale
+# high-cosine hit on typical score distributions, while leaving the stale
+# hit visible in the response for audit. Downweight, not hide, to preserve
+# audit trail.
+STALE_DOWNWEIGHT_FACTOR: float = 0.5
+
+# Suffix appended to MemoryHit.reason when a record is downweighted as stale.
+# Spaces around · are intentional — the reason field already carries
+# "cosine X.XXX + …" segments separated by " + "; " · stale" stays readable.
+_STALE_REASON_SUFFIX: str = " · stale"
+
 
 # temporal_next window. Records inserted within this window
 # in the same session are linked with a temporal_next edge.
@@ -147,6 +160,19 @@ def recall(
                 adjacent_suggestions=[],
             )
         )
+
+    # Derive valid_from / valid_to from contradicts edges, then downweight
+    # stale, then re-sort hits. anti_hits left in their semantic order:
+    # they're an inhibitory tail, not a ranked list. Downweighting them
+    # lowers their weight in any downstream consumer that uses anti-hit
+    # score (rank stage, schema-induction reader) — without this, a user
+    # who reverses an opinion twice would see ghosts of the first
+    # reversal still actively inhibiting current recall.
+    derive_temporal_validity(store, hits)
+    derive_temporal_validity(store, anti_hits)
+    apply_stale_downweight(hits)
+    apply_stale_downweight(anti_hits)
+    hits.sort(key=lambda h: h.score, reverse=True)
 
     # on-read S4 viability check on the baseline recall
     # path too, so behaviour is consistent regardless of which recall route
@@ -295,6 +321,236 @@ def contradict(
         edge_type="contradicts",
         ts=now,
     )
+
+
+def build_temporal_validity_maps(
+    store: MemoryStore,
+) -> tuple[dict[str, list[str]], dict[str, datetime]] | None:
+    """One-shot builder for the two lookup maps that
+    derive_temporal_validity consumes.
+
+    Returns:
+        (outgoing, ts_by_id)
+            outgoing  : src_id_str → [dst_id_str, ...] for edge_type='contradicts'
+            ts_by_id  : record_id_str → created_at (datetime / pandas.Timestamp)
+
+        Both empty if the store has no edges / records — callers should
+        treat that as "nothing to derive". Returns None on a hard read
+        failure so callers can short-circuit (recall hot path: never raise).
+
+    Hoist this call to the entry-point that needs to enrich both hits AND
+    anti_hits in one recall — passes the same two maps into both
+    derive_temporal_validity calls so the records table is scanned once
+    instead of twice (p95 perf gate).
+
+    Why hoisting matters: each store.db.open_table('records').to_pandas()
+    call costs ~28ms at N=100 reference workload. Running it twice per
+    recall (once for hits, once for anti_hits) doubled overhead to ~56ms
+    and pushed p95 above the 100ms gate; one shared scan halves that.
+
+    Perf-tight: the records table has wide rows (384d/1024d embedding +
+    encrypted literal_surface + 1250-byte structure_hv). A bare
+    `to_pandas()` materializes ALL columns. We only need (id, created_at)
+    here — those two are the only fields consumed by derive_temporal_validity.
+    The edges table similarly has weight/updated_at we don't need; we
+    only consume (src, dst, edge_type). Column-subset scans (LanceDB
+    `tbl.search().select([cols])`) skip the heavy payload columns and
+    measurably reduce per-recall overhead vs the bare to_pandas() path.
+
+    Known perf gap: at N=300 the column-subset scan still adds ~45 ms
+    to recall_for_response, which exceeds the 75 ms / N=300 budget. The
+    cheapest architectural fix — plumb `created_at` into the graph node
+    payload so derive_temporal_validity reads from cache instead of
+    scanning the records table — is deferred. See SUMMARY follow-up.
+    """
+    edges_tbl = store.db.open_table("edges")
+    try:
+        # Column-subset scan — skip weight + updated_at. limit() must be
+        # big enough to capture every edge; LanceDB's default search
+        # limit is 10, which would silently truncate large stores.
+        edges_count = int(edges_tbl.count_rows())
+        if edges_count > 0:
+            edges_df = (
+                edges_tbl.search()
+                .select(["src", "dst", "edge_type"])
+                .limit(edges_count)
+                .to_pandas()
+            )
+        else:
+            edges_df = None
+    except Exception:
+        return None
+
+    outgoing: dict[str, list[str]] = {}
+    if edges_df is not None and not edges_df.empty:
+        try:
+            ctr = edges_df[edges_df["edge_type"] == "contradicts"]
+        except Exception:
+            return None
+        if not ctr.empty:
+            try:
+                for src_s, dst_s in zip(
+                    ctr["src"].tolist(), ctr["dst"].tolist(), strict=False
+                ):
+                    outgoing.setdefault(str(src_s), []).append(str(dst_s))
+            except Exception:
+                return None
+
+    try:
+        records_tbl = store.db.open_table("records")
+        records_count = int(records_tbl.count_rows())
+        if records_count > 0:
+            # Column-subset scan — skip embedding (384/1024 floats),
+            # literal_surface (encrypted AES-GCM blob), structure_hv
+            # (1250 bytes), aaak_index, provenance, etc. id + created_at
+            # is all derive_temporal_validity ever reads.
+            records_df = (
+                records_tbl.search()
+                .select(["id", "created_at"])
+                .limit(records_count)
+                .to_pandas()
+            )
+            ts_by_id: dict[str, datetime] = dict(
+                zip(
+                    records_df["id"].tolist(),
+                    records_df["created_at"].tolist(),
+                    strict=False,
+                )
+            )
+        else:
+            ts_by_id = {}
+    except Exception:
+        return None
+    return outgoing, ts_by_id
+
+
+def derive_temporal_validity(
+    store: MemoryStore | None,
+    hits: list[MemoryHit],
+    records_cache: dict[UUID, MemoryRecord] | None = None,
+    *,
+    outgoing: dict[str, list[str]] | None = None,
+    ts_by_id: dict[str, datetime] | None = None,
+) -> list[MemoryHit]:
+    """Derive valid_from / valid_to per hit from the contradicts-edge graph.
+
+    For each hit:
+        valid_from = record.created_at  (always set when record is loadable)
+        valid_to   = oldest contradicting-record.created_at where
+                     edge: src=record.id, dst=contradicting_id, edge_type='contradicts'
+                     AND contradicting_id.created_at > record.created_at
+                     (None if no such record exists — record still valid)
+
+    MUTATES the hits in place (sets .valid_from and .valid_to on each
+    MemoryHit) AND returns the same list for ergonomic chaining. Does NOT
+    change .score — downweight is the caller's responsibility (see
+    apply_stale_downweight below).
+
+    Two call patterns:
+
+      1. Pre-built maps (preferred in hot path):
+         outgoing + ts_by_id from build_temporal_validity_maps(store).
+         `store` may be None when both maps are pre-built — useful for
+         tests and for the shared-scan pattern in recall_for_response.
+
+      2. Lazy build (baseline path):
+         pass `store` only; the helper calls build_temporal_validity_maps
+         internally. Convenient for callers (baseline retrieve.recall())
+         that enrich a single list per recall — one scan, one consumer.
+
+    `records_cache` is RESERVED for future use when graph node attrs carry
+    a real `created_at` (graph-payload surface upgrade — currently
+    SimpleRecordView.created_at is a wall-clock placeholder, see
+    pipeline.SimpleRecordView). Today the helper bypasses the cache and
+    reads (id, created_at) from the records table — see perf note in
+    build_temporal_validity_maps above.
+
+    PERF NOTE: per-hit `store.get(rid)` triggers the AES-GCM decrypt path
+    on `literal_surface` (cost ~12ms per hit on M1). At N=100 reference
+    workload, that broke the p95 perf gate (1296ms vs 100ms target).
+    The to_pandas() scan returns RAW Lance rows (no decrypt until
+    store._from_row), keeping the helper under the gate.
+
+    Note: pipeline.py's stage 12 (_find_anti_hits) also reads the edges
+    table; further hoisting to share with the post-rank pipeline is a
+    follow-up optimization.
+    """
+    if not hits:
+        return hits
+
+    if outgoing is None or ts_by_id is None:
+        if store is None:
+            # No way to build the maps. Defensive: leave hits untouched.
+            return hits
+        built = build_temporal_validity_maps(store)
+        if built is None:
+            return hits
+        outgoing, ts_by_id = built
+
+    def _created_at(rid: UUID) -> datetime | None:
+        return ts_by_id.get(str(rid))
+
+    for hit in hits:
+        src_ts = _created_at(hit.record_id)
+        if src_ts is None:
+            # Record not in the snapshot (raced delete / unknown id) —
+            # leave valid_from / valid_to None.
+            continue
+        hit.valid_from = src_ts
+        candidates = outgoing.get(str(hit.record_id), [])
+        if not candidates:
+            continue
+        oldest_newer: datetime | None = None
+        for dst_str in candidates:
+            try:
+                dst_id = UUID(dst_str)
+            except (TypeError, ValueError):
+                continue
+            dst_ts = _created_at(dst_id)
+            if dst_ts is None:
+                continue
+            # Strict ">": defensive against malformed older-pointing edges.
+            # The dst must be NEWER than src to count as "contradicted by
+            # a newer record".
+            if dst_ts <= src_ts:
+                continue
+            if oldest_newer is None or dst_ts < oldest_newer:
+                oldest_newer = dst_ts
+        if oldest_newer is not None:
+            hit.valid_to = oldest_newer
+    return hits
+
+
+def apply_stale_downweight(
+    hits: list[MemoryHit],
+    now: datetime | None = None,
+) -> list[MemoryHit]:
+    """Multiply MemoryHit.score by STALE_DOWNWEIGHT_FACTOR for hits whose
+    derived valid_to < now. Append " · stale" to .reason for visibility.
+
+    MUTATES hits in place. Returns the same list (NOT re-sorted — caller
+    decides ranking semantics; anti_hits typically stay in their semantic
+    order, ranked hits are re-sorted by the caller).
+
+    Idempotent on both the reason-suffix append and the score multiplication:
+    a second call on already-downweighted hits is a no-op. The score guard
+    uses a private `_stale_downweighted` sentinel attribute that never
+    crosses onto the JSON wire (core._hit_to_json emits only the public
+    hit fields plus valid_from/valid_to).
+
+    `now` is parameterizable for deterministic tests; defaults to
+    datetime.now(timezone.utc).
+    """
+    now_value = now or datetime.now(timezone.utc)
+    for hit in hits:
+        if hit.valid_to is None or hit.valid_to >= now_value:
+            continue
+        if not getattr(hit, "_stale_downweighted", False):
+            hit.score *= STALE_DOWNWEIGHT_FACTOR
+            hit._stale_downweighted = True
+        if not hit.reason.endswith(_STALE_REASON_SUFFIX):
+            hit.reason = f"{hit.reason}{_STALE_REASON_SUFFIX}"
+    return hits
 
 
 def link_temporal_next(

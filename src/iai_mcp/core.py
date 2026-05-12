@@ -764,12 +764,26 @@ def dispatch(store: MemoryStore, method: str, params: dict) -> dict:
 
 
 def _hit_to_json(h) -> dict:
+    # Derived temporal validity, computed at recall time from the contradicts-
+    # edge graph. None when the record has no superseding contradiction
+    # (valid_to) or when enrichment was not run on this code path (back-compat
+    # default -- applies to recall_for_benchmark and any pre-temporal-validity
+    # caller that constructs MemoryHit-shaped objects). getattr fallback
+    # defends against any future MemoryHit-shaped object the serializer might
+    # be handed without the new fields (partial mock in a test, etc.). The
+    # _stale_downweighted sentinel from apply_stale_downweight is intentionally
+    # NOT serialized -- only the public hit fields plus valid_from / valid_to
+    # cross onto the JSON wire.
+    _vf = getattr(h, "valid_from", None)
+    _vt = getattr(h, "valid_to", None)
     return {
         "record_id": str(h.record_id),
         "score": float(h.score),
         "reason": h.reason,
         "literal_surface": h.literal_surface,
         "adjacent_suggestions": [str(x) for x in h.adjacent_suggestions],
+        "valid_from": _vf.isoformat() if _vf is not None else None,
+        "valid_to": _vt.isoformat() if _vt is not None else None,
     }
 
 

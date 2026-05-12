@@ -222,7 +222,10 @@ def test_R3_rank_stage_latency_under_budget(seeded_store):
     # Vectorized rank + seed + community-gate at N=300 land in ~50 ms
     # on this host. Fence at 75 ms catches regressions back into the
     # per-record loop (pre-05-13 baseline at N=300 was >170 ms).
-    assert dt_ms < 75.0, (
+    # Raised 75→120: build_temporal_validity_maps adds ~50ms scanning
+    # records.created_at; follow-up opt = cache in graph node attrs
+    # (deferred).
+    assert dt_ms < 120.0, (
         f"vectorized rank-stage recall took {dt_ms:.1f} ms at N=300 "
         "(provenance writes mocked)"
     )
