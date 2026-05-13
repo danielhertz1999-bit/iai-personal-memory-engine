@@ -1,4 +1,4 @@
-"""Plan 07.1-04 R2/A6 acceptance — bridge.ts is a pure connector (no spawn).
+"""R2/A6 acceptance — bridge.ts is a pure connector (no spawn).
 
 # History
 
@@ -11,7 +11,7 @@ behavior:
   - test_warm_start_reuses_daemon_under_250ms — relied on wrapper #1 to
     bootstrap the daemon via spawn so wrapper #2 could attach.
 
-Phase 7.1 (this plan, 07.1-04) DELETES bridge.ts's spawn capability:
+(this plan, 07.1-04) DELETES bridge.ts's spawn capability:
 the wrapper now ONLY connects to ~/.iai-mcp/.daemon.sock with a 5s
 timeout; on miss it throws `DaemonUnreachableError` (code -32002) and
 the wrapper process exits non-zero. Daemon spawning is now launchd's
@@ -33,7 +33,7 @@ Both pre-7.1 tests therefore had to be restructured:
 # Test isolation strategy
 
 Both tests use IAI_DAEMON_SOCKET_PATH env override (HIGH-4 lock at
-bridge.ts module top — verified preserved through Plan 07.1-04 Task 1
+bridge.ts module top — verified preserved through Task 1
 edit) so they target a tmp socket and never touch the user's real
 ~/.iai-mcp/.daemon.sock — the production daemon (if any) is not
 disturbed.
@@ -255,7 +255,7 @@ def _wait_for_daemon_socket(sock_path: Path, timeout_sec: float = 30.0) -> bool:
 def test_start_throws_DaemonUnreachableError_when_socket_missing(
     built_wrapper, tmp_path
 ):
-    """Phase 7.1 + mcp-tools-list-empty-cache (2026-05-02): with no daemon
+    """+ mcp-tools-list-empty-cache (2026-05-02): with no daemon
     on the test socket, the wrapper MUST stay alive and MUST serve
     tools/list from the static registry within an MCP-client-friendly
     timeout. tools/call MUST surface daemon_unreachable as an isError
@@ -410,7 +410,7 @@ def test_start_throws_DaemonUnreachableError_when_socket_missing(
         assert daemon_delta == 0, (
             f"REGRESSION: wrapper spawned {daemon_delta} new iai_mcp.daemon "
             f"process(es) (baseline={daemon_baseline}, after={after['daemon']}). "
-            f"Phase 7.1 wrappers MUST NOT spawn the daemon — the spawn-fallback "
+            f"wrappers MUST NOT spawn the daemon — the spawn-fallback "
             f"chain in bridge.ts has been re-introduced."
         )
         core_delta = after["core"] - core_baseline
@@ -487,7 +487,7 @@ def test_start_succeeds_with_warm_daemon_no_extra_spawn(built_wrapper, tmp_path)
             # memory_recall round-trip — proves the JSON-RPC wire path
             # over the socket works end-to-end.
             elapsed, recall_resp = _call_memory_recall(
-                wrapper_proc, cue="phase 7.1 warm-daemon test",
+                wrapper_proc, cue="warm-daemon test",
                 rpc_id=2, timeout_sec=10.0,
             )
             # Either a result (recall hit/miss) or an error envelope is

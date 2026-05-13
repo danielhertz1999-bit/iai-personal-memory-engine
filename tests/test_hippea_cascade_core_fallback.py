@@ -1,4 +1,4 @@
-"""Plan 05-07 — core-side HIPPEA fallback cascade tests.
+"""— core-side HIPPEA fallback cascade tests.
 
 Closes the N=1k cross-process LRU gap that flagged as
 known: the daemon's cascade populates the daemon's LRU, but the MCP

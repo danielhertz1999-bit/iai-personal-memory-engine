@@ -1,4 +1,4 @@
-"""Phase 8 redesign (08-CONTEXT.md D-02): regression-fence — community
+"""redesign (08-CONTEXT.md ): regression-fence — community
 gate is a MODE-DEPENDENT diagnostic, not a hard filter.
 
 The redesign's load-bearing claim has two parts:
@@ -106,7 +106,7 @@ def _build_one_record_per_community(
     the record nearest the cue (by record cosine).
 
     Mirrors the deleted tests/test_pipeline_community_gate_augment.py
-    helper `_build_degenerate_graph_and_assignment` (Phase 8 patch
+    helper `_build_degenerate_graph_and_assignment` (patch
     era). Kept as a private helper here since the patch tests are gone.
     """
     store = MemoryStore(path=tmp_path / "lancedb")

@@ -1,8 +1,8 @@
-"""Phase 10.1 Plan 10.1-01 Task 1.1 -- lifecycle_state typed schema tests.
+"""Task 1.1 -- lifecycle_state typed schema tests.
 
 Covers the round-trip, atomic-replace crash safety, and schema-validation
 self-heal behaviour of `lifecycle_state.{load_state,save_state}`. Mirrors
-the test layout of `test_daemon_state.py` (Phase 04-01) since the
+the test layout of `test_daemon_state.py` (-01) since the
 persistence pattern is identical.
 """
 from __future__ import annotations
@@ -29,7 +29,7 @@ from iai_mcp.lifecycle_state import (
 # ---------------------------------------------------------------------------
 
 def test_default_state_is_wake_with_shadow_run_disabled():
-    """Phase 10.6 Plan 10.6-01 Task 1.6: shadow_run flipped to False by
+    """shadow_run flipped to False by
     default. HIBERNATION transitions now actually exit the daemon.
     """
     record = default_state()

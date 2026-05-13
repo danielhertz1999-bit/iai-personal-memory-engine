@@ -1,4 +1,4 @@
-"""Phase 07.12-01: AUTIST-05/10/14 implementables — visible response delta.
+"""-01: AUTIST-05/10/14 implementables — visible response delta.
 
 Closes the second leg of "не оставлять пустышки": each helper now produces
 a measurable, test-asserted mutation when its knob value flips.
@@ -110,7 +110,7 @@ def test_pda_tolerance_neutral_no_op() -> None:
         "scene_construction_scaffold": False,
     }
     apply_profile(response, profile)
-    # Plan 07.12-03: apply_profile now adds _knobs_applied; strip it before
+    # : apply_profile now adds _knobs_applied; strip it before
     # the byte-equality check so the / mutation surfaces
     # are isolated.
     response.pop("_knobs_applied", None)
@@ -154,7 +154,7 @@ def test_inertia_awareness_subsequent_turn_no_op() -> None:
         "scene_construction_scaffold": False,
     }
     apply_profile(response, profile)
-    # Plan 07.12-03: strip _knobs_applied for byte-equality isolation.
+    # : strip _knobs_applied for byte-equality isolation.
     response.pop("_knobs_applied", None)
     assert response == snapshot
 
@@ -175,7 +175,7 @@ def test_inertia_awareness_off_no_op() -> None:
         "scene_construction_scaffold": False,
     }
     apply_profile(response, profile)
-    # Plan 07.12-03: strip _knobs_applied for byte-equality isolation.
+    # : strip _knobs_applied for byte-equality isolation.
     response.pop("_knobs_applied", None)
     assert response == snapshot
 

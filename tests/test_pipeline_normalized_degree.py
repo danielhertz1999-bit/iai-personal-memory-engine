@@ -1,4 +1,4 @@
-"""Plan 06-02 R2 acceptance suite — bounded graph-bonus + max_degree cache.
+"""R2 acceptance suite — bounded graph-bonus + max_degree cache.
 
 Two-tier coverage:
 
@@ -349,7 +349,7 @@ def test_old_formula_would_have_ranked_hub_above_verbatim(tmp_path):
     hub_deg = float(deg_dict.get(str(hub_id), 0))
     verbatim_deg = float(deg_dict.get(str(verbatim_id), 0))
 
-    # OLD formula constants (from pipeline.py:115-118, NOT changed by Plan 06-02).
+    # OLD formula constants (from pipeline.py:115-118, NOT changed by ).
     W_COSINE = 1.0
     W_DEGREE = 0.1
     # AAAK is 0 (no aaak_index seeded). Age penalty is ~0 for fresh records.

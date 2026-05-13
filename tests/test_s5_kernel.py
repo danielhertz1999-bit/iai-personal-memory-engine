@@ -1,4 +1,4 @@
-"""Tests for iai_mcp.s5 -- identity kernel (MEM-09, D-22).
+"""Tests for iai_mcp.s5 -- identity kernel .
 
 D-22 constitutional:
 - ρ_identity = 0.99 (stricter than write-path ρ=0.95 and S4 ρ=0.97).

@@ -1,4 +1,4 @@
-"""Hierarchical community detection (D-05 bootstrap + stable UUIDs + CONN-01/04).
+"""Hierarchical community detection ( bootstrap + stable UUIDs + /04).
 
 Policy:
 - N < SMALL_N_FLAT (200): single flat community. Rich-club coefficient is too noisy
@@ -17,14 +17,14 @@ Stable UUIDs:
 - This prevents ID churn on re-runs where Leiden re-orders labels but the
   cluster membership is essentially the same.
 
-CONN-01 three-level parcellation (Phase 1 approximation):
+ three-level parcellation (approximation):
 - Level 1: top_communities -- top 7 (Yeo-like) by member count.
 - Level 2: mid_regions -- community UUID -> member node UUIDs
            (Schaefer-scale 200-400 sub-parcellation is a Phase-2 refinement;
             for we expose the community -> members mapping).
 - Level 3: node_to_community -- every leaf record's community assignment.
 
-CONN-04 refresh threshold:
+ refresh threshold:
 - needs_refresh(prior, current_Q) returns True iff |prior.Q - current_Q| > 0.05.
   The pipeline or session-start assembler decides when to re-run detect_communities
   based on this signal.
@@ -43,13 +43,13 @@ SMALL_N_FLAT = 200
 MID_N_LEIDEN = 500
 MODULARITY_FLOOR = 0.2
 
-# CONN-04 refresh trigger
+# refresh trigger
 REFRESH_DELTA = 0.05
 
 # stable-UUID cosine floor
 UUID_ROTATE_COSINE = 0.7
 
-# CONN-01 level-1 cap (Yeo-like 7 networks)
+# level-1 cap (Yeo-like 7 networks)
 MAX_TOP_COMMUNITIES = 7
 
 
@@ -61,8 +61,8 @@ class CommunityAssignment:
     - community_centroids: community UUID -> mean of member embeddings
     - modularity: Leiden Q (0.0 for flat)
     - backend: "flat" | "leiden-networkx" | "leiden-igraph"
-    - top_communities: up to MAX_TOP_COMMUNITIES by member count (CONN-01 L1)
-    - mid_regions: community UUID -> list of member leaf UUIDs (CONN-01 L2)
+    - top_communities: up to MAX_TOP_COMMUNITIES by member count ( L1)
+    - mid_regions: community UUID -> list of member leaf UUIDs ( L2)
     """
 
     node_to_community: dict[UUID, UUID] = field(default_factory=dict)
@@ -220,7 +220,7 @@ def _run_leiden(graph: MemoryGraph) -> tuple[dict[UUID, int], float, str]:
     """Run leidenalg on a NetworkX graph via an igraph mirror.
 
     Returns (node_uuid -> int label, modularity Q, backend_label).
-    Backend label reflects which library owns the hot path per D-04:
+    Backend label reflects which library owns the hot path per :
     "leiden-igraph" for N >= IGRAPH_THRESHOLD, "leiden-networkx" for smaller graphs
     (both internally use leidenalg since python-louvain is Louvain, not Leiden).
     Seed=42 for determinism across calls.
@@ -262,7 +262,7 @@ def detect_communities(
     graph: MemoryGraph,
     prior: CommunityAssignment | None = None,
 ) -> CommunityAssignment:
-    """D-05 bootstrap + stable UUIDs + CONN-01 three-level parcellation.
+    """ bootstrap + stable UUIDs + three-level parcellation.
 
     Empty graph -> empty CommunityAssignment(backend="flat").
     """
@@ -286,7 +286,7 @@ def detect_communities(
         raw_partition, graph, prior
     )
 
-    # CONN-01 level 1: top 7 communities by member count.
+    # level 1: top 7 communities by member count.
     counts: dict[UUID, int] = {}
     for c in node_to_community.values():
         counts[c] = counts.get(c, 0) + 1
@@ -295,7 +295,7 @@ def detect_communities(
     ]
     top_communities = [u for u, _ in top]
 
-    # CONN-01 level 2 (mid-regions): community UUID -> member node UUIDs.
+    # level 2 (mid-regions): community UUID -> member node UUIDs.
     mid_regions: dict[UUID, list[UUID]] = {}
     for node, comm in node_to_community.items():
         mid_regions.setdefault(comm, []).append(node)
@@ -313,7 +313,7 @@ def detect_communities(
 def needs_refresh(
     prior: CommunityAssignment, current_modularity: float
 ) -> bool:
-    """CONN-04: refresh signal when |Δ modularity| > REFRESH_DELTA (0.05).
+    """: refresh signal when |Δ modularity| > REFRESH_DELTA (0.05).
 
     Consumer (session-start assembler / maintenance job) calls this on each
     new Leiden run; a True return triggers a re-assignment + cache invalidation.

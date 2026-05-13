@@ -1,4 +1,4 @@
-"""Tests for core.py additions -- DAEMON-06 / DAEMON-09.
+"""Tests for core.py additions -- / .
 
 Covers 8 behaviours:
 1. consent=False short-circuits: socket is NEVER opened (C2 guard)

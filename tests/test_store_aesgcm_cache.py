@@ -1,4 +1,4 @@
-"""Plan 07.7-02 W5 — cached AESGCM cipher property on MemoryStore.
+"""W5 — cached AESGCM cipher property on MemoryStore.
 
 RED phase: these tests fail until ``MemoryStore`` exposes:
 
@@ -40,7 +40,7 @@ Covered contracts (CONTEXT.md W5 slice):
        value passes it through unchanged AND the cache stays absent
        from ``store.__dict__``.
 
-Phase 07.6 plan-checker B-1 lesson: every test uses a real ``MemoryRecord``
+plan-checker B-1 lesson: every test uses a real ``MemoryRecord``
 dataclass via ``_make()`` — never a plain dict against attribute-access code.
 """
 from __future__ import annotations

@@ -4,7 +4,7 @@ Spawns the built wrapper as a subprocess, sends MCP-shaped JSON-RPC requests,
 and verifies the wrapper exposes the 5 Phase-1 tools and round-trips the
 autistic-kernel profile defaults (D-12, D-11).
 
-Plan 07.1-04 deviation Rule 3 update: pre-7.1 the spawned wrapper would
+deviation Rule 3 update: pre-7.1 the spawned wrapper would
 self-spawn the Python daemon on first connect (the spawn-fallback chain
 in bridge.ts that 07.1-04 deleted). Tests in this file relied on either
 that fallback OR the user's live production daemon. wrappers
@@ -52,7 +52,7 @@ def built_wrapper() -> Path:
 def daemon_sock() -> "Path":
     """Pre-start an isolated tmp daemon for the wrapper to connect to.
 
-    (Plan 07.1-04) removed the wrapper-side spawn-fallback;
+     removed the wrapper-side spawn-fallback;
     wrappers now ONLY connect to an existing daemon socket. In
     production launchd handles daemon spawn via socket activation; in
     tests we use the manual-run code path (no LISTEN_FDS env)
@@ -184,7 +184,7 @@ def _initialize(proc: subprocess.Popen, rpc_id: int = 1) -> None:
 
 
 def test_wrapper_lists_twelve_tools(built_wrapper: Path, daemon_sock: Path) -> None:
-    """Hot surface: 5 Phase-1 + 3 + 3 Plan 03 + 1 Plan 06 = 12 tools."""
+    """Hot surface: 5 Phase-1 + 3 + 3 + 1 = 12 tools."""
     proc = _spawn_wrapper(built_wrapper, daemon_sock)
     try:
         _initialize(proc, 1)
@@ -202,11 +202,11 @@ def test_wrapper_lists_twelve_tools(built_wrapper: Path, daemon_sock: Path) -> N
             "curiosity_pending",
             "schema_list",
             "events_query",
-            # Plan 03 additions
+            # additions
             "memory_recall_structural",
             "topology",
             "camouflaging_status",
-            # Plan 06 addition (ambient WRITE-side capture)
+            # addition (ambient WRITE-side capture)
             "memory_capture",
         }
     finally:
@@ -234,7 +234,7 @@ def test_wrapper_profile_get_returns_live_knobs(built_wrapper: Path, daemon_sock
         assert payload["live"]["masking_off"] is True
         assert payload["live"]["task_support"] == "cued_recognition"
         assert payload["live"]["scene_construction_scaffold"] is True
-        # Plan 07.12-02: 10 autistic-kernel + wake_depth = 11 live (AUTIST-02/08/11/12 removed).
+        # : 10 autistic-kernel + wake_depth = 11 live (AUTIST-02/08/11/12 removed).
         assert len(payload["live"]) == 11
         assert len(payload["deferred"]) == 0
     finally:
@@ -246,7 +246,7 @@ def test_wrapper_profile_get_returns_live_knobs(built_wrapper: Path, daemon_sock
 
 
 def test_wrapper_memory_consolidate_runs_heavy(built_wrapper: Path, daemon_sock: Path) -> None:
-    """Plan 02-02 memory_consolidate returns real sleep-cycle output
+    """memory_consolidate returns real sleep-cycle output
     instead of the stub ({status:queued, phase:placeholder})."""
     proc = _spawn_wrapper(built_wrapper, daemon_sock)
     try:

@@ -1,4 +1,4 @@
-"""Phase 7.5 acceptance — `iai-mcp capture-transcript --no-spawn` ALWAYS defers.
+"""acceptance — `iai-mcp capture-transcript --no-spawn` ALWAYS defers.
 
 Closes the embedder cold-load amplification documented in SPEC 07.5: every
 Stop-hook invocation (286/day on 2026-04-27) was loading bge-small-en-v1.5
@@ -11,7 +11,7 @@ no longer probes the socket and no longer imports
 `iai_mcp.capture.capture_transcript` / `iai_mcp.store.MemoryStore`. It
 unconditionally calls `write_deferred_captures(...)` and prints
 `{"status": "deferred", "path": "..."}`. The daemon's WAKE drain (Phase
-7.1 R3 / Plan 07.1-06) consumes deferred files with the daemon's
+7.1 R3 / ) consumes deferred files with the daemon's
 already-loaded embedder.
 
 Test matrix:
@@ -102,7 +102,7 @@ def _isolated_env(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
 def _make_transcript(tmp_path: Path) -> Path:
     """Write a 3-turn Claude Code-style JSONL transcript."""
     turns = [
-        {"type": "user", "message": {"role": "user", "content": "hello phase 7 5"}},
+        {"type": "user", "message": {"role": "user", "content": "hello world 7 5"}},
         {"type": "assistant", "message": {"role": "assistant", "content": "ack always defer"}},
         {"type": "user", "message": {"role": "user", "content": "third defer turn"}},
     ]
@@ -184,7 +184,7 @@ def _bind_listener(sock_path: Path) -> socket.socket:
 
 
 def test_no_spawn_reachable_defers_not_inserts(tmp_path):
-    """Phase 7.5 R1: even with the daemon socket reachable, --no-spawn
+    """R1: even with the daemon socket reachable, --no-spawn
     writes a deferred-captures JSONL and exits 0 with status="deferred"."""
     env, deferred_dir, sock_path = _isolated_env(tmp_path)
     transcript = _make_transcript(tmp_path)
@@ -204,7 +204,7 @@ def test_no_spawn_reachable_defers_not_inserts(tmp_path):
     # Must be JSON-parsable AND have status="deferred" (NOT "inserted": N).
     payload = json.loads(proc.stdout.strip())
     assert payload.get("status") == "deferred", (
-        f"reachable case must defer under Phase 7.5; got {payload!r}"
+        f"reachable case must defer under ; got {payload!r}"
     )
     assert "path" in payload, payload
     assert "inserted" not in payload, (
@@ -215,7 +215,7 @@ def test_no_spawn_reachable_defers_not_inserts(tmp_path):
     # `sentence_transformers` writes a tqdm progress bar containing
     # `Loading weights` when bge-small-en-v1.5 first loads.
     assert "Loading weights" not in proc.stderr, (
-        f"embedder cold-loaded on reachable --no-spawn path (Phase 7.5 broken):\n"
+        f"embedder cold-loaded on reachable --no-spawn path (broken):\n"
         f"{proc.stderr}"
     )
     assert "sentence_transformers" not in proc.stderr, (
@@ -290,7 +290,7 @@ def test_no_spawn_extracts_codex_transcript_turns(tmp_path):
 
 
 def test_no_spawn_zero_embedder_imports_in_fresh_process(tmp_path):
-    """Phase 7.5 R1 (import-isolation): in a brand-new Python interpreter,
+    """R1 (import-isolation): in a brand-new Python interpreter,
     invoking the `--no-spawn` CLI handler end-to-end leaves
     `iai_mcp.embed` and `sentence_transformers` UNLOADED. Direct evidence
     the heavy-import path is severed."""
@@ -356,7 +356,7 @@ def test_no_spawn_zero_embedder_imports_in_fresh_process(tmp_path):
 
 
 def test_no_spawn_branch_has_no_inline_imports():
-    """Phase 7.5 A1 lockdown: the `if no_spawn:` block in
+    """A1 lockdown: the `if no_spawn:` block in
     `cmd_capture_transcript` contains zero imports of
     `iai_mcp.capture.capture_transcript` and `iai_mcp.store.MemoryStore`.
     Prevents quiet reintroduction of the inline-embed path."""
@@ -393,12 +393,12 @@ def test_no_spawn_branch_has_no_inline_imports():
 
     # Forbidden inline-ingest imports.
     assert "from iai_mcp.capture import capture_transcript" not in no_spawn_block, (
-        "Phase 7.5 regression: capture_transcript reintroduced into "
+        "regression: capture_transcript reintroduced into "
         "--no-spawn branch (would trigger embedder cold-load on every "
         "Stop-hook fire)"
     )
     assert "from iai_mcp.store import MemoryStore" not in no_spawn_block, (
-        "Phase 7.5 regression: MemoryStore reintroduced into --no-spawn "
+        "regression: MemoryStore reintroduced into --no-spawn "
         "branch"
     )
 

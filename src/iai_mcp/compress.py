@@ -1,4 +1,4 @@
-"""TOK-04 LLMLingua-2 compression (Plan 02-04 Task 2, D-25).
+""" LLMLingua-2 compression (Task 2, ).
 
 Compression is allowed ONLY on retrieval views and summaries, NEVER on raw
 content. Enforcement lives in `is_compressible`:
@@ -8,7 +8,7 @@ Forbidden:
 - invariant_anchor records (s5_trust_score >= 0.9)
 - user-tagged raw: records (raw:en, raw:ru, ...)
 - normal episodic records (default reject; literal_surface is constitutional
-  per MEM-01)
+  per )
 
 Allowed:
 - records tagged cls_summary (CLS consolidation output)
@@ -186,14 +186,14 @@ def compress_llmlingua2(
 
 
 def compress_l2_descriptor(descriptor: str, store=None) -> str:
-    """Compress an L2 community descriptor (D-25 target ratio 0.5)."""
+    """Compress an L2 community descriptor ( target ratio 0.5)."""
     return compress_llmlingua2(
         descriptor, target_ratio=COMPRESSION_TARGET_L2, store=store,
     )
 
 
 def compress_summary(summary: str, store=None) -> str:
-    """Compress a session summary (D-25 target ratio 0.3)."""
+    """Compress a session summary ( target ratio 0.3)."""
     return compress_llmlingua2(
         summary, target_ratio=COMPRESSION_TARGET_SUMMARY, store=store,
     )

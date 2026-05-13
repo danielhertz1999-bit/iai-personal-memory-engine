@@ -1,7 +1,7 @@
-"""Rich-club pre-fetch (CONN-02).
+"""Rich-club pre-fetch .
 
 Top 10% of nodes by centrality. Used by pipeline.pipeline_recall at stage 4
-(union with 2-hop spread) and by Plan 03's session-start assembler to pre-warm
+(union with 2-hop spread) and by session-start assembler to pre-warm
 the Anthropic prompt cache with a stable global-hub set.
 
 van den Heuvel & Sporns 2011 (J Neurosci 31:15775) observed that the top ~10%
@@ -17,7 +17,7 @@ from iai_mcp.graph import MemoryGraph
 
 
 def rich_club_nodes(graph: MemoryGraph, percent: float = 0.10) -> list[UUID]:
-    """CONN-02: top `percent` fraction of nodes by centrality.
+    """: top `percent` fraction of nodes by centrality.
 
     - Empty graph -> [].
     - Non-empty graph -> at least 1 node (ceil) even if percent rounds to 0.

@@ -1,4 +1,4 @@
-"""Tests for s5.detect_drift_anomaly + s5.audit_identity_events (OPS-07, D-30).
+"""Tests for s5.detect_drift_anomaly + s5.audit_identity_events .
 
 D-30 gradual-drift detection:
 - Reads trajectory_metric events for the M4 (profile-vector variance) metric.

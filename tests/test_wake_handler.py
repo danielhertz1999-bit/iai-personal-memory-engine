@@ -1,4 +1,4 @@
-"""Phase 10.5 — tests for :class:`iai_mcp.wake_handler.WakeHandler`.
+"""— tests for :class:`iai_mcp.wake_handler.WakeHandler`.
 
 Five-test matrix from CONTEXT 10.5:
 

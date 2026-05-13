@@ -1,4 +1,4 @@
-"""Phase 8 redesign — `_recall_core` + new `_pick_seeds` unit tests.
+"""redesign — `_recall_core` + new `_pick_seeds` unit tests.
 
 Covers the load-bearing decisions D-01..D-09 from
 `internal architecture spec`:
@@ -477,7 +477,7 @@ def test_recall_core_l0_fastpath_inside_core(tmp_path, monkeypatch):
 
 def test_recall_core_verbatim_mode_filters_to_episodic(tmp_path):
     """verbatim mode keeps only episodic-tier records in scored_hits.
-    hints + patterns_observed are empty in verbatim mode (Plan 06-04 R5)."""
+    hints + patterns_observed are empty in verbatim mode (R5)."""
     from iai_mcp.pipeline import _recall_core
 
     # 6 records: 3 episodic + 3 semantic. Cue at axis 0.

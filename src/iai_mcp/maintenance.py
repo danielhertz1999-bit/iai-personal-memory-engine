@@ -9,17 +9,17 @@ reclaimed 84% disk and dropped `build_runtime_graph` cold latency 13.3s ->
 so version manifests + soft-deleted rows do not re-accumulate.
 
 Architecture:
-- D7.3-01: periodic + startup, NOT write-triggered (post-write hook would
+- : periodic + startup, NOT write-triggered (post-write hook would
   amplify write latency unboundedly).
-- D7.3-02: single-process inside the daemon (no worker process).
-- D7.3-03: helper is SYNC; callers wrap in `asyncio.to_thread`. Phase 7.2's
+- : single-process inside the daemon (no worker process).
+- : helper is SYNC; callers wrap in `asyncio.to_thread`. 's
   AST fence (tests/test_no_bare_sync_in_async.py) enforces this discipline
-  via `BLOCKING_NAMES` (D7.3-26).
-- D7.3-09: helper NEVER raises. Per-table failures captured in the per-table
+  via `BLOCKING_NAMES` .
+- : helper NEVER raises. Per-table failures captured in the per-table
   dict's `error` field. The daemon must not die from an optimize failure.
-- D7.3-13/D7.3-21: 1-day default retention matches Lance docs FAQ.
+-: 1-day default retention matches Lance docs FAQ.
 
-Two env overrides (read once at import per D7.3-22):
+Two env overrides (read once at import per ):
 - IAI_MCP_LANCE_OPTIMIZE_INTERVAL_SEC (default 3600s = 1h cadence)
 - IAI_MCP_LANCE_OPTIMIZE_RETENTION_SEC (default 86400s = 1 day)
 """
@@ -31,14 +31,14 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-# D7.3-20: 1-hour periodic cadence (12x the cascade-poll cadence; same order
+# : 1-hour periodic cadence (12x the cascade-poll cadence; same order
 # of magnitude as the maintenance work itself; far longer than typical session
 # length so optimize rarely interferes; short enough that bloat stays bounded).
 LANCE_OPTIMIZE_INTERVAL_SEC: float = float(
     os.environ.get("IAI_MCP_LANCE_OPTIMIZE_INTERVAL_SEC", "3600.0"),
 )
 
-# D7.3-21: 1-day retention matches Lance's documented `cleanup_older_than`
+# : 1-day retention matches Lance's documented `cleanup_older_than`
 # example. Aggressive enough to free disk fast; conservative enough for
 # point-in-time time-travel reads within the same day.
 LANCE_OPTIMIZE_RETENTION_SEC: float = float(
@@ -115,7 +115,7 @@ def optimize_lance_storage(
                 "error": str,              # ONLY present on failure
             }
 
-    Per D7.3-09: this helper NEVER raises. Per-table failure captured in
+    Per : this helper NEVER raises. Per-table failure captured in
     the table's `error` field; the other tables are still processed.
     """
     if retention is None:

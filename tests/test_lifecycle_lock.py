@@ -1,4 +1,4 @@
-"""Phase 10.6 Plan 10.6-01 Task 1.1 -- LifecycleLock unit tests.
+"""Task 1.1 -- LifecycleLock unit tests.
 
 Locks the single-machine assumption:
 

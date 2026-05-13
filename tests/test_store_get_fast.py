@@ -1,4 +1,4 @@
-"""Plan 05-15 — store.get filter-pushdown fast-path (OPS-10 / M-02).
+"""— store.get filter-pushdown fast-path ( / M-02).
 
 TDD RED scaffold for exit gate.
 

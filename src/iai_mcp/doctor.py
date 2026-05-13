@@ -1,8 +1,8 @@
-"""Phase 7 daemon health doctor (R9) + R6 multi-binder check
+"""daemon health doctor (R9) + R6 multi-binder check
 + file-backed crypto-key state check
-+ Plan 07.14-03 [Wave2-Option-C] Lance versions-count diagnostic row
++ [Wave2-Option-C] Lance versions-count diagnostic row
 + wake/sleep cycle rows (m) heartbeat scanner + (n) HID idle source
-+ Plan 10.6-01 Task 1.3 lifecycle visibility rows
++ Task 1.3 lifecycle visibility rows
   (j) lifecycle current state, (k) lifecycle history 24h,
   (l) sleep cycle quarantine status.
 
@@ -13,7 +13,7 @@ diagnose-only (zero mutations). --apply confirms each destructive action;
 --apply --yes skips confirmations.
 
 Constitutional guards:
-- C-USER-CONSENT (Phase 4 invariant per D7-16): doctor --apply respects
+- C-USER-CONSENT (invariant per D7-16): doctor --apply respects
   [y/N] confirmations unless --yes is also passed; no destructive action
   without explicit consent.
 - C4 CLEAN UNINSTALL: doctor --apply may unlink stale ~/.iai-mcp/.daemon.sock
@@ -27,7 +27,7 @@ Constitutional guards:
   before SIGTERM. Mitigates PID reuse on macOS (PIDs cycle within minutes).
 
 Exit codes (D7-13):
-  0 = all checks PASS (14 since Phase 10.6; WARN does NOT flip to 1)
+  0 = all checks PASS (14 since ; WARN does NOT flip to 1)
   1 = one or more FAIL (no --apply)
   2 = --apply ran but final re-check still has FAIL
 
@@ -116,7 +116,7 @@ class RepairAction:
 def _resolve_socket_path() -> Path:
     """Return the socket path honoring IAI_DAEMON_SOCKET_PATH env override.
 
-    HIGH-4 LOCK precedent: the env override is the test isolation
+     LOCK precedent: the env override is the test isolation
     mechanism; production users have no env var set and fall back to
     ~/.iai-mcp/.daemon.sock.
     """
@@ -171,7 +171,7 @@ def check_a_daemon_alive() -> CheckResult:
     """(a) daemon process alive.
 
     PID source-of-truth is `~/.iai-mcp/.daemon-state.json` per RESEARCH §2
-    D7-11(a) revision (Plan 07-01 stamps `daemon_pid` on boot; the .lock
+    D7-11(a) revision (stamps `daemon_pid` on boot; the .lock
     file is fcntl-only and contains zero PID bytes).
 
     Wrong-PID kill mitigation: verifies BOTH os.kill(pid, 0) liveness AND
@@ -349,7 +349,7 @@ def check_c_lock_healthy() -> CheckResult:
 def check_d_no_orphan_core() -> CheckResult:
     """(d) zero orphan iai_mcp.core processes (pre-Phase-7 leftovers).
 
-    invariant (Plan 07-04 SUMMARY): NO `iai_mcp.core` processes
+    invariant (SUMMARY): NO `iai_mcp.core` processes
     should exist anywhere — wrappers spawn the singleton daemon, never a
     per-wrapper core. Any hit here is a pre-Phase-7 leftover that wastes
     ~1.2 GB RSS and confuses cross-client memory.
@@ -452,7 +452,7 @@ def check_f_lancedb_readable() -> CheckResult:
 
 
 # -----------------------------------------------------------------------------
-# R6 — multi-binder detection (D7.1-05)
+# R6 — multi-binder detection
 # -----------------------------------------------------------------------------
 
 
@@ -539,7 +539,7 @@ def check_g_no_dup_binders() -> CheckResult:
 
 
 def check_h_crypto_file_state() -> CheckResult:
-    """Phase 07.10 detect 'key file missing + Keychain entry exists' state.
+    """detect 'key file missing + Keychain entry exists' state.
 
     Detection matrix:
         | file present + valid | keyring entry | output |
@@ -550,7 +550,7 @@ def check_h_crypto_file_state() -> CheckResult:
 
     Imports of ``iai_mcp.crypto`` and ``keyring`` are LOCAL (function-scope)
     so the doctor module stays keyring-clean unless this check actually runs.
-    Production daemon boot does NOT import ``keyring`` (Phase 07.10 D-02);
+    Production daemon boot does NOT import ``keyring`` ;
     only the doctor's diagnostic-time probe does.
 
     WARN rows return ``passed=True`` (advisory only) — see ``CheckResult``
@@ -583,7 +583,7 @@ def check_h_crypto_file_state() -> CheckResult:
 
     # Branch 2: file missing — probe keyring for a pre-Phase-07.10 entry.
     # LOCAL imports here too: keyring is not imported at module top of
-    # doctor.py (Phase 07.10 invariant).
+    # doctor.py (invariant).
     keyring_has_key = False
     keyring_probe_failed = False
     try:
@@ -643,7 +643,7 @@ def check_h_crypto_file_state() -> CheckResult:
 
 
 # -----------------------------------------------------------------------------
-# Plan 07.14-03 [Wave2-Option-C] — Lance versions-count diagnostic row
+# [Wave2-Option-C] — Lance versions-count diagnostic row
 # -----------------------------------------------------------------------------
 
 
@@ -651,7 +651,7 @@ def _resolve_records_lance_versions_dir() -> Path:
     """Return the canonical path of records.lance/_versions/ for the active store.
 
     Honors ``IAI_MCP_STORE`` env (test isolation + multi-tenant layout per
-    HIGH-4 LOCK precedent) before falling back to the default
+     LOCK precedent) before falling back to the default
     home-derived layout. Mirrors the resolution pattern in
     ``iai_mcp.store.MemoryStore.__init__`` (line 205-206) so the doctor row
     inspects the SAME directory the daemon would actually open.
@@ -664,7 +664,7 @@ def _resolve_records_lance_versions_dir() -> Path:
 def check_i_lance_versions_count() -> CheckResult:
     """(i) records.lance versions count: PASS <=500, WARN 501..2000, FAIL >2000.
 
-    Plan 07.14-03 [Wave2-Option-C] diagnostic row. The root-cause
+    [Wave2-Option-C] diagnostic row. The root-cause
     attack drained ``~/.iai-mcp/lancedb/records.lance/_versions/`` from 7298
     manifests to a small constant (Wave 1 compaction). This check warns the
     user before the pile re-accumulates to a daemon-boot-stalling scale.
@@ -744,7 +744,7 @@ def _resolve_wrappers_dir() -> Path:
     """Return the canonical path of the wrapper heartbeat directory.
 
     Honors ``IAI_MCP_STORE`` env (test isolation + multi-tenant layout per
-    HIGH-4 LOCK precedent) before falling back to ``~/.iai-mcp``.
+     LOCK precedent) before falling back to ``~/.iai-mcp``.
     The heartbeat scanner watches ``<root>/wrappers/`` for the per-wrapper
     ``heartbeat-<pid>-<uuid>.json`` files written by the MCP wrapper.
     """
@@ -1118,19 +1118,19 @@ def _format_top_of_output_hint(results: list[CheckResult]) -> str | None:
 
 
 def run_diagnosis() -> list[CheckResult]:
-    """Execute all checks in D7-11/D7.1-05/D-12/07.14-03/10.4 order, returning the result list.
+    """Execute all checks in D7-11///07.14-03/10.4 order, returning the result list.
 
     R6 added (g) no dup binders as the 7th check.
     added (h) crypto key file state as the 8th check (placed
     after the network/process rows so the crypto-key check is most useful
     AFTER you know the daemon's filesystem side is healthy).
-    Plan 07.14-03 [Wave2-Option-C] added (i) lance versions count as the 9th
+    [Wave2-Option-C] added (i) lance versions count as the 9th
     check (placed last; the records.lance pile is a slow-growing diagnostic
     rather than a hard failure mode and benefits from being seen alongside
     the file-backed-crypto state, since both are filesystem-shape signals).
     added (m) heartbeat scanner and (n) HID idle source as the
     10th and 11th checks for the daemon wake/sleep cycle.
-    Plan 10.6-01 Task 1.3 added (j) lifecycle current state,
+    Task 1.3 added (j) lifecycle current state,
     (k) lifecycle history 24h, and (l) sleep cycle quarantine as the
     10th, 11th, and 12th checks (placed after (i) and before (m)/(n) so
     the lifecycle-machine rows form a contiguous block in the output).
@@ -1146,7 +1146,7 @@ def run_diagnosis() -> list[CheckResult]:
         check_g_no_dup_binders(),
         check_h_crypto_file_state(),
         check_i_lance_versions_count(),
-        # Plan 10.6-01 Task 1.3: lifecycle visibility.
+        # lifecycle visibility.
         check_j_lifecycle_current_state(),
         check_k_lifecycle_history_24h(),
         check_l_sleep_cycle_status(),
@@ -1246,7 +1246,7 @@ def _respawn_daemon() -> tuple[bool, str, int]:
     Manual respawn passes os.environ.copy() so IAI_DAEMON_SOCKET_PATH +
     IAI_MCP_STORE propagate to the child process. Without env propagation,
     test recovery would always spawn against the user's real ~/.iai-mcp/
-    paths — the env-isolation contract from HIGH-4 LOCK.
+    paths — the env-isolation contract from LOCK.
     """
     from iai_mcp.cli import LAUNCHD_TARGET
 
@@ -1307,7 +1307,7 @@ def _respawn_daemon() -> tuple[bool, str, int]:
 
 
 def _kill_dup_binders() -> tuple[bool, str, int]:
-    """Phase 7.1 D7.1-05 repair action: keep oldest-etime binder, SIGKILL the rest.
+    """repair action: keep oldest-etime binder, SIGKILL the rest.
 
     Identifies binders via lsof -F pn, sorts by psutil create_time ascending
     (oldest process = max etime = most accumulated client traffic), keeps
@@ -1396,9 +1396,9 @@ def _kill_dup_binders() -> tuple[bool, str, int]:
 
 
 def _plan_repair_actions(results: list[CheckResult]) -> list[RepairAction]:
-    """Map FAIL checks to repair actions in D7.1-05 revised order.
+    """Map FAIL checks to repair actions in revised order.
 
-    D7.1-05 ordering (revises D7-12):
+     ordering (revises D7-12):
       1. unlink stale socket  (lets next bind succeed cleanly)
       2. kill dup binders     (NEW — R6 multi-binder cleanup)
       3. kill orphan cores    (frees lancedb write-locks held by stale cores)
@@ -1476,7 +1476,7 @@ def _prompt_action(action: RepairAction) -> bool:
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     """R9/R6 dispatch: 8-check diagnosis + optional 4-action repair sequence
-    (Phase 07.10 8th row + top-of-output migration hint)."""
+    (8th row + top-of-output migration hint)."""
     apply = bool(getattr(args, "apply", False))
     yes = bool(getattr(args, "yes", False))
     if yes and not apply:
@@ -1508,7 +1508,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         )
         return 1
 
-    # --apply repair sequence (D7.1-05 revised ordering).
+    # --apply repair sequence ( revised ordering).
     print(
         f"\n{fail_count}/{total} FAIL. Attempting recovery (--apply{' --yes' if yes else ''}):\n"
     )

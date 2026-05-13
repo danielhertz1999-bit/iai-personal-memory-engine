@@ -1,4 +1,4 @@
-"""Plan 05-12 — graph-native recall tests (RED scaffold).
+"""— graph-native recall tests (RED scaffold).
 
 Close the latency gap by switching recall_for_response's seed + spread
 stages from per-id ``store.get(rid)`` LanceDB round-trips to in-RAM

@@ -1,4 +1,4 @@
-"""Phase 07.11 Plan 02 / — empty-surface cache poisoning regression.
+"""/ — empty-surface cache poisoning regression.
 
 AES-GCM decrypt failure during
 graph build poisons the runtime-graph cache with empty `surface` strings,

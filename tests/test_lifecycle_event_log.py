@@ -1,4 +1,4 @@
-"""Phase 10.1 Plan 10.1-01 Task 1.2 -- lifecycle_event_log tests.
+"""Task 1.2 -- lifecycle_event_log tests.
 
 Covers atomic append, daily UTC-date rotation, gzip retention, JSONL
 format validity, and read_all robustness against truncated trailing

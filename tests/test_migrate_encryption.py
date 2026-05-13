@@ -1,4 +1,4 @@
-"""Plan 02-08 RED: v2 -> v3 encryption migration.
+"""v2 -> v3 encryption migration.
 
 Covers:
 - Migration re-encrypts plaintext sensitive columns in place
@@ -101,7 +101,7 @@ def _write_plaintext_row(store, rec):
 
 
 def test_migrate_encryption_helper_exists() -> None:
-    """Plan 02-08 exposes migrate_encryption_v2_to_v3."""
+    """exposes migrate_encryption_v2_to_v3."""
     from iai_mcp import migrate
     assert hasattr(migrate, "migrate_encryption_v2_to_v3")
 
@@ -152,7 +152,7 @@ def test_migration_preserves_content_byte_for_byte(tmp_path):
     from iai_mcp.store import MemoryStore
 
     store = MemoryStore(path=tmp_path)
-    text = "MEM-01 verbatim: Привет, мир"
+    text = " verbatim: Привет, мир"
     rec = _make(text=text, language="ru")
     _write_plaintext_row(store, rec)
 

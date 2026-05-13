@@ -1,6 +1,6 @@
-"""S4 viability -- on-read consistency + monotropic proactive checks (MEM-08, D-17).
+"""S4 viability -- on-read consistency + monotropic proactive checks (, ).
 
-D-17 constitutional:
+ constitutional:
 - (e) on-read consistency: runs inside `pipeline_recall` on top-K returned
   records. Pairwise cosine with ART vigilance ρ_s4=0.97 + `contradicts`
   edge lookup. Emits `s4_contradiction` events. Populates
@@ -9,18 +9,18 @@ D-17 constitutional:
   > 0.7 AND new_record.detail_level >= 4. Scans within-domain only.
   Performance guard: if domain > 100 records, skip with warning event.
 
-Plan 03-02 CONN-07 addition:
+ addition:
 - `run_offline_pass(store)` -- new entry point, CALLED by the daemon /
   session_exit hook. Currently runs `sigma.compute_and_emit(store)` only;
   future plans append more offline-pass items here. Failures emit
   `kind="s4_error"` and never crash the pass.
 
-Explicitly forbidden (D-17 negative assertions):
+Explicitly forbidden ( negative assertions):
 - NO `daily_scan` function (Ashby Requisite Variety violation).
 - NO `session_exit_sweep` function (Anderson activation-based violation).
 
 All detected contradictions go through `events.write_event` -- no .jsonl files
-(D-STORAGE).
+.
 """
 from __future__ import annotations
 
@@ -33,14 +33,14 @@ from iai_mcp.store import MemoryStore
 from iai_mcp.types import MemoryHit, MemoryRecord
 
 
-# D-17(e) vigilance: 0.97 for near-duplicate contradiction detection.
+# (e) vigilance: 0.97 for near-duplicate contradiction detection.
 # Stricter than write-path ρ=0.95: we only flag VERY close matches.
 S4_VIGILANCE_RHO = 0.97
 
-# D-17(f) performance guard: skip when domain has > this many records.
+# (f) performance guard: skip when domain has > this many records.
 MONOTROPIC_MAX_PAIRWISE = 100
 
-# D-17(f) monotropism-depth threshold.
+# (f) monotropism-depth threshold.
 S4_MONOTROPIC_THETA = 0.7
 
 
@@ -60,7 +60,7 @@ def on_read_check(
     hits: list[MemoryHit],
     session_id: str,
 ) -> list[dict]:
-    """D-17(e) on-read consistency check.
+    """(e) on-read consistency check.
 
     Two detection paths, both run per-retrieval on the top-K hits:
 
@@ -76,9 +76,9 @@ def on_read_check(
 
     Returns a list of hint dicts; each dict is shaped per
     RecallResponse.hints contract. Also writes one `s4_contradiction` event
-    per detected pair to the LanceDB events table (D-STORAGE).
+    per detected pair to the LanceDB events table .
 
-    note: `on_read_check_batch` is the D-SPEED variant. It accepts
+    note: `on_read_check_batch` is the variant. It accepts
     an optional `records_cache` kwarg so pipeline_recall can reuse the cache
     it already built at stage 1 (zero extra store.get calls). This function
     is preserved as the back-compat / ad-hoc caller API (retrieve.recall
@@ -194,7 +194,7 @@ def on_read_check_batch(
     session_id: str,
     records_cache: "dict[UUID, MemoryRecord] | None" = None,
 ) -> list[dict]:
-    """Plan 02-07 D-SPEED: batched variant of on_read_check.
+    """: batched variant of on_read_check.
 
     Semantically identical to on_read_check (returns the same hint-shape list,
     emits the same events). The ONLY difference is the record-loading step:
@@ -207,7 +207,7 @@ def on_read_check_batch(
     vigilance threshold (S4_VIGILANCE_RHO), and the event-emission logic are
     byte-for-byte equivalent to on_read_check.
 
-    Why this is the perf-critical surface (D-SPEED SC-6):
+    Why this is the perf-critical surface ( SC-6):
     Pre-fix: pipeline_recall built records_cache at stage 1, then s4.on_read_check
              called `store.get(h.record_id)` per hit -- every call is a full
              to_pandas() scan (~140ms each at N=100 on executor hardware).
@@ -331,7 +331,7 @@ def monotropic_proactive_check(
     profile_state: dict,
     session_id: str,
 ) -> list[dict]:
-    """D-17(f) monotropic proactive check.
+    """(f) monotropic proactive check.
 
     Three gates (all must pass):
 
@@ -425,7 +425,7 @@ def monotropic_proactive_check(
 
 
 def run_offline_pass(store: MemoryStore) -> dict:
-    """Plan 03-02 CONN-07: S4 offline-pass entry point.
+    """: S4 offline-pass entry point.
 
     Called by the daemon's offline cycle (or by session_exit / cron).
     Currently runs ONE check: `sigma.compute_and_emit(store)` -- which writes

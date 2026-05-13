@@ -1,6 +1,6 @@
-"""Phase 5 RED-state test scaffold. Tasks 2-5 turn these GREEN.
+"""RED-state test scaffold. Tasks 2-5 turn these GREEN.
 
-Covers TOK-12 / D5-03: first-turn auto-recall hook in core.dispatch that fires
+Covers / D5-03: first-turn auto-recall hook in core.dispatch that fires
 exactly once per session and injects a scoped recall into the response.
 """
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""Plan 07.14-01 tests: `iai-mcp maintenance compact-records`.
+"""tests: `iai-mcp maintenance compact-records`.
 
 Eight cases:
   1. test_dry_run_prints_metrics_no_optimize_call

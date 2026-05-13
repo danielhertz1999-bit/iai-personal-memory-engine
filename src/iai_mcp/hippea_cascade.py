@@ -1,4 +1,4 @@
-"""TOK-14 / D5-05: HIPPEA activation-cascade prefetch.
+""" / D5-05: HIPPEA activation-cascade prefetch.
 
 Daemon receives `session_open` over the Phase-4 unix socket and this module
 computes precision-weighted salience over 7 days of `session_started` +

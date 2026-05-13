@@ -1,6 +1,6 @@
-"""Tests for the session-start assembler (D-10, OPS-01, OPS-05).
+"""Tests for the session-start assembler (, , ).
 
-Plan 05-03 D5-02: the DEFAULT wake_depth flipped to `minimal` (lazy <=30
+the DEFAULT wake_depth flipped to `minimal` (lazy <=30
 tok payload). Tests that assert Phase-1 eager-dump behaviour now pass
 ``profile_state={"wake_depth": "standard"}`` explicitly to continue
 exercising the back-compat legacy path.
@@ -9,7 +9,7 @@ Covers:
 - Graceful empty-store path (total_cached_tokens == 0, l0 == "").
 - L0 identity rendering -- "IAI-MCP" appears in payload.l0 when seeded.
 - Total cached budget respected (<= 2000 tok) on realistic pinned content.
-- L2 community cap at 7 (CONN-01 Yeo-like).
+- L2 community cap at 7 ( Yeo-like).
 - Rich-club segment truncation at 1500-tok budget.
 - core.py `session_start_payload` dispatch wiring.
 """
@@ -161,11 +161,11 @@ def test_l1_caps_at_max_records(tmp_path):
     assert len(l1_lines) <= 10
 
 
-# -------------------------------------------------- CONN-01 Yeo-like cap
+# -------------------------------------------------- Yeo-like cap
 
 
 def test_l2_capped_at_seven(tmp_path):
-    """CONN-01: L2 summaries never exceed 7 regardless of input community count."""
+    """: L2 summaries never exceed 7 regardless of input community count."""
     store = MemoryStore(path=tmp_path)
     # Create 10 fake communities each with one member record.
     assignment = CommunityAssignment()

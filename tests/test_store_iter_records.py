@@ -1,4 +1,4 @@
-"""Plan 07.7-01 W1+W2 — streaming + projection iterator on MemoryStore.
+"""W1+W2 — streaming + projection iterator on MemoryStore.
 
 RED phase: these tests fail until ``iter_records`` and ``iter_record_columns``
 are added to ``MemoryStore`` and ``_from_row`` is hardened to tolerate
@@ -27,7 +27,7 @@ Covered contracts (CONTEXT.md D-05/D-06/D-07/D-09/D-10):
        KeyError; missing columns fall back to dataclass defaults
    13. all_records() behaviour is byte-equivalent (D-08 additive guarantee)
 
-Phase 07.6 plan-checker B-1 lesson: every test uses a real ``MemoryRecord``
+plan-checker B-1 lesson: every test uses a real ``MemoryRecord``
 dataclass via ``_make()`` — never a plain dict against attribute-access code.
 """
 from __future__ import annotations

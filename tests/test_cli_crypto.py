@@ -1,6 +1,6 @@
 """iai-mcp crypto + iai-mcp migrate --from=2 --to=3 CLI tests.
 
-Originally Plan 02-08; updated in W1 to retire the keyring
+Originally ; updated in W1 to retire the keyring
 backend in favor of a file-backed primary backend at
 `{IAI_MCP_STORE}/.crypto.key` (32 raw bytes, mode 0o600). The
 `_isolated_keyring` autouse fixture is gone — CLI tests now monkeypatch
@@ -24,7 +24,7 @@ import pytest
 
 
 def test_cli_crypto_status_shows_file_backend(tmp_path, monkeypatch, capsys):
-    """Phase 07.10 W1 RED — `iai-mcp crypto status` reports the file backend.
+    """W1 RED — `iai-mcp crypto status` reports the file backend.
 
     Pre-creates a 32-byte 0o600 `.crypto.key` in the store root, calls the
     status command, asserts:
@@ -65,7 +65,7 @@ def test_cli_crypto_status_shows_file_backend(tmp_path, monkeypatch, capsys):
 
 
 def test_cli_crypto_rotate_regenerates_key(tmp_path, monkeypatch, capsys):
-    """Phase 07.10 W1 RED — `iai-mcp crypto rotate` writes a fresh key to the
+    """W1 RED — `iai-mcp crypto rotate` writes a fresh key to the
     file backend AND re-encrypts records under the new key.
 
     Pre-creates a `.crypto.key` (key A) at 0o600, seeds a record encrypted
@@ -278,7 +278,7 @@ def test_neural_map_bench_passes_after_encryption(tmp_path):
 
 
 def test_cli_crypto_init_creates_fresh_file(tmp_path, monkeypatch, capsys):
-    """Phase 07.10 `iai-mcp crypto init` creates a fresh 32-byte 0o600 file.
+    """`iai-mcp crypto init` creates a fresh 32-byte 0o600 file.
 
     No file pre-existing; no keyring needed; resulting file must be exactly
     32 bytes at mode 0o600, exit 0, output cites the path. The key bytes
@@ -320,7 +320,7 @@ def test_cli_crypto_init_creates_fresh_file(tmp_path, monkeypatch, capsys):
 
 
 def test_cli_crypto_init_refuses_when_file_exists(tmp_path, monkeypatch, capsys):
-    """Phase 07.10 `iai-mcp crypto init` refuses if `.crypto.key` exists.
+    """`iai-mcp crypto init` refuses if `.crypto.key` exists.
 
     Pre-create any-content file at the canonical path; `init` must exit 1
     with an error pointing at the path. File contents must be unchanged.
@@ -347,7 +347,7 @@ def test_cli_crypto_init_refuses_when_file_exists(tmp_path, monkeypatch, capsys)
 
 
 def test_cli_crypto_rotate_invalidates_aesgcm_cache(tmp_path, monkeypatch):
-    """Phase 07.10 / T-07.10-08 — `cmd_crypto_rotate` MUST invalidate the
+    """/ T-07.10-08 — `cmd_crypto_rotate` MUST invalidate the
     cached AESGCM after writing the fresh key.
 
     The rotate test above (`test_cli_crypto_rotate_regenerates_key`) reads
@@ -379,5 +379,5 @@ def test_cli_crypto_rotate_invalidates_aesgcm_cache(tmp_path, monkeypatch):
     assert exit_code == 0
     assert m.called, (
         "cmd_crypto_rotate must call store._invalidate_aesgcm_cache() "
-        "after assigning the new key (Phase 07.10 D-10, T-07.10-08)"
+        "after assigning the new key (, T-07.10-08)"
     )

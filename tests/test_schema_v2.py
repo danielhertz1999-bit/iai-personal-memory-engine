@@ -8,7 +8,7 @@ D-02a / / D-GUARD / D-STORAGE introduce:
 - 6 new edge types in EDGE_TYPES registry
 - Round-trip of all v2 fields through store.insert / store.get
 
-Constitutional: plan-02-01 adds these fields ADDITIVELY. Existing Phase 1
+Constitutional: plan-02-01 adds these fields ADDITIVELY. Existing
 fixtures with language="en" must keep working.
 """
 from __future__ import annotations
@@ -178,8 +178,8 @@ def test_memory_record_schema_version_accepts_1_for_migration():
 
 
 def test_memory_record_schema_version_rejects_other_values():
-    # schema_version=3 is now valid (Plan 02-08 encryption marker)
-    # and schema_version=4 is the new current (Plan 03-01 TEM factorization).
+    # schema_version=3 is now valid (encryption marker)
+    # and schema_version=4 is the new current (TEM factorization).
     # Anything outside SCHEMA_VERSION_ACCEPTED is still rejected.
     with pytest.raises(ValueError):
         _make_v2(schema_version=0)
@@ -191,7 +191,7 @@ def test_memory_record_schema_version_rejects_other_values():
 
 
 def test_edge_types_registry_has_9_members():
-    """Phase 1 (hebbian, contradicts) + 6 types + 1 (hebbian_structure)."""
+    """(hebbian, contradicts) + 6 types + 1 (hebbian_structure)."""
     from iai_mcp.store import EDGE_TYPES
 
     expected = {
@@ -203,7 +203,7 @@ def test_edge_types_registry_has_9_members():
         "invariant_anchor",
         "curiosity_bridge",
         "profile_modulates",
-        # CONN-05 TEM factorization Hebbian LTP on structure edges.
+        # TEM factorization Hebbian LTP on structure edges.
         "hebbian_structure",
     }
     assert EDGE_TYPES == frozenset(expected)
@@ -232,7 +232,7 @@ def test_boost_edges_accepts_new_phase2_types(tmp_path):
 
 
 def test_boost_edges_phase1_types_still_work(tmp_path):
-    """Phase 1 callers using the default (hebbian) still get no-behavior-change."""
+    """callers using the default (hebbian) still get no-behavior-change."""
     from iai_mcp.store import MemoryStore
 
     store = MemoryStore(path=tmp_path)

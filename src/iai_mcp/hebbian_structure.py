@@ -1,4 +1,4 @@
-"""Plan 03-01 CONN-05 D-TEM-04: structure-edge Hebbian LTP.
+""" D-TEM-04: structure-edge Hebbian LTP.
 
 Mirrors content-edge Hebbian (retrieve.reinforce_edges -> store.boost_edges
 with edge_type="hebbian"). Co-retrieval of two records whose structure_hv
@@ -9,7 +9,7 @@ edge type is identical to the content-edge formula in sleep._decay_edges.
 Constitutional fit:
 - D-TEM-04: Hebbian LTP on structure edges. Autopoiesis applied to structure;
   the brain reinforces structural co-occurrence the same way it reinforces
-  content co-occurrence in Phase 1.
+  content co-occurrence in
 - Flat layout (PATTERNS.md): no `connectome/` subpackage. Module path is
   src/iai_mcp/hebbian_structure.py.
 - Same shape as retrieve.reinforce_edges -- pairwise iterate, compute
@@ -65,7 +65,7 @@ def strengthen_structure_edge(
     dst_id: UUID,
     gain: float = 1.0,
 ) -> dict[tuple[str, str], float]:
-    """Plan 03-01 D-TEM-04: structure-edge LTP via store.boost_edges.
+    """D-TEM-04: structure-edge LTP via store.boost_edges.
 
     Returns the new weights dict (same shape as retrieve.reinforce_edges'
     underlying call). Mirrors content-edge LTP shape so downstream code

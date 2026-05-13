@@ -1,4 +1,4 @@
-"""TOK-08 delta encoding for session-start payloads (Plan 02-04 Task 2, D-28).
+""" delta encoding for session-start payloads (Task 2, ).
 
 The session-start payload is a 4-component dict: l0, l1, l2 (list), rich_club.
 On the first session turn the client sends nothing; the server hashes each

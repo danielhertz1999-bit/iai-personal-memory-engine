@@ -1,4 +1,4 @@
-"""Plan 03-01 CONN-05 RED: structure_hv field schema validation on MemoryRecord.
+""" RED: structure_hv field schema validation on MemoryRecord.
 
 MemoryRecord.structure_hv: bytes is the renamed Phase-2 hd_vector slot. It
 must accept empty bytes (pre-migration sentinel) OR exactly STRUCTURE_HV_BYTES
@@ -96,7 +96,7 @@ def test_module_constants_match_canonical_dims() -> None:
 
 
 def test_schema_version_v4_accepted() -> None:
-    """schema_version=4 (Plan 03-01 marker) must be accepted alongside 1/2/3."""
+    """schema_version=4 (marker) must be accepted alongside 1/2/3."""
     from iai_mcp.types import MemoryRecord, SCHEMA_VERSION_V4
 
     rec = MemoryRecord(**_kwargs(schema_version=SCHEMA_VERSION_V4))

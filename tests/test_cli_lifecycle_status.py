@@ -1,4 +1,4 @@
-"""Phase 10.1 Plan 10.1-01 Task 1.5 -- `iai-mcp lifecycle status` CLI tests.
+"""Task 1.5 -- `iai-mcp lifecycle status` CLI tests.
 
 Covers status output for each of the 4 states, default WAKE when the
 file is absent, and the formatted lines for sleep_cycle_progress and
@@ -192,7 +192,7 @@ def test_status_shadow_run_true_mentions_legacy_watchdog(tmp_path, monkeypatch, 
     rc, out = _run_status(tmp_path, monkeypatch, capsys, record)
     assert rc == 0
     assert "shadow_run: true" in out
-    assert "Phase 10.6" in out  # spec line mentions phase that flips it
+    assert "shadow_run: true" in out
 
 
 def test_status_shadow_run_false(tmp_path, monkeypatch, capsys):
@@ -282,7 +282,7 @@ def test_cli_main_lifecycle_status_via_main(tmp_path, monkeypatch, capsys):
 
 
 # ---------------------------------------------------------------------------
-# Plan 10.6-01 Task 1.2 -- lifecycle force-unlock subcommand
+# Task 1.2 -- lifecycle force-unlock subcommand
 # ---------------------------------------------------------------------------
 
 

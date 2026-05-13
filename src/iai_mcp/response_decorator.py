@@ -1,14 +1,14 @@
-"""Plan 05-03 TOK-13 / D5-04 -- server-side profile knob decorator.
+""" / D5-04 -- server-side profile knob decorator.
 
 `apply_profile(response, profile)` mutates a response dict in place based on
 the 11 sealed profile knobs. Every per-knob helper is silent-fail so a
 malformed knob value can never break the response path.
 
-C3 invariant (Plan 04): this module is pure-local Python. NO paid-API SDK
+C3 invariant : this module is pure-local Python. NO paid-API SDK
 import. NO API-key env read. The static grep guard
 `test_no_api_key_in_response_decorator` enforces the invariant at CI time.
 
-TOK-13 contract: knob NAMES never cross the MCP wire. They are read from
+ contract: knob NAMES never cross the MCP wire. They are read from
 the per-process profile state, applied to the response here, and the
 result goes back over JSON-RPC free of any knob identifiers.
 
@@ -25,7 +25,7 @@ mutates; wake_depth has no helper here, see end note):
 - _apply_interest_boost            
 - _apply_inertia_awareness         
 
-(Phase 07.12-02 removed the dead-knob helpers
+(-02 removed the dead-knob helpers
 _apply_sensory_channel_weights / _apply_alexithymia / _apply_double_empathy
 along with the orphan helpers _apply_verbosity_level / _apply_surface_language
 that read non-sealed-knob fields.)
@@ -36,10 +36,10 @@ shape, so it gets no helper here.
 from __future__ import annotations
 
 
-# Phase 07.12-03: HELPER_TO_KNOB_ID maps each apply_profile helper (and the
+# -03: HELPER_TO_KNOB_ID maps each apply_profile helper (and the
 # upstream-gains / session-start virtual keys) to its knob requirement ID.
 # Used by the dispatch loop to populate response['_knobs_applied'] with
-# file:symbol provenance for every helper invocation. After Phase 07.12-02
+# file:symbol provenance for every helper invocation. After -02
 # the table contains:
 #   - 8 helper-keyed entries (the AUTIST helpers wired in apply_profile that
 #     produce response-level mutations)
@@ -52,7 +52,7 @@ from __future__ import annotations
 #
 # DO NOT re-add removed-knob keys (AUTIST-02 sensory_channel_weights,
 # event_vs_time_cue, alexithymia_accommodation,
-# double_empathy) — Plan 07.12-02 deleted them from the registry.
+# double_empathy) — deleted them from the registry.
 HELPER_TO_KNOB_ID: dict[str, str] = {
     # --- helper-keyed entries (8) — recorded by the dispatch loop -----------
     "_apply_monotropic_focus": "AUTIST-01",       # monotropism_depth
@@ -91,10 +91,10 @@ def apply_profile(response: dict, profile: dict) -> dict:
     - Malformed profile state is tolerated (unexpected types, missing keys).
     - No MCP-side knob names are added to the response.
 
-    Phase 07.12-03 telemetry: emits response['_knobs_applied'] — a dict
+    -03 telemetry: emits response['_knobs_applied'] — a dict
     mapping knob requirement IDs (e.g., 'AUTIST-01') to deterministic
     file:symbol provenance strings. Future code-readers can audit, per
-    response, which knobs actually mutated which fields. CONTEXT D-04.
+    response, which knobs actually mutated which fields. CONTEXT .
 
     The accumulator is preserved across upstream paths: any entries
     seeded by core.dispatch BEFORE apply_profile runs (typically the
@@ -105,7 +105,7 @@ def apply_profile(response: dict, profile: dict) -> dict:
     if not isinstance(response, dict) or not isinstance(profile, dict):
         return response
 
-    # Phase 07.12-03 BLOCKER 3 fix: preserve any upstream-seeded entries.
+    # -03 BLOCKER 3 fix: preserve any upstream-seeded entries.
     # core.dispatch seeds knobs_applied for / (via
     # profile_modulation_for_record) + wake_depth before this
     # function runs. We extend, never overwrite the dict reference held
@@ -146,7 +146,7 @@ def apply_profile(response: dict, profile: dict) -> dict:
             # accumulator). Skip rather than corrupt the audit.
             continue
         provenance = f"response_decorator.py:{helper_name}"
-        # No-op markers for the three known mode-gate sites (CONTEXT D-04
+        # No-op markers for the three known mode-gate sites (CONTEXT
         # line 167 — "consulted and chose to do nothing" vs "knob is dead").
         if helper_name == "_apply_pda_tolerance":
             mode = profile.get("demand_avoidance_tolerance", "collaborative")
@@ -289,7 +289,7 @@ def _apply_task_support(response: dict, profile: dict) -> None:
 
 def _apply_scene_construction(response: dict, profile: dict) -> None:
     """scene_construction_scaffold autobiographical reconstruction
-    hint (Phase 07.12-01).
+    hint (-01).
 
     PATTERNS.md option-3 reconciliation: the hit dict from _hit_to_json
     (core.py:712-719) does NOT carry tier/session_id/captured_at, so we drop
@@ -324,11 +324,11 @@ def _apply_dunn_quadrant(response: dict, profile: dict) -> None:
 
 
 def _apply_pda_tolerance(response: dict, profile: dict) -> None:
-    """demand_avoidance_tolerance lexical softener (Phase 07.12-01).
+    """demand_avoidance_tolerance lexical softener (-01).
 
     - collaborative (default): replace leading imperatives in each
       adjacent_suggestion entry per the frozen substitution table from
-      D-02. Only first-word matches; mid-sentence
+      . Only first-word matches; mid-sentence
       imperatives are NOT touched (avoids false positives in code blocks).
     - avoidant: prepend 'FYI: ' to every adjacent_suggestion entry.
     - neutral: bypass.
@@ -389,9 +389,9 @@ def _apply_interest_boost(response: dict, profile: dict) -> None:
 
 
 def _apply_inertia_awareness(response: dict, profile: dict) -> None:
-    """inertia_awareness session-resumption cue (Phase 07.12-01).
+    """inertia_awareness session-resumption cue (-01).
 
-    BLOCKER 1 fix (CONTEXT D-02, 2026-04-30): the live upstream hook at
+    BLOCKER 1 fix (CONTEXT , 2026-04-30): the live upstream hook at
     core.py:1178 sets response["first_turn_recall"] to a DICT, not a bool.
     The gate MUST be a shape-agnostic truthy check — `is True` equality
     would silent-no-op in production.

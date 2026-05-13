@@ -1,4 +1,4 @@
-"""Plan 06-04 R5: verbatim mode end-to-end tests.
+"""verbatim mode end-to-end tests.
 
 R5 acceptance per SPEC.md:
 - Test seeds 5 verbatim episodic records (one matching the cue) + 10 schema hubs.
@@ -432,7 +432,7 @@ def test_verbatim_mode_overrides_loose_knob_setting(tmp_path):
 
 
 def test_concept_mode_default_preserves_phase_5_baseline(tmp_path):
-    """recall_for_response WITHOUT mode kwarg defaults to 'concept' — Phase 5
+    """recall_for_response WITHOUT mode kwarg defaults to 'concept' —
     behaviour preserved (no tier filter, full graph path, knob-modulated W_DEGREE).
     """
     from iai_mcp.pipeline import recall_for_response

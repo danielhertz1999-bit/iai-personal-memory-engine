@@ -1,4 +1,4 @@
-"""Tests for the events LanceDB table + events.py module (Plan 02-01, D-STORAGE).
+"""Tests for the events LanceDB table + events.py module (, D-STORAGE).
 
 Covers:
 - events table created on MemoryStore instantiation

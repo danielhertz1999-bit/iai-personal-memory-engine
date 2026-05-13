@@ -1,6 +1,6 @@
 """Tests for iai_mcp.embed -- bge-small-en-v1.5 path (legacy model).
 
-Plan 02-01 made bge-m3 the default. The 3-model registry still exposes
+made bge-m3 the default. The 3-model registry still exposes
 bge-small-en-v1.5 (384d, English-only) for English-only deployments. These
 tests exercise the Phase-1 model explicitly via `Embedder(model_key=...)` so
 they remain valid regression gates.

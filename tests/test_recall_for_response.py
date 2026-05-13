@@ -1,7 +1,7 @@
-"""Phase 8 redesign (08-CONTEXT.md D-07): production answer-packing entry-point contract.
+"""redesign (08-CONTEXT.md ): production answer-packing entry-point contract.
 
 Tests the new public function `recall_for_response(...)` introduced by
-Plan 08-02. Contract:
+. Contract:
 
 - Signature: store, graph, assignment, rich_club, embedder, cue,
   session_id, budget_tokens=1500, profile_state=None, turn=0, mode='concept'.

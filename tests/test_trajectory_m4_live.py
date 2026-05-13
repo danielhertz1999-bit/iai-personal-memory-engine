@@ -1,4 +1,4 @@
-"""Plan 03-02 Task 2 Step 6: M4 profile-variance LIVE tests."""
+"""Task 2 Step 6: M4 profile-variance LIVE tests."""
 from __future__ import annotations
 
 import pytest

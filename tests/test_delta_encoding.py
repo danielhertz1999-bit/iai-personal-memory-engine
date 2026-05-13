@@ -1,4 +1,4 @@
-"""Tests for TOK-08 delta encoding (Plan 02-04 Task 2, D-28).
+"""Tests for delta encoding (Task 2, ).
 
 Hash each session-start component (L0, L1, L2, rich_club). Subsequent turns
 send only changed components; unchanged ones are represented by their hash.

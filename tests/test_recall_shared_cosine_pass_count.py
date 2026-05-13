@@ -1,4 +1,4 @@
-"""Phase 8 redesign (08-CONTEXT.md D-01): regression-fence — exactly one
+"""redesign (08-CONTEXT.md ): regression-fence — exactly one
 cue-vs-pool cosine pass per recall.
 
 The redesign's load-bearing claim is that the rank-stage cosine term
@@ -8,7 +8,7 @@ entry points (`recall_for_response`, `recall_for_benchmark`) the
 matmul that computes `pool_embs @ cue_vec` fires exactly ONCE per
 call. The L0 fast-path bypasses the pool entirely (zero pool matmuls).
 
-Pre-08 the rank-stage was a separate `E @ cue_vec` matmul (Plan 05-13
+Pre-08 the rank-stage was a separate `E @ cue_vec` matmul (
 optimization) plus the patch helper `_augment_candidates_by_cosine`
 added a third independent cosine pass. The redesign collapses all
 three into one shared pass — the matmul-counter assertions in this

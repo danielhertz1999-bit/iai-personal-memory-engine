@@ -1,4 +1,4 @@
-"""Plan 06-04 R6: concept mode schema separation tests.
+"""concept mode schema separation tests.
 
 R6 acceptance per SPEC.md:
 - Test seeds 10 verbatim records (varying cosine to a chosen cue) +
@@ -315,7 +315,7 @@ def test_concept_mode_patterns_observed_evidence_count_matches_edges(tmp_path):
         schema_id = entry["schema_id"]
         # boost_edges canonicalises the (src, dst) tuple to sorted order
         # — so the schema appears in EITHER the dst or the src column.
-        # OR-count both columns (Plan 06-01 idiom).
+        # OR-count both columns (idiom).
         true_count = int(
             ((edges_df["edge_type"] == "schema_instance_of")
              & ((edges_df["dst"] == schema_id) | (edges_df["src"] == schema_id))).sum()

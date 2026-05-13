@@ -1,6 +1,6 @@
 """V3-05 regression test: bridge reconnect race + socket-death window.
 
-Phase 07.13-01 / D-01. Reproduces the race in `mcp-wrapper/src/bridge.ts`
+-01 / . Reproduces the race in `mcp-wrapper/src/bridge.ts`
 where a `bridge.call()` arriving in the gap between socket close and
 reconnect-completion would reject with `daemon_unreachable` even though
 the daemon is healthy. Pre-fix: the EventEmitter "close" handler fires

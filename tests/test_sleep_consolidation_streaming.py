@@ -1,4 +1,4 @@
-"""Plan 07.7-03 W3 — _tier0_schema_surfacing rewritten on iter_record_columns(["tags_json"]).
+"""W3 — _tier0_schema_surfacing rewritten on iter_record_columns(["tags_json"]).
 
 RED phase: tests 1+2 fail until ``sleep._tier0_schema_surfacing`` is rewritten
 to call ``store.iter_record_columns(["tags_json"], batch_size=1024)`` instead
@@ -36,7 +36,7 @@ Covered contracts (CONTEXT.md W3 slice):
        AFTER the real rows; OLD code is unaffected (it does not call this
        method) so the test passes RED for the right reason.
 
-Phase 07.6 plan-checker B-1 lesson: every test uses a real ``MemoryRecord``
+plan-checker B-1 lesson: every test uses a real ``MemoryRecord``
 dataclass via ``_make()`` — never a plain dict against attribute-access code.
 """
 from __future__ import annotations
@@ -435,12 +435,12 @@ def test_tier0_schema_surfacing_handles_malformed_tags_json_gracefully(
 
 
 # ============================================================================
-# Plan 07.7-04 W4-extended: run_heavy_consolidation single-materialisation invariant
+# run_heavy_consolidation single-materialisation invariant
 # ============================================================================
 #
 # After CONTEXT.md amendment (2026-04-29 mid-execution), the W4 ≤1
 # all_records() invariant on run_heavy_consolidation becomes ACHIEVABLE. The
-# original Plan 04 scope was a sleep.py comment marker only; the amendment
+# original scope was a sleep.py comment marker only; the amendment
 # extends scope to migrate two `all_records()` callers in schema.py
 # (induce_schemas_tier0 + persist_schema) to use iter_record_columns
 # projection.
@@ -526,7 +526,7 @@ def test_run_heavy_consolidation_calls_all_records_at_most_once(
     """W4-extended invariant (CONTEXT.md + D-26): run_heavy_consolidation
     calls store.all_records() AT MOST ONCE per invocation.
 
-    Pre-D-26 (current main + Plan 03 W3): 2 or 3 calls — one from
+    Pre- (current main + W3): 2 or 3 calls — one from
     sleep.py:513 (records_by_id materialisation kept by W4), one from
     schema.py:89 (induce_schemas_tier0 — D-26-A target), and one from
     schema.py:267 (persist_schema keeper scan — D-26-B target) when an

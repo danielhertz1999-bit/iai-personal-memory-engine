@@ -1,4 +1,4 @@
-"""Phase 4 -- atomic daemon state persistence (DAEMON-01 / D-24).
+"""-- atomic daemon state persistence ( / ).
 
 State file at ~/.iai-mcp/.daemon-state.json holds:
 - fsm_state               -- WAKE / TRANSITIONING / SLEEP / DREAMING
@@ -148,7 +148,7 @@ def prune_stale_first_turn(
 
 
 def mark_session_opened(state: dict, session_id: str) -> None:
-    """Plan 05-03 TOK-12 / D5-03: mark first_turn_pending for a session.
+    """ / D5-03: mark first_turn_pending for a session.
 
     Stores the opening timestamp as the dict value so ``prune_stale_first_turn``
     can evict entries whose client died before consuming the flag. Opportunistic
@@ -188,7 +188,7 @@ def consume_first_turn(state: dict, session_id: str) -> bool:
         return False
 
 
-# R3 (per D7.2-07 / D7.2-08 / D7.2-10): a per-tick + startup
+# R3 (per / / ): a per-tick + startup
 # reaper for stale `first_turn_pending` entries with a 1-hour TTL and a
 # tuple return shape (updated_state, dropped_session_ids).
 #
@@ -198,7 +198,7 @@ def consume_first_turn(state: dict, session_id: str) -> bool:
 # - `prune_stale_first_turn` keeps its 24h opportunistic path on session-open;
 # - `prune_first_turn_pending` is the per-tick + startup reaper that needs
 #   the dropped IDs back so the caller can emit
-#   `kind=first_turn_pending_expired` events (D7.2-10).
+# `kind=first_turn_pending_expired` events .
 #
 # Pure function — no I/O. Caller is responsible for `save_state(state)`
 # and the event emit. Idempotent; safe on empty/missing input.
@@ -211,7 +211,7 @@ def prune_first_turn_pending(
     now: datetime | None = None,
     ttl_sec: float = FIRST_TURN_PENDING_TTL_SEC_DEFAULT,
 ) -> tuple[dict, list[str]]:
-    """Phase 7.2 R3: drain stale `first_turn_pending` entries.
+    """R3: drain stale `first_turn_pending` entries.
 
     Returns (updated_state_dict, dropped_session_ids). Pure function —
     does NOT call save_state; does NOT emit events. Caller decides
@@ -227,7 +227,7 @@ def prune_first_turn_pending(
 
     Distinct from `prune_stale_first_turn` (24h default, returns int);
     this helper is per-tick + startup with a shorter TTL and visibility
-    into which sessions were dropped (D7.2-10 event payload needs the
+    into which sessions were dropped ( event payload needs the
     session_ids list).
     """
     pending = state.get("first_turn_pending")
@@ -263,7 +263,7 @@ def prune_first_turn_pending(
 
 
 def get_pending_digest(state: dict, now: datetime) -> dict | None:
-    """D-24 / DAEMON-11: return pending morning digest if eligible, else None.
+    """: return pending morning digest if eligible, else None.
 
     Eligibility gate: >= DIGEST_SHOW_THRESHOLD_HOURS since last_digest_shown_at
     OR never shown. When returned, the digest is consumed from state and

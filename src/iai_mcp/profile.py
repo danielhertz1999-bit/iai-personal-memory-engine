@@ -1,10 +1,10 @@
-"""11-knob profile registry (D-11 + wake_depth, Plan 07.12-02 removals).
+"""11-knob profile registry ( + wake_depth, removals).
 
-Plan 02-03 activated the Phase-2 autistic-kernel knobs. flipped
+activated the Phase-2 autistic-kernel knobs. flipped
 AUTIST-13 camouflaging_relaxation to live. appended the sealed
 operator-facing knob `wake_depth` — selects session-start payload size
 (minimal = <=30 raw tok lazy handle; standard = Phase-1 1388 tok eager dump;
-deep = <=2000 tok expanded rich_club). Plan 07.12-02 REMOVED 4 dead KnobSpec
+deep = <=2000 tok expanded rich_club). REMOVED 4 dead KnobSpec
 entries (AUTIST-02 sensory_channel_weights, event_vs_time_cue,
 AUTIST-11 alexithymia_accommodation, double_empathy) — none was
 read in any production scoring/response path; double_empathy was promoted
@@ -30,7 +30,7 @@ Schema validation covers:
                                   (e.g. `dict:str:float_range:0.0..1.0`)
 - anything else           -- reject (typo guard)
 
-Plan 02-03 runtime-gain mechanism exposed via two helpers:
+runtime-gain mechanism exposed via two helpers:
 - bayesian_update: weighted ensemble posterior update
 - profile_modulation_for_record: per-record edge-weight gain dict
 """
@@ -55,7 +55,7 @@ class KnobSpec:
 
 # ------------------------------------------------------------------ registry
 # 11 sealed knobs: 10 autistic-kernel + wake_depth
-# (Plan 07.12-02 removed sensory_channel_weights, AUTIST-08
+# (removed sensory_channel_weights, AUTIST-08
 # event_vs_time_cue, alexithymia_accommodation, double_empathy).
 # flipped 9 Phase-2 knobs to phase=1.
 # flipped camouflaging_relaxation to phase=1.
@@ -130,7 +130,7 @@ PROFILE_KNOBS: dict[str, KnobSpec] = {
         "camouflaging_relaxation",
         1,
         0.0,
-        "Detect over-formal writing, gradually relax formality (Phase 1 live)",
+        "Detect over-formal writing, gradually relax formality (live)",
         "float_range:0.0..1.0",
         "AUTIST-13",
     ),
@@ -172,25 +172,25 @@ PHASE_3_DEFERRED: frozenset[str] = frozenset(
 )
 
 
-# Plan 07.12-02: 11-knob shape is load-bearing. Enforced at import time.
+# : 11-knob shape is load-bearing. Enforced at import time.
 # History:
 # - flipped the 9 Phase-2 knobs to phase=1 (PHASE_1_LIVE=13).
 # - FLIPPED camouflaging_relaxation to phase=1 (PHASE_1_LIVE=14).
 # - APPENDS wake_depth as the 15th sealed knob (PHASE_1_LIVE=15).
-# - Plan 07.12-02 REMOVES 4 dead KnobSpec entries (AUTIST-02 sensory,
+# - REMOVES 4 dead KnobSpec entries (AUTIST-02 sensory,
 #   event_vs_time_cue, alexithymia, double_empathy).
 #   Final shape: 10 AUTIST + 1 wake_depth = 11 sealed knobs.
 assert len(PROFILE_KNOBS) == 11, (
-    "Plan 07.12-02: 10 autistic-kernel knobs + wake_depth = 11 sealed entries"
+    ": 10 autistic-kernel knobs + wake_depth = 11 sealed entries"
 )
 assert len(PHASE_1_LIVE) == 11, (
-    "Plan 07.12-02: 10 autistic-kernel knobs + wake_depth are live"
+    ": 10 autistic-kernel knobs + wake_depth are live"
 )
-assert len(PHASE_2_DEFERRED) == 0, "Plan 02-03 empties PHASE_2_DEFERRED"
+assert len(PHASE_2_DEFERRED) == 0, "empties PHASE_2_DEFERRED"
 assert len(PHASE_3_DEFERRED) == 0, "PHASE_3_DEFERRED emptied"
 
 
-# Bayesian signal weights (Plan 02-03 LEARN-01)
+# Bayesian signal weights (LEARN-01)
 SIGNAL_WEIGHT: dict[str, float] = {
     "implicit": 0.3,
     "inferred": 0.5,
@@ -297,7 +297,7 @@ def profile_get(knob: str | None, state: dict[str, Any]) -> dict:
     - knob in deferred (P3) -> status/phase/requirement_id payload.
     - unknown knob -> {"knob": n, "status": "unknown"}.
 
-    Plan 07.12-02: total_knobs is 11 (10 AUTIST + wake_depth) after AUTIST-02/08/11/12 removal.
+    : total_knobs is 11 (10 AUTIST + wake_depth) after AUTIST-02/08/11/12 removal.
     """
     if knob is None:
         live = {
@@ -342,9 +342,9 @@ def profile_set(
 
     Rule priority:
       1. unknown knob  -> {"status": "error", "reason": "unknown knob"}
-      2. Phase-2 knob  -> {"status": "error", "reason": "deferred to Phase 2"}
-         (Plan 02-03 empties this set but the branch is retained for safety.)
-      3. Phase-3 knob  -> {"status": "error", "reason": "deferred to Phase 3"}
+      2. Phase-2 knob -> {"status": "error", "reason": "deferred to "}
+         (empties this set but the branch is retained for safety.)
+      3. Phase-3 knob -> {"status": "error", "reason": "deferred to "}
       4. schema fail   -> {"status": "error", "reason": <validator message>}
       5. success       -> mutates state; returns {"status": "ok", knob, value}
 
@@ -361,14 +361,14 @@ def profile_set(
     if spec.phase == 2:
         return {
             "status": "error",
-            "reason": "deferred to Phase 2",
+            "reason": "deferred to ",
             "knob": knob,
             "requirement_id": spec.requirement_id,
         }
     if spec.phase == 3:
         return {
             "status": "error",
-            "reason": "deferred to Phase 3",
+            "reason": "deferred to ",
             "knob": knob,
             "requirement_id": spec.requirement_id,
         }
@@ -419,7 +419,7 @@ def bayesian_update(
     state: dict,
     posterior: dict,
 ) -> tuple[Any, dict]:
-    """D-20 weighted-ensemble posterior update on a knob value.
+    """ weighted-ensemble posterior update on a knob value.
 
     Conjugate-prior form per schema type:
       - bool        -> Beta(alpha, beta); alpha += w*obs, beta += w*(1-obs)
@@ -573,13 +573,13 @@ def profile_modulation_for_record(
     caller (pipeline_recall) copies the gains onto the record cache after
     computing them.
 
-    Phase 07.12-03: when ``knobs_applied`` is provided (a dict), records
+    -03: when ``knobs_applied`` is provided (a dict), records
     / / provenance strings into it whenever
     the corresponding gain branch fires. The accumulator is owned by the
     caller (typically core.dispatch); this function mutates it in place,
     pass-by-reference — never reassigns, never returns it.
 
-    BLOCKER 3 (CONTEXT D-04, 2026-04-30): provenance strings MUST contain
+    BLOCKER 3 (CONTEXT , 2026-04-30): provenance strings MUST contain
     'profile.py' so the production-path integration test can prove the
     upstream-gains accumulator is wired in this file (not stubbed elsewhere).
     Back-compat: callers that don't pass the kwarg behave exactly as before.

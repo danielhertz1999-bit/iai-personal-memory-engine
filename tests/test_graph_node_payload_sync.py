@@ -1,4 +1,4 @@
-"""Plan 05-12 — store <-> graph write-sync hook tests (RED scaffold).
+"""— store <-> graph write-sync hook tests (RED scaffold).
 
 ``build_runtime_graph`` registers a ``_graph_sync_hook`` on the store so
 every ``insert`` / ``update`` / ``delete`` mutates the in-RAM graph's
@@ -194,7 +194,7 @@ def test_B5_cold_start_restores_node_payload_from_cache(store):
     expected_surface = node1["surface"]
     expected_emb = list(node1["embedding"])
 
-    # Inspect via try_load (cache is encrypted under v3 sidecar per Phase 07.9
+    # Inspect via try_load (cache is encrypted under v3 sidecar per
     # W3 / D-03; raw file is ciphertext, so json.load on it would fail).
     loaded = runtime_graph_cache.try_load(store)
     assert loaded is not None, "cache must be loadable"
@@ -238,7 +238,7 @@ def test_B6_cache_version_bump_invalidates_old_cache(store):
             f,
         )
 
-    # CACHE_VERSION constant is the current one (Phase 07.9 W3 / bump
+    # CACHE_VERSION constant is the current one (W3 / bump
     # to "07-09-v3" with AES-256-GCM sidecar). Legacy 05-09 / 05-12 / 05-13
     # / 06-02 cache files are rejected.
     assert runtime_graph_cache.CACHE_VERSION == "07-09-v3"

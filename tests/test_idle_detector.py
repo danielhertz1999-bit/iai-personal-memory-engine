@@ -1,4 +1,4 @@
-"""Phase 10.4 — comprehensive tests for ``IdleDetector``.
+"""— comprehensive tests for ``IdleDetector``.
 
 Covers the 11-test matrix from CONTEXT 10.4:
 - HIDIdleTime parses ioreg output (ns -> sec).

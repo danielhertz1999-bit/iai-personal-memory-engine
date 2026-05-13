@@ -1,4 +1,4 @@
-"""Plan 03-03 Task 3 — E2E register-relaxation smoke test.
+"""E2E register-relaxation smoke test.
 
 Simulates an 8-week rising-formality trajectory and runs run_weekly_pass on
 expanding 5-point windows. Verifies that:

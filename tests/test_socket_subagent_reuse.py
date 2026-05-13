@@ -1,4 +1,4 @@
-"""Plan 07-04 Wave 4 R8/A4 acceptance — sub-agent socket reuse.
+"""Wave 4 R8/A4 acceptance — sub-agent socket reuse.
 
 R8 / A4: spawning ephemeral child wrapper processes (the test stand-in
 for sub-agents) MUST add zero new `iai_mcp.*` processes when a daemon is
@@ -196,14 +196,14 @@ def _spawn_daemon_in_background(
     """Pre-start a daemon manually via `python -m iai_mcp.daemon`.
 
     wrappers no longer spawn the daemon themselves
-    (Plan 07.1-04 eliminated the spawn-fallback chain in bridge.ts);
+    (eliminated the spawn-fallback chain in bridge.ts);
     in production launchd does the spawn via socket activation, in
     tests we use the manual-run code path (no LISTEN_FDS env
     set), which the daemon supports unchanged per D7.1-09 (backward
     compat).
 
     Mirrors the same helper added to tests/test_bridge_socket_first.py
-    in Plan 07.1-04 Task 2.
+    in Task 2.
     """
     env = os.environ.copy()
     env["IAI_DAEMON_SOCKET_PATH"] = str(sock_path)
@@ -247,7 +247,7 @@ def test_subagent_spawns_zero_new_processes(built_wrapper, tmp_path):
         "IAI_DAEMON_IDLE_SHUTDOWN_SECS": "120",
     }
 
-    # Bootstrap: pre-start a daemon manually (Plan 07.1-04 deviation
+    # Bootstrap: pre-start a daemon manually (deviation
     # Rule 3 update). The pre-7.1 bootstrap relied on the wrapper
     # spawn-fallback chain in bridge.ts to spawn the daemon as a
     # side-effect of the first _quick_recall_via_wrapper call. Phase

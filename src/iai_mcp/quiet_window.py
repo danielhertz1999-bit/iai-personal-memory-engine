@@ -1,4 +1,4 @@
-"""Phase 4 -- activity-learned quiet-window scheduler (DAEMON-03).
+"""-- activity-learned quiet-window scheduler .
 
 Learn the user's quiet window from their own `session_started` event history.
 48 buckets of 30-min granularity over a 7-day rolling window. Find the longest
@@ -119,7 +119,7 @@ def learn_quiet_window(
 
 
 def should_relearn(last_learned_at: Optional[datetime], now: datetime) -> bool:
-    """Re-learn cadence: 24h since last learn (D-04 24h adaptation)."""
+    """Re-learn cadence: 24h since last learn ( 24h adaptation)."""
     if last_learned_at is None:
         return True
     if last_learned_at.tzinfo is None:

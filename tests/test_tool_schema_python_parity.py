@@ -6,7 +6,7 @@ entry fail this test loudly with file:line + missing keys.
 Pattern analog: tests/test_constitutional_guards.py (file walk + regex/
 AST -> offenders list -> assert empty).
 
-Plan 07.13-03 ground truth: the per-method audit table in
+ground truth: the per-method audit table in
 internal architecture spec (section "Authoritative
 `params.get/[]` audit per dispatch method").
 """

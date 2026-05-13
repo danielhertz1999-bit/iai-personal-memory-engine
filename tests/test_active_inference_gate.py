@@ -1,4 +1,4 @@
-"""Tests for TOK-06 active-inference retrieval gate (Plan 02-04 Task 2, D-26).
+"""Tests for active-inference retrieval gate (Task 2, ).
 
 D-26 contract: skip full pipeline_recall when expected free-energy reduction
 is less than 0.2 bits. Trivial cues (greetings, "thanks", very short strings)

@@ -1,7 +1,7 @@
-"""Plan 07.7-04 D-26-C — schema.py induce_schemas_tier0 + persist_schema migrate
+"""-C — schema.py induce_schemas_tier0 + persist_schema migrate
 to ``store.iter_record_columns(...)`` projection.
 
-CONTEXT.md amendment (added 2026-04-29 mid-execution): the original Plan 04
+CONTEXT.md amendment (added 2026-04-29 mid-execution): the original
 W4 scope (sleep.py invariant + comment marker) is REPLACED-AND-EXTENDED by
 migrating two `all_records()` callers in `schema.py` so that the W4 ≤1
 all_records() invariant on `run_heavy_consolidation` becomes achievable.
@@ -10,7 +10,7 @@ Pre-D-26 architecture:
 
     run_heavy_consolidation
       ├── all_records() at sleep.py:513      (records_by_id — kept by W4)
-      ├── _tier0_schema_surfacing            (W3 — projection-only via Plan 03)
+      ├── _tier0_schema_surfacing (projection-only)
       └── induce_schemas_tier1
             └── induce_schemas_tier0
                   ├── all_records() at schema.py:89        ← D-26-A target
@@ -24,7 +24,7 @@ Post-D-26 architecture:
 
     run_heavy_consolidation
       ├── all_records() at sleep.py:513      (records_by_id — kept by W4)
-      ├── _tier0_schema_surfacing            (W3 — projection-only via Plan 03)
+      ├── _tier0_schema_surfacing (projection-only)
       └── induce_schemas_tier1
             └── induce_schemas_tier0
                   ├── iter_record_columns(["id", "tags_json"]) ← D-26-A
@@ -57,7 +57,7 @@ Covered contracts (D-26-C):
     8. The pattern_tag check is preserved byte-for-byte: tier == "semantic"
        AND f"pattern:{candidate.pattern}" in tags
 
-Phase 07.6 plan-checker B-1 lesson: every test uses a real ``MemoryRecord``
+plan-checker B-1 lesson: every test uses a real ``MemoryRecord``
 dataclass via ``_rec()`` — never a plain dict against attribute-access code.
 """
 from __future__ import annotations

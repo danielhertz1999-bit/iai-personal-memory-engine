@@ -1,4 +1,4 @@
-"""Plan 03-03 Task 1 RED + Task 2 GREEN — camouflaging detector.
+"""Task 1 RED + Task 2 GREEN — camouflaging detector.
 
 Constitutional guard: detector observes user SURFACE formality trajectory (D-AUTIST13-01,
 D-AUTIST13-03). When an over-formal sliding-5 weekly trajectory is confirmed, the system

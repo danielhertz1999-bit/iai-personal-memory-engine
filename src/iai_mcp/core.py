@@ -5,21 +5,21 @@ wrapper spawns this module as a subprocess (`python -m iai_mcp.core`) and forwar
 line-delimited JSON-RPC 2.0 requests over stdio.
 
 Boot sequence:
-1. Open MemoryStore at ~/.iai-mcp/lancedb (D-01, OPS-03)
-2. Seed pinned L0 identity record if absent (D-14, OPS-05), stamping its aaak_index
+1. Open MemoryStore at ~/.iai-mcp/lancedb (, )
+2. Seed pinned L0 identity record if absent (, ), stamping its aaak_index
 3. Loop: read JSON line from stdin, dispatch, write JSON-RPC response to stdout.
 
 All writes are synchronous.
 
-Plan 01-03 rewires the profile branches to read `iai_mcp.profile.PROFILE_KNOBS`
-(the full 11-knob registry: 10 AUTIST + 1 wake_depth, D-11; Phase 07.12-02
+rewires the profile branches to read `iai_mcp.profile.PROFILE_KNOBS`
+(the full 11-knob registry: 10 AUTIST + 1 wake_depth, ; -02
 removed AUTIST-02/08/11/12 dead knobs), replacing the inline LIVE_KNOBS/
-DEFERRED_KNOBS dict from Plan 01. The old names `LIVE_KNOBS` / `DEFERRED_KNOBS`
-/ `L0_ID` are re-exported for backwards compatibility with Plan 01's test
+DEFERRED_KNOBS dict. The old names `LIVE_KNOBS` / `DEFERRED_KNOBS`
+/ `L0_ID` are re-exported for backwards compatibility with test
 suite -- they now point at the authoritative registry state rather than
 local copies.
 
-Plan 02-02 adds real CLS sleep cycle + S5 identity kernel
+adds real CLS sleep cycle + S5 identity kernel
 dispatch:
 - `memory_consolidate`: real heavy consolidation (replaces stub)
 - `session_exit`: light consolidation
@@ -45,7 +45,7 @@ from iai_mcp.store import MemoryStore
 from iai_mcp.types import EMBED_DIM, MemoryRecord
 
 
-# ----------------------------------------------------- Phase 07.13-02 V3-03 fix
+# ----------------------------------------------------- -02 V3-03 fix
 class UnknownMethodError(Exception):
     """Raised by ``core.dispatch`` when the requested method name is not
     in the dispatch chain.
@@ -115,7 +115,7 @@ _posterior_state: dict[str, Any] = {}
 # does not deadlock.
 _profile_lock: threading.RLock = threading.RLock()
 
-# Plan 01 exposed two module-level names that test_hebbian.py imports:
+# exposed two module-level names that test_hebbian.py imports:
 # `LIVE_KNOBS` (mutable dict) and `DEFERRED_KNOBS` (frozenset). Preserve them as
 # aliases/derivations of the new registry so the tests keep working.
 LIVE_KNOBS: dict[str, Any] = _profile_state  # mutating LIVE_KNOBS still mutates state
@@ -124,23 +124,23 @@ DEFERRED_KNOBS: frozenset[str] = frozenset(
 )
 # flipped the 9 Phase-2 knobs to phase=1.
 # FLIPS the final camouflaging_relaxation knob to phase=1.
-# Plan 07.12-02 REMOVED 4 dead KnobSpec entries (AUTIST-02/08/11/12) — 10
+# REMOVED 4 dead KnobSpec entries (AUTIST-02/08/11/12) — 10
 # autistic-kernel knobs are now live and DEFERRED_KNOBS is empty.
-assert len(DEFERRED_KNOBS) == 0, "Plan 07.12-02: all 10 autistic-kernel knobs live"
+assert len(DEFERRED_KNOBS) == 0, ": all 10 autistic-kernel knobs live"
 
 
 # ----------------------------------------------------------------------- seed
 # deterministic L0 UUID so seed idempotency check is cheap and cross-process
-# stable. Plan 03 session-start assembler reads this record by UUID.
+# stable. session-start assembler reads this record by UUID.
 L0_ID = UUID("00000000-0000-0000-0000-000000000001")
 
 
 def _seed_l0_identity(store: MemoryStore) -> None:
-    """Seed the pinned L0 identity record (D-14, continuity seed).
+    """Seed the pinned L0 identity record (, continuity seed).
 
     Idempotent: returns immediately if L0_ID already exists. Called once at core
-    boot. Plan 02 re-embeds this record with the configured embedder
-    (bge-small-en-v1.5 by default per Plan 05-08); Plan 03 stamps its aaak_index
+    boot. re-embeds this record with the configured embedder
+    (bge-small-en-v1.5 by default per ); stamps its aaak_index
     via generate_aaak_index so the session-start manifest can reference the L0
     metadata without leaking literal_surface content.
 
@@ -163,7 +163,7 @@ def _seed_l0_identity(store: MemoryStore) -> None:
             "The system will learn about the user from session transcripts."
         ),
         aaak_index="",
-        embedding=[0.0] * seed_dim,   # Plan 02 re-embeds via graph reconstruction
+        embedding=[0.0] * seed_dim, # re-embeds via graph reconstruction
         community_id=None,
         centrality=1.0,               # treat as max-central pin
         detail_level=5,
@@ -191,7 +191,7 @@ def _seed_l0_identity(store: MemoryStore) -> None:
 def dispatch(store: MemoryStore, method: str, params: dict) -> dict:
     """Route a single JSON-RPC method to the corresponding internal function.
 
-    Tool contract per D-12. Profile knob split per D-11.
+    Tool contract per . Profile knob split per .
     """
     if method == "memory_recall":
         # R4: classify the cue BEFORE choosing the recall
@@ -204,7 +204,7 @@ def dispatch(store: MemoryStore, method: str, params: dict) -> dict:
         from iai_mcp.cue_router import _classify_cue
         cue_mode, _triggered_pattern = _classify_cue(params.get("cue", ""))
 
-        # Phase 07.12-03 BLOCKER 3: seed the audit accumulator BEFORE recall
+        # -03 BLOCKER 3: seed the audit accumulator BEFORE recall
         # fires its gain branches. Threaded into recall_for_response and
         # mutated in place by profile.py:profile_modulation_for_record
         # (AUTIST-01/03/09 entries) and by apply_profile below (helper-keyed
@@ -220,8 +220,8 @@ def dispatch(store: MemoryStore, method: str, params: dict) -> dict:
             f"session.py:assemble_session_start:wake_depth={_wake_depth_value}"
         )
 
-        # Plan 02 dispatch: non-empty store -> 5-stage pipeline;
-        # empty store -> baseline cosine recall (Plan 01 fallback).
+        # dispatch: non-empty store -> 5-stage pipeline;
+        # empty store -> baseline cosine recall (fallback).
         records_count = store.db.open_table("records").count_rows()
         if records_count == 0:
             cue_embedding = params.get("cue_embedding") or [0.0] * EMBED_DIM
@@ -245,13 +245,13 @@ def dispatch(store: MemoryStore, method: str, params: dict) -> dict:
             # community detection error, OOM, etc.) routes to the baseline
             # fallback with the classified mode preserved. Pre-Plan-06-04
             # the exception propagated and crashed the JSON-RPC loop with
-            # a -32000 error; D-14's North-Star ≥99% essential variable is
+            # a -32000 error; 's North-Star ≥99% essential variable is
             # better defended by a degraded surface than by no response.
             try:
                 graph, assignment, rc = retrieve.build_runtime_graph(store)
                 embedder = embedder_for_store(store)
                 # R3: thread the per-process profile state into
-                # recall_for_response (Phase 8 entry-point split; D-02
+                # recall_for_response (entry-point split;
                 # mode-dependent bias receives `mode=cue_mode` from cue-classifier
                 # unchanged) so the rank stage can read literal_preservation
                 # and any other knob-derived modulators. Pre-Plan-06-03
@@ -275,7 +275,7 @@ def dispatch(store: MemoryStore, method: str, params: dict) -> dict:
                     # plumbing verbatim — _recall_core receives `mode` unchanged
                     # for the mode-dependent gate bias.
                     mode=cue_mode,
-                    # Phase 07.12-03 BLOCKER 3: thread audit accumulator into
+                    # -03 BLOCKER 3: thread audit accumulator into
                     # the gains-application path so AUTIST-01/03/09 record
                     # provenance into the same dict attached to the response.
                     knobs_applied=knobs_applied,
@@ -304,11 +304,11 @@ def dispatch(store: MemoryStore, method: str, params: dict) -> dict:
             # records (patterns_observed[], max 3 entries).
             "cue_mode": resp.cue_mode,
             "patterns_observed": list(resp.patterns_observed or []),
-            # Phase 07.12-03 BLOCKER 3: attach the audit accumulator to the
+            # -03 BLOCKER 3: attach the audit accumulator to the
             # response. Already populated by recall_for_response upstream
             # (AUTIST-01/03/09 from profile.py + wake_depth seed
             # above); apply_profile below extends the same dict in place
-            # with helper-keyed AUTIST entries (CONTEXT D-04).
+            # with helper-keyed AUTIST entries (CONTEXT ).
             "_knobs_applied": knobs_applied,
         }
         # inject sleep_suggestion when dual-gate passes.
@@ -322,11 +322,11 @@ def dispatch(store: MemoryStore, method: str, params: dict) -> dict:
         # digest. daemon_state.get_pending_digest clears the digest from
         # state so it appears exactly once per 18h window.
         _inject_overnight_digest(response, store=store)
-        # TOK-12 / D5-03: first-turn auto-recall hook. Fires
+        # / D5-03: first-turn auto-recall hook. Fires
         # exactly once per session; runs a scoped recall and injects
         # `first_turn_recall` field. Silent-fail.
         _first_turn_recall_hook(response, params=params, store=store)
-        # TOK-13 / D5-04: server-side profile knob decorator.
+        # / D5-04: server-side profile knob decorator.
         # Knob names never cross the MCP wire.
         try:
             from iai_mcp.response_decorator import apply_profile
@@ -335,7 +335,7 @@ def dispatch(store: MemoryStore, method: str, params: dict) -> dict:
             pass  # decorator must not break the hot path
         return response
 
-    # --- CONN-05 dispatch (TEM factorization) ---
+    # --- dispatch (TEM factorization) ---
     # memory_recall_structural: structural query enters the pipeline via
     # role->filler dict. Pure numpy + bytewise XOR -- ZERO LLM token cost,
     # no Embedder() instantiated, no anthropic client touched. Constitutional
@@ -397,7 +397,7 @@ def dispatch(store: MemoryStore, method: str, params: dict) -> dict:
             "budget_used": budget_used,
             "structural_query_size": len(structure_query),
         }
-    # --- /Plan 03-01 CONN-05 dispatch ---
+    # --- / dispatch ---
 
     if method == "memory_reinforce":
         ids = [UUID(x) for x in params["ids"]]
@@ -419,7 +419,7 @@ def dispatch(store: MemoryStore, method: str, params: dict) -> dict:
             "ts": rec.ts.isoformat(),
         }
 
-    # --- Plan 06 WRITE-side ambient capture (conversation -> store) ---
+    # --- WRITE-side ambient capture (conversation -> store) ---
     if method == "memory_capture":
         from iai_mcp.capture import capture_turn
         return capture_turn(
@@ -432,7 +432,7 @@ def dispatch(store: MemoryStore, method: str, params: dict) -> dict:
         )
 
     # --- dispatch ---
-    # replaces Phase 1's memory_consolidate stub with real sleep
+    # replaces 's memory_consolidate stub with real sleep
     # cycle dispatch. The tool signature stays compatible:
     # {"method":"memory_consolidate","params":{"session_id": "..."}}
     if method == "memory_consolidate":
@@ -477,7 +477,7 @@ def dispatch(store: MemoryStore, method: str, params: dict) -> dict:
         return result
 
     # S5 identity kernel. Internal method -- not
-    # advertised on the MCP tools/list surface yet (Plan 02-04 adds that),
+    # advertised on the MCP tools/list surface yet (adds that),
     # but the dispatch hook is live so tests and subagents can call it.
     if method == "s5_propose":
         from iai_mcp.s5 import propose_invariant_update
@@ -492,7 +492,7 @@ def dispatch(store: MemoryStore, method: str, params: dict) -> dict:
             "verdict": verdict,
             "proposal_id": str(pid) if pid is not None else None,
         }
-    # --- /Plan 02-02 dispatch ---
+    # --- /dispatch ---
 
     # --- dispatch ---
     # adds four internal methods tied to the learning layer:
@@ -503,7 +503,7 @@ def dispatch(store: MemoryStore, method: str, params: dict) -> dict:
     #   the SchemaCandidate list without persisting.
     # - curiosity_pending: surface; returns unresolved curiosity
     #   questions optionally filtered by session_id.
-    # - trajectory_record: LEARN-07 D-32; writes M1..M6 events for a session.
+    # - trajectory_record: LEARN-07 ; writes M1..M6 events for a session.
     if method == "profile_update_from_signal":
         from iai_mcp.profile import bayesian_update
 
@@ -570,7 +570,7 @@ def dispatch(store: MemoryStore, method: str, params: dict) -> dict:
             store, session_id=params.get("session_id", "-"), metrics=metrics,
         )
         return {"recorded": len(metrics), "session_id": params.get("session_id", "-")}
-    # --- /Plan 02-03 dispatch ---
+    # --- /dispatch ---
 
     # --- dispatch ---
     # adds user-facing MCP tool dispatches:
@@ -582,13 +582,13 @@ def dispatch(store: MemoryStore, method: str, params: dict) -> dict:
     #   filters.
     # - events_query: surface with a strict whitelist of user-visible
     #   event kinds. Rejects identity-kernel kinds (s5_invariant_update etc)
-    #   to preserve Plan 02-02's trust boundary (D-22 threat model).
+    # to preserve 's trust boundary ( threat model).
     if method == "schema_list":
         return _schema_list_dispatch(store, params)
 
     if method == "events_query":
         return _events_query_dispatch(store, params)
-    # --- /Plan 02-04 dispatch ---
+    # --- /dispatch ---
 
     # --- dispatch ---
     # user-audit surface. Three dispatch entrypoints:
@@ -665,9 +665,9 @@ def dispatch(store: MemoryStore, method: str, params: dict) -> dict:
             "confidence": verdict.confidence,
             "language": verdict.language,
         }
-    # --- /Plan 02-05 dispatch ---
+    # --- /dispatch ---
 
-    # --- CONN-07 dispatch (Ashby sigma diagnostic) ---
+    # --- dispatch (Ashby sigma diagnostic) ---
     # topology: read-only snapshot of the current runtime graph
     # (N, C, L, sigma, community_count, rich_club_ratio, regime).
     # Purely diagnostic — retrieval modes NEVER toggle based on sigma
@@ -703,8 +703,8 @@ def dispatch(store: MemoryStore, method: str, params: dict) -> dict:
         )
         return result
 
-    # --- DAEMON-06 / DAEMON-09 dispatch ---
-    # initiate_sleep_mode: explicit user consent gate (D-10, C2 invariant).
+    # --- / dispatch ---
+    # initiate_sleep_mode: explicit user consent gate (, C2 invariant).
     # Consent=False returns immediately without touching the daemon socket.
     # Consent=True sends {"type":"user_initiated_sleep"} NDJSON over the
     # ~/.iai-mcp/.daemon.sock unix socket and returns the daemon's response.
@@ -716,10 +716,10 @@ def dispatch(store: MemoryStore, method: str, params: dict) -> dict:
     # cycle and yield. Graceful when daemon is unreachable.
     if method == "force_wake":
         return asyncio.run(handle_force_wake(params))
-    # --- /Plan 04-03 dispatch ---
+    # --- /dispatch ---
 
     if method == "profile_get":
-        # full 11-knob registry via profile module (10 AUTIST + 1 wake_depth; Phase 07.12-02 removed AUTIST-02/08/11/12).
+        # full 11-knob registry via profile module (10 AUTIST + 1 wake_depth; -02 removed AUTIST-02/08/11/12).
         return profile.profile_get(params.get("knob"), _profile_state)
 
     if method == "profile_set":
@@ -734,10 +734,10 @@ def dispatch(store: MemoryStore, method: str, params: dict) -> dict:
             )
 
     if method == "session_start_payload":
-        # Plan 03 session-start assembly (OPS-01, OPS-05).
+        # session-start assembly .
         # M6 LIVE: assemble_session_start now also emits
         # kind='session_started' for context-repeat-rate measurement.
-        # TOK-11: thread the per-process profile state so the
+        # : thread the per-process profile state so the
         # wake_depth knob reaches the assembler.
         from iai_mcp.session import assemble_session_start, SessionStartPayload
         sid = params.get("session_id", "-")
@@ -811,7 +811,7 @@ def _schema_list_dispatch(store: MemoryStore, params: dict) -> dict:
     Walks all records tagged "schema" (created by schema.persist_schema).
     Parses pattern + confidence + status from record tags + literal_surface.
     Counts schema_instance_of inbound edges for evidence_count; uses weight<0
-    marker for exceptions (future extension -- defaults to 0 in Plan 02-04).
+    marker for exceptions (future extension -- defaults to 0 in ).
     Filters:
       - confidence_min (float): only schemas whose parsed confidence >= this.
       - domain (str): only schemas tagged domain:<name>.
@@ -956,7 +956,7 @@ def _events_query_dispatch(store: MemoryStore, params: dict) -> dict:
 
 
 # -------------------------------------------------------- helpers
-# DAEMON-06 / DAEMON-09 wiring lives here. Three public entry points:
+# / wiring lives here. Three public entry points:
 #   - _send_to_daemon: internal NDJSON helper over ~/.iai-mcp/.daemon.sock
 #   - handle_initiate_sleep_mode: JSON-RPC method with C2 consent guard
 #   - handle_force_wake: JSON-RPC method with 15-min cooperative cap
@@ -1179,7 +1179,7 @@ def _first_turn_recall_hook(
     params: dict,
     store: MemoryStore,
 ) -> None:
-    """Plan 05-03 TOK-12 / D5-03: first-turn auto-recall hook.
+    """ / D5-03: first-turn auto-recall hook.
 
     Fires exactly once per session. Runs a scoped ``retrieve.recall`` with
     a capped budget (400 tok) using the user's cue as-is, clamped to 2000
@@ -1207,7 +1207,7 @@ def _first_turn_recall_hook(
         cue = str(raw_cue)[:2000] if raw_cue is not None else ""
         if not cue:
             return
-        # TOK-14: consult the HIPPEA cascade warm LRU BEFORE going
+        # : consult the HIPPEA cascade warm LRU BEFORE going
         # cold. The LRU is populated by the daemon-side cascade on session_open
         # (D5-05). If empty (daemon down, core+daemon in separate processes,
         # or cascade hasn't fired yet) we fall through to the cold baseline.
@@ -1297,7 +1297,7 @@ def _first_turn_recall_hook(
 
 
 def _payload_to_json(payload) -> dict:
-    """Serialise SessionStartPayload for JSON-RPC transport (Plan 03).
+    """Serialise SessionStartPayload for JSON-RPC transport .
 
     D5-02: new wake_depth-branched fields surfaced alongside
     legacy l0/l1/l2/rich_club so the TS wrapper can read either set.

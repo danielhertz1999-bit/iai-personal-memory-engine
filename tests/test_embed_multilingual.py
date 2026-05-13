@@ -1,6 +1,6 @@
 """Tests for the multilingual embedder path in the 3-model registry.
 
-Plan 05-08 (2026-04-20) flipped the DEFAULT to bge-small-en-v1.5 (384d
+(2026-04-20) flipped the DEFAULT to bge-small-en-v1.5 (384d
 English-only). bge-m3 remains selectable via env var or explicit
 ``Embedder(model_key="bge-m3")`` — these tests pin the key explicitly
 so the multilingual coverage keeps running under the new default.
@@ -22,7 +22,7 @@ import pytest
 
 def test_bge_m3_opt_in_produces_1024d() -> None:
     """Explicit Embedder(model_key="bge-m3") still yields the multilingual
-    1024d path after Plan 05-08's default revert."""
+    1024d path after 's default revert."""
     from iai_mcp.embed import Embedder
 
     e = Embedder(model_key="bge-m3")
@@ -64,7 +64,7 @@ def test_bge_m3_embeds_japanese() -> None:
 
 def test_bge_m3_cross_language_similarity() -> None:
     """bge-m3 encodes cross-lingual concepts. Pinned explicitly because
-    Plan 05-08's default is now English-only bge-small."""
+    's default is now English-only bge-small."""
     from iai_mcp.embed import Embedder
 
     e = Embedder(model_key="bge-m3")

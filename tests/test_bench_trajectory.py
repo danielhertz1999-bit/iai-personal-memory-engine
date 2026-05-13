@@ -1,4 +1,4 @@
-"""Tests for bench/trajectory.py (Plan 02-04 Task 4, D-33).
+"""Tests for bench/trajectory.py (Task 4, ).
 
 D-33 (benchmark corpus): 30-session synthetic corpus (autism/NT interaction
 pattern models), reproducible from seed=42. Diverse-language fixture:
@@ -35,7 +35,7 @@ def test_synthetic_corpus_deterministic_from_seed():
 def test_synthetic_corpus_multilingual():
     """Diverse-language fixture: corpus-shape variance check.
 
-    NOT a product mandate — IAI-MCP brain is English-only since Plan 05-08.
+    NOT a product mandate — IAI-MCP brain is English-only since .
     The presence of non-English samples here exercises corpus-shape
     variance in trajectory aggregation, nothing more.
     """

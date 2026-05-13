@@ -1,4 +1,4 @@
-"""Plan 05-13 RED scaffold — vectorized rank stage (OPS-10 close).
+"""RED scaffold — vectorized rank stage ( close).
 
 Rank stage in ``pipeline.recall_for_response`` must score all candidates in a
 single NumPy matmul over a stacked candidate-embedding matrix, not with a
@@ -186,7 +186,7 @@ def test_R3_rank_stage_latency_under_budget(seeded_store):
 
     vectorizes the rank stage; the remaining end-to-end
     dominators at N>=300 are the provenance-write batch and the L0
-    fast-path ``store.get`` — both OUT OF PLAN 05-13 SCOPE per the
+    fast-path ``store.get`` — both out of scope per the
     objective ("ONLY pipeline.py rank stage + retrieve.build_runtime_graph
     + runtime_graph_cache.py"). This test measures ONLY the rank stage,
     in isolation, which is the contract commits to.

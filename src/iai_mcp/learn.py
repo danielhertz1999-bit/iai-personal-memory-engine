@@ -19,7 +19,7 @@ Four mechanisms live here:
    s5_invariant_proposal events and drifts s5_trust_score up for
    consistently-agreeing anchors, down for frequently-rejected ones.
 
-All writes go through the D-STORAGE events table; no .jsonl files.
+All writes go through the events table; no .jsonl files.
 """
 from __future__ import annotations
 

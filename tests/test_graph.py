@@ -1,4 +1,4 @@
-"""Tests for iai_mcp.graph (D-04 dual-library wrapper, CONN-03 2-hop spread)."""
+"""Tests for iai_mcp.graph ( dual-library wrapper, 2-hop spread)."""
 from __future__ import annotations
 
 from uuid import uuid4
@@ -31,7 +31,7 @@ def test_backend_stays_networkx_just_below_threshold() -> None:
 
 
 def test_two_hop_reaches_exactly_two_hops() -> None:
-    """CONN-03: linear chain A-B-C-D seeded at A returns {B, C} -- D is 3 hops."""
+    """: linear chain A-B-C-D seeded at A returns {B, C} -- D is 3 hops."""
     g = MemoryGraph()
     a, b, c, d = uuid4(), uuid4(), uuid4(), uuid4()
     for n in (a, b, c, d):

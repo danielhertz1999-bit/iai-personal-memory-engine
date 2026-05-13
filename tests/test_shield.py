@@ -1,4 +1,4 @@
-"""Tests for the PromptInjectionShield (OPS-07, D-30, D-31) -- core detection.
+"""Tests for the PromptInjectionShield (, , ) -- core detection.
 
 D-31 three-tier deployment:
 - HARD_BLOCK -> L0 identity + S5 invariant writes (reject on detection)

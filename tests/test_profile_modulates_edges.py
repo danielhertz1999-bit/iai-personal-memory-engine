@@ -1,4 +1,4 @@
-"""Tests for profile_modulates edges (Plan 02-03 Task 1, runtime gain).
+"""Tests for profile_modulates edges (Task 1, runtime gain).
 
 The runtime-gain mechanism: active autistic-kernel knobs (e.g.
 monotropism_depth in the active domain) multiply hit scores during

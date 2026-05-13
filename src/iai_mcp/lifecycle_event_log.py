@@ -1,4 +1,4 @@
-"""Phase 10.1 -- JSONL event log for lifecycle state machine validation.
+"""-- JSONL event log for lifecycle state machine validation.
 
 The lifecycle state machine needs an append-only event log to validate
 transitions in shadow-run mode and to provide a post-mortem trail when

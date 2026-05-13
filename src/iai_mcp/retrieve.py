@@ -4,7 +4,7 @@
   empty-store case and for regression tests.
 - `build_runtime_graph`: reconstruct a MemoryGraph + CommunityAssignment +
   rich-club from LanceDB state; consumed by core.py to drive `pipeline_recall`.
-- `reinforce_edges`, `contradict`: unchanged from Plan 01.
+- `reinforce_edges`, `contradict`: unchanged from initial implementation.
 - `link_temporal_next`: records a `record_inserted` event
   and creates a `temporal_next` edge from the previous same-session insertion
   to the new record if that event happened within the last 5 minutes.
@@ -35,7 +35,7 @@ from iai_mcp.types import (
 )
 
 
-# Plan 07.11-02 / structured-log handle for the graph-build
+# / structured-log handle for the graph-build
 # decrypt-failure path. Same one-liner the rest of the project uses
 # (cf. capture.py:54, pipeline.py:33-imports). Used by the
 # `graph_build_decrypt_failed` event when AES-GCM decrypt of a
@@ -75,10 +75,10 @@ def recall(
     k_anti: int = 3,
     mode: str = "verbatim",
 ) -> RecallResponse:
-    """Phase 1 baseline retrieval.
+    """baseline retrieval.
 
     Fetches top (k_hits + k_anti) by cosine similarity; treats the top k_hits as
-    excitatory hits and the bottom k_anti as a naive anti-hit stub. Plan 02 will
+    excitatory hits and the bottom k_anti as a naive anti-hit stub. will
     replace anti-hits with real contradicts-edge + AAAK-opposition logic.
 
     Every returned hit gets a provenance entry appended.
@@ -97,7 +97,7 @@ def recall(
 
     # R7: verbatim mode candidate filter on the baseline path.
     # tier='episodic' AND no pattern:* tag — same exclusion contract as
-    # pipeline_recall verbatim mode (R5). Also excludes D-09
+    # pipeline_recall verbatim mode (R5). Also excludes
     # tier='semantic_pruned' soft-deleted schemas naturally.
     if mode == "verbatim":
         raw = [
@@ -113,7 +113,7 @@ def recall(
     # `store.append_provenance(record.id, entry)` pattern that produced the
     # 64x wall-clock blow-up and rank perturbation under memory pressure
     # (pressplay 8 GB M1, 2026-04-19). Mirrors the L-02 fix already in
-    # src/iai_mcp/pipeline.py::pipeline_recall (see D-SPEED SC-6).
+    # src/iai_mcp/pipeline.py::pipeline_recall (see SC-6).
     provenance_pending: list[tuple[UUID, dict]] = []
     now_iso = datetime.now(timezone.utc).isoformat()
     for record, score in raw[:k_hits]:
@@ -123,11 +123,11 @@ def recall(
                 score=float(score),
                 reason=f"cosine {score:.3f}",
                 literal_surface=record.literal_surface,
-                adjacent_suggestions=[],  # Plan 03 fills per AUTIST-07
+                adjacent_suggestions=[], # fills per AUTIST-07
             )
         )
         # every recall appends a provenance entry; write is batched
-        # end-of-loop to preserve rank stability (Plan 05-02 effect c fix).
+        # end-of-loop to preserve rank stability (effect c fix).
         provenance_pending.append((
             record.id,
             {
@@ -147,7 +147,7 @@ def recall(
             pass
 
     anti_hits: list[MemoryHit] = []
-    # Naive anti-hit stub: bottom-k of the same query. Plan 02 replaces with
+    # Naive anti-hit stub: bottom-k of the same query. replaces with
     # real contradicts-edge + AAAK-opposition scoring.
     tail = raw[-k_anti:] if len(raw) >= k_anti else []
     for record, score in reversed(tail):
@@ -187,7 +187,7 @@ def recall(
         hits=hits,
         anti_hits=anti_hits,
         activation_trace=[h.record_id for h in hits],
-        # ~4 chars per token heuristic; Plan 03 benchmark will use Anthropic count_tokens.
+        # ~4 chars per token heuristic; benchmark will use Anthropic count_tokens.
         budget_used=sum(len(h.literal_surface) for h in hits) // 4,
         hints=s4_hints,
         # surface mode on the baseline response too. The
@@ -247,7 +247,7 @@ def contradict(
     new_fact: str,
     new_embedding: list[float],
 ) -> ReconsolidationReceipt:
-    """MEM-05 edge-based reconsolidation.
+    """ edge-based reconsolidation.
 
     Creates a new record with `new_fact` and adds a `contradicts` edge from
     original -> new. Does NOT rewrite the original record -- full amend-in-place
@@ -305,7 +305,7 @@ def contradict(
     # monotropic proactive check fires only in high-focus
     # domains. Hints aren't surfaced via contradict() (its signature is fixed
     # to ReconsolidationReceipt), but events land in the events table so the
-    # user can inspect them via `iai-mcp contradictions` in Plan 02-04.
+    # user can inspect them via `iai-mcp contradictions` in .
     try:
         from iai_mcp.s4 import monotropic_proactive_check
         # Deliberately empty profile_state: callers of contradict() don't pass
@@ -771,7 +771,7 @@ def build_runtime_graph(store: MemoryStore):
                 if is_encrypted(literal_raw):
                     literal_raw = store._decrypt_for_record(rid, literal_raw)
             except Exception:
-                # Plan 07.11-02 / (V2-03 fix): a decrypt failure here
+                # / (V2-03 fix): a decrypt failure here
                 # used to assign ``literal_raw = ""`` and then fall through
                 # to update the live NetworkX node + persist to
                 # ``node_payload_for_cache``. That empty-surface payload
@@ -825,7 +825,7 @@ def build_runtime_graph(store: MemoryStore):
                 community_id=community_id,
                 embedding=embedding,
             )
-            # Plan 05-12/05-13: attach record payload to the NetworkX node dict.
+            # /05-13: attach record payload to the NetworkX node dict.
             graph._nx.nodes[str(rid)].update({
                 "embedding": list(embedding),
                 "surface": str(literal_raw),

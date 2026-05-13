@@ -1,10 +1,10 @@
 """Project-wide pytest fixtures for the IAI-MCP test suite.
 
-Phase 07.10 (file-based crypto key migration) removed the keyring backend
+(file-based crypto key migration) removed the keyring backend
 from `iai_mcp.crypto.CryptoKey.get_or_create()`. Pre-existing tests that
 exercised the daemon, store, events, recall, and CLI paths relied on the
 keyring auto-fallback to source the encryption key in test environments.
-After Phase 07.10, the runtime path is **file → passphrase env → error**
+After , the runtime path is **file → passphrase env → error**
 with no keyring fallback, so those tests now hit `CryptoKeyError` unless
 either the file or the passphrase is set.
 

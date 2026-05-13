@@ -1,4 +1,4 @@
-"""Plan 05-11 — LongMemEval adapter tests (RED scaffold).
+"""— LongMemEval adapter tests (RED scaffold).
 
 Covers the LongMemEvalAdapter surface that bench/longmemeval_blind.py drives:
 
@@ -14,7 +14,7 @@ Covers the LongMemEvalAdapter surface that bench/longmemeval_blind.py drives:
     Test 5  score_r_at_k with an empty relevant list returns 1.0 (convention;
             avoids div-by-zero).
 
-Notes (Plan 05-11 scope discipline):
+Notes (scope discipline):
 - Zero modifications to src/iai_mcp/ exercised here. The adapter runs on the
   public MemoryStore.insert + retrieve.recall surface only.
 - PINNED_REVISION is a 40-char HuggingFace commit hash pinned at Task 2 time.

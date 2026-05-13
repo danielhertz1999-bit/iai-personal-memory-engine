@@ -1,4 +1,4 @@
-"""Plan 05-02 regression fence — rank stability + C5 invariant.
+"""regression fence — rank stability + C5 invariant.
 
 Scoped to the DIAGNOSTIC-NOTE.md dominant-effect verdict:
 
@@ -6,7 +6,7 @@ Scoped to the DIAGNOSTIC-NOTE.md dominant-effect verdict:
 
 Effect (a) and (b) each contributed 0% to accuracy on the reference host, so
 this test file covers the three tests that directly fence effect (c) and the
-C5/MEM-05 invariants that must survive the Task 2 batching fix. Test 4 (L0
+C5/ invariants that must survive the Task 2 batching fix. Test 4 (L0
 crowding) from the plan is NOT included because the 05-01 verdict disconfirmed
 effect (b) on this host.
 
@@ -138,14 +138,14 @@ def test_topk_rank_identical_across_sequential_queries(tmp_path):
         # Allow tolerance for batch write ordering, but each pinned must have
         # >= 20 entries (20 recalls * 1 hit each).
         assert len(updated.provenance) >= 20, (
-            f"MEM-05 violation: pinned {rec.id} has "
+            f" violation: pinned {rec.id} has "
             f"{len(updated.provenance)} provenance entries after 20 recalls "
             f"(expected >= 20)."
         )
 
 
 def test_topk_contains_all_pinned_at_runbook_profile(tmp_path):
-    """OPS-04 gate at the runbook profile (n=50 pinned, k=60, 200 noise).
+    """ gate at the runbook profile (n=50 pinned, k=60, 200 noise).
 
     At k=60 with 50 pinned + 200 noise, every pinned should be in the top-60.
     This is the in-process mirror of `bench/verbatim.py --n 50 --gap 5
@@ -172,7 +172,7 @@ def test_topk_contains_all_pinned_at_runbook_profile(tmp_path):
     pinned_ids = {r.id for r in pinned}
     missing = pinned_ids - hit_ids
     assert not missing, (
-        f"OPS-04 violation at runbook profile: "
+        f" violation at runbook profile: "
         f"{len(missing)}/{len(pinned_ids)} pinned records missing from top-60. "
         f"Missing surface (first 3): "
         f"{sorted(str(m)[:8] for m in list(missing)[:3])}"

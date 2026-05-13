@@ -1,4 +1,4 @@
-"""Phase 10.6 Plan 10.6-01 Task 1.9 -- milestone v2.0 integration test.
+"""Task 1.9 -- milestone v2.0 integration test.
 
 End-to-end exercise of the wake/sleep cycle pipeline:
 

@@ -1,4 +1,4 @@
-"""Plan 03-02 CONN-07 RED: sigma module unit tests.
+""" RED: sigma module unit tests.
 
 Constitutional contract:
 - D-SIGMA-01: sigma is None below SIGMA_N_FLOOR (=200) (Humphries-Gurney 2008).

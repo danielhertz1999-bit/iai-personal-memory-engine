@@ -1,11 +1,11 @@
-"""Plan 06-02 Task 3 — perf gate for normalize + max_degree cache.
+"""perf gate for normalize + max_degree cache.
 
 The lock at N=1k warm p95 ≤ 83.6 ms is enforced via
 ``bench/neural_map.py`` for reproducibility on the reference host. This
 pytest gate runs at N=200 with a CI-generous ceiling so it can catch
 egregious hot-path regressions without flapping on slower runners.
 
-Plan 06-02 added per-recall work:
+added per-recall work:
   - one ``getattr(graph, "_max_degree", 0)`` (dict lookup) before the loop
   - one ``log(1.0 + max_deg)`` once per call
   - one float division per candidate
@@ -81,7 +81,7 @@ def test_pipeline_recall_p95_under_ci_ceiling_after_normalize(tmp_path):
     )
 
     assert p95 < CI_GENEROUS_P95_S, (
-        f"Plan 06-02 normalize regression: recall_for_response N=200 warm "
+        f"normalize regression: recall_for_response N=200 warm "
         f"p95 = {p95_ms:.2f} ms exceeds CI ceiling "
         f"{CI_GENEROUS_P95_S * 1000:.0f} ms. "
         f"All latencies (ms): {[f'{x*1000:.1f}' for x in latencies]}"
@@ -90,7 +90,7 @@ def test_pipeline_recall_p95_under_ci_ceiling_after_normalize(tmp_path):
 
 def test_normalize_overhead_is_submillisecond(tmp_path, capsys):
     """Sanity: surface the normalize-stage timing as a printed trend so
-    CI logs show whether Plan 06-02's per-call additions stay sub-ms.
+    CI logs show whether 's per-call additions stay sub-ms.
 
     Implementation note: a clean A/B against the OLD formula is hard to
     do without a feature flag (the change is unconditional in the rank

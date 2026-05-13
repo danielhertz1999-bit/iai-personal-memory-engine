@@ -1,8 +1,8 @@
-"""Phase 4 -- bedtime wind-down detection (DAEMON-06, D-08/D-09/D-11).
+"""-- bedtime wind-down detection (, //).
 
 Dual-gate bedtime suggestion emitter:
-  Gate A: wind-down phrase regex match per language (D-11, 8 languages)
-  Gate B: late in learned quiet window (inside OR within 30min of start, D-09)
+  Gate A: wind-down phrase regex match per language (, 8 languages)
+  Gate B: late in learned quiet window (inside OR within 30min of start, )
 
 When BOTH gates pass, `detect_wind_down` returns a small dict that `core.py`
 injects into `memory_recall` responses as `sleep_suggestion`. Claude (the
@@ -246,7 +246,7 @@ def detect_wind_down(
     now: datetime,
     tz: ZoneInfo,
 ) -> Optional[dict]:
-    """D-09 dual-gate bedtime detector.
+    """ dual-gate bedtime detector.
 
     Returns a `sleep_suggestion` dict when BOTH gates pass:
       Gate A: wind-down phrase match (primary lang + EN fallback)

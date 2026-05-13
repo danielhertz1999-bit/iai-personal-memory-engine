@@ -1,4 +1,4 @@
-"""Plan 04-05 -- iai-mcp daemon subcommand group tests (DAEMON-10 + DAEMON-12).
+"""-- iai-mcp daemon subcommand group tests ( + ).
 
 Verifies dispatcher wiring, install/uninstall flow with consent banner,
 launchd / systemd template rendering with sys.executable substitution
@@ -297,7 +297,7 @@ def test_install_without_yes_prompts_consent_banner_aborts(
 
     err = capsys.readouterr().err
     # Banner must mention key phrases.
-    # Banner phrasing was updated 2026-04-19 (Plan 05-08 bge-small-en pivot):
+    # Banner phrasing was updated 2026-04-19 (bge-small-en pivot):
     # "rises to ~2 GB if the opt-in bge-m3 model is selected" — with space.
     assert "~2 GB" in err or "2 GB" in err
     assert "1%" in err

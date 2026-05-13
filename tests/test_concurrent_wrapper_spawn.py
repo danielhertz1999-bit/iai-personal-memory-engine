@@ -1,11 +1,11 @@
-"""Phase 07.1 Plan 08 — R5 acceptance: concurrent wrapper cold-start regression trap.
+"""— R5 acceptance: concurrent wrapper cold-start regression trap.
 
-THE regression-trap test that catches the precise scenario Phase 7's verifier
+THE regression-trap test that catches the precise scenario 's verifier
 missed: N parallel wrapper cold-starts when no daemon exists.
 
 SPEC R5 / A2 contract:
     - PASSES on post-Phase-7.1 code (with launchd-managed listener):
-      bridge.ts is a pure connector (Plan 07.1-04) -> all 5 wrappers connect
+      bridge.ts is a pure connector -> all 5 wrappers connect
       to the SAME launchd-pre-bound socket -> launchd spawns the daemon
       ONCE in response to the first connection -> all 5 wrappers share it.
     - FAILS deterministically on pre-Phase-7.1 baseline:
@@ -88,7 +88,7 @@ def test_launchagent(tmp_path):
     [Rule 3 deviation] The base template only sets PATH/HOME/
     IAI_MCP_LAUNCHD_MANAGED in EnvironmentVariables. Without
     ``IAI_DAEMON_SOCKET_PATH`` in env the launchd-spawned daemon picks up
-    the socket via fd 3 (LISTEN_FDS branch, Plan 07.1-02), but the
+    the socket via fd 3 (LISTEN_FDS branch, ), but the
     psutil-environ filter the test uses to count "daemons bound to this
     test socket" returns 0 because the env var was never set in the
     daemon's process environment. Inject ``IAI_DAEMON_SOCKET_PATH`` into
@@ -388,7 +388,7 @@ def test_5_concurrent_wrapper_cold_starts_yield_singleton(
             initialize JSON-RPC response.
 
     On post-Phase-7.1 code (current main): bridge.ts is a pure connector
-    (Plan 07.1-04 deleted spawn-fallback). All 5 wrappers connect to the
+    (deleted spawn-fallback). All 5 wrappers connect to the
     SAME launchd-pre-bound socket, launchd's spawn-once contract gives
     them the SAME daemon, all 3 assertions hold. THIS is what the test
     proves.
@@ -505,10 +505,10 @@ def test_pre_phase_7_1_baseline_fails():
            TOCTOU race produces multiple daemons that all bind in
            parallel before any of them notice the others).
         5. ``git stash pop``  (or ``git checkout main``) to restore
-           Phase 7.1.
+           .
         6. Rebuild + rerun: assertion passes.
 
-    The executor of Plan 07.1-08 cannot easily git-stash mid-execution
+    The executor of cannot easily git-stash mid-execution
     (stashing would break the test file itself, which lives in the
     working tree). Future verification: a maintainer who wants to
     re-prove the regression-trap behavior follows the procedure above.

@@ -1,12 +1,12 @@
-"""OPS-12 regression guard: 3-turn sanity for total_session_cost.
+""" regression guard: 3-turn sanity for total_session_cost.
 
-Plan 05-05 (D5-08) — CI-runnable guard for bench/total_session_cost.py.
+(D5-08) — CI-runnable guard for bench/total_session_cost.py.
 The full 10-turn script runs ad-hoc on this dev Mac and populates
 the published bench report rows; this test exercises the shape
 contracts and the minimal-vs-standard invariant at CI speed.
 
 Acceptance contracts:
-  - minimal total <= standard total (TOK-11 sanity; if not, Plan 05-03
+  - minimal total <= standard total ( sanity; if not,
     regressed somewhere)
   - per_turn list has exactly 10 entries (fixed D5-08 script)
   - counter mode honest-disclosed in JSON (anthropic-count-tokens |
@@ -41,9 +41,9 @@ def test_total_session_cost_reports_per_turn():
 
 
 def test_total_session_cost_minimal_le_standard():
-    """TOK-11 invariant: wake_depth=minimal must not cost more than
+    """ invariant: wake_depth=minimal must not cost more than
     wake_depth=standard over the same 10-turn script. If this fails,
-    Plan 05-03's lazy session-start work regressed.
+    's lazy session-start work regressed.
     """
     from bench.total_session_cost import run_total_session_cost
 
@@ -52,7 +52,7 @@ def test_total_session_cost_minimal_le_standard():
 
     assert minimal["total_tokens"] <= standard["total_tokens"], (
         f"minimal {minimal['total_tokens']} > standard {standard['total_tokens']}"
-        " — TOK-11 regression"
+        " — regression"
     )
 
 

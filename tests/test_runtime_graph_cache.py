@@ -1,4 +1,4 @@
-"""Plan 05-09 (P4.A) — runtime_graph_cache tests.
+"""(P4.A) — runtime_graph_cache tests.
 
 The cache persists the Leiden community assignment + rich-club node
 list next to the LanceDB store. On subsequent ``build_runtime_graph``
@@ -62,7 +62,7 @@ def store(tmp_path: Path) -> MemoryStore:
 
 
 def _read_decrypted_cache(store: MemoryStore, path: Path) -> dict:
-    """Phase 07.9 W3: decrypt the v3 ciphertext sidecar and return the
+    """W3: decrypt the v3 ciphertext sidecar and return the
     underlying JSON dict. Tests that pre-07.9 read the cache via
     ``json.load(f)`` go through this helper instead.
     """
@@ -122,7 +122,7 @@ def test_save_creates_json_file(store):
     # inspecting the JSON shape.
     raw = path.read_text(encoding="utf-8")
     assert raw.startswith("iai:enc:v1:"), (
-        "Phase 07.9 W3: cache must be v3 ciphertext on disk"
+        "W3: cache must be v3 ciphertext on disk"
     )
     data = _read_decrypted_cache(store, path)
     assert data["cache_version"] == runtime_graph_cache.CACHE_VERSION

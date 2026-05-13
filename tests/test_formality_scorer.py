@@ -1,4 +1,4 @@
-"""Plan 03-03 Task 1 RED + Task 2 GREEN — surface-feature formality scorer.
+"""Task 1 RED + Task 2 GREEN — surface-feature formality scorer.
 
 Validates the formality scorer against a RU+EN fixture of ~50 formal/informal pairs.
 Constitutional guard: the scorer observes ONLY the user's surface text. There is no

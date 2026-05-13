@@ -1,4 +1,4 @@
-"""Tests for iai_mcp.s4 -- on-read consistency + monotropic proactive (MEM-08, D-17).
+"""Tests for iai_mcp.s4 -- on-read consistency + monotropic proactive .
 
 Constitutional coverage:
 - D-17(e): on_read_check runs inside recall_for_response, not as a global scan.

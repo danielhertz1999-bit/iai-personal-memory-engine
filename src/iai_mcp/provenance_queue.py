@@ -1,4 +1,4 @@
-"""Plan 05-14 — async provenance write queue (OPS-10 / M-02).
+"""— async provenance write queue ( / M-02).
 
 Moves provenance writes off the recall critical path. A single daemon
 thread drains a bounded queue.Queue of (record_id, entry) pairs and
@@ -49,7 +49,7 @@ if TYPE_CHECKING:
 _STOP = object()
 _FLUSH = object()
 
-# W1/D-01 — overflow spill-to-disk.
+# W1/ — overflow spill-to-disk.
 OVERFLOW_DIR_NAME = ".provenance-overflow"
 # Worker idle poll: 5s upper bound on overflow-drain responsiveness.
 # Bounded so under sustained overload the spill drain catches up

@@ -1,4 +1,4 @@
-"""D-STORAGE events table interface.
+""" events table interface.
 
 Single source of runtime state. Every kind of event — S4 contradictions,
 trajectory metrics, LLM health probes, schema induction runs, CLS consolidation
@@ -15,9 +15,9 @@ associated data binding. kind / severity / domain / ts / session_id stay
 plaintext so audit queries (`iai-mcp health`, `iai-mcp trajectory`) can filter
 on them without decrypting.
 
-Phase 3 additions (new event kinds — free-form strings, no taxonomy enum):
-- CONN-05 TEM factorization: `migration_v3_to_v4`.
-- CONN-07 small-world sigma: `sigma_observation`, `sigma_drift`
+additions (new event kinds — free-form strings, no taxonomy enum):
+- TEM factorization: `migration_v3_to_v4`.
+- small-world sigma: `sigma_observation`, `sigma_drift`
   (sigma-curve diagnostic per Ashby ultrastability).
 - M2/M4/M6 live wiring: `retrieval_used`, `profile_updated`,
   `session_started` (existing emit sites extended; not all new — verify via
@@ -28,7 +28,7 @@ Phase 3 additions (new event kinds — free-form strings, no taxonomy enum):
     * `register_relaxed` — OUR `camouflaging_relaxation` knob bumped; the system
       relaxes its OWN register (never the user's; masking modeling is out-of-scope).
 
-Phase 6 additions (Plan 06-01 schema dedup):
+additions (schema dedup):
 - `schema_reinforced` — emitted when `persist_schema` finds an existing
   schema for the candidate pattern and reinforces incoming
   `schema_instance_of` edges from new evidence onto the existing keeper

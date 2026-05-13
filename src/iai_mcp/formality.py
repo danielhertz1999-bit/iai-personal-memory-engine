@@ -1,4 +1,4 @@
-"""Plan 03-03 — surface-feature formality scorer (Chapman ecological self-regulation).
+"""— surface-feature formality scorer (Chapman ecological self-regulation).
 
 Constitutional anchor:
 - Observes ONLY the user's surface lexical features (D-AUTIST13-01).

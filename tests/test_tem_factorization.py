@@ -1,4 +1,4 @@
-"""Plan 03-01 CONN-05 RED: TEM factorization (Whittington-Behrens 2020).
+""" RED: TEM factorization (Whittington-Behrens 2020).
 
 Verifies BSC binding/unbinding fidelity at D=10000 across 15 / 17 / 18
 role-filler pairs (D-TEM-02 target). Constitutional invariants:

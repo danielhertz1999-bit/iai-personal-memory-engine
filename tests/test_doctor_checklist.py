@@ -1,4 +1,4 @@
-"""Plan 07-05 Wave 5 R9 acceptance — doctor 6-row PASS/FAIL checklist.
+"""Wave 5 R9 acceptance — doctor 6-row PASS/FAIL checklist.
 
 Each individual failure scenario produces a FAIL on the matching check
 and the doctor exits with the documented code (D7-13: 0=all pass,

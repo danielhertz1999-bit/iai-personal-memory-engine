@@ -1,7 +1,7 @@
-"""Phase 07.2-03 R1 / A1 regression test — cascade body must not block the event loop.
+"""-03 R1 / A1 regression test — cascade body must not block the event loop.
 
 Mechanism: stub `retrieve.build_runtime_graph` with a sync function that
-`time.sleep(5.0)`. With Plan 03's `await asyncio.to_thread(...)` wrap,
+`time.sleep(5.0)`. With `await asyncio.to_thread(...)` wrap,
 the cascade-body sleep runs in a worker thread and a concurrent
 `asyncio.sleep(0)` + small coroutine on the same event loop completes
 in <100ms. Without the wrap, the event loop is pinned for 5s.
@@ -105,7 +105,7 @@ async def _concurrent_coroutine_completes_under_100ms_body(monkeypatch):
         # would be ≥ 5.0s.
         assert elapsed < 0.1, (
             f"R1 FAIL: event loop pinned for {elapsed:.3f}s while cascade body "
-            f"was running. Expected <100ms (wrap working). Did Plan 03's "
+            f"was running. Expected <100ms (wrap working). Did "
             f"`await asyncio.to_thread(retrieve.build_runtime_graph, store)` "
             f"land in src/iai_mcp/daemon.py::_hippea_cascade_loop?"
         )

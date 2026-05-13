@@ -1,6 +1,6 @@
 """Tests for iai_mcp.host_cli -- Task 1.
 
-Covers 12 behaviours (DAEMON-07 + C3 constitutional):
+Covers 12 behaviours ( + C3 constitutional):
 1. invoke_host_once spawns `claude --bare -p ... --output-format json --max-turns 1
    --tools "" --no-session-persistence --model haiku` via create_subprocess_exec (argv).
 2. ANTHROPIC_API_KEY / CLAUDE_API_KEY / CLAUDE_CODE_API_KEY scrubbed from child env.

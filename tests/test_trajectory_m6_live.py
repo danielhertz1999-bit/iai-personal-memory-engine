@@ -1,4 +1,4 @@
-"""Plan 03-02 Task 2 Step 7: M6 context-repeat-rate LIVE tests."""
+"""Task 2 Step 7: M6 context-repeat-rate LIVE tests."""
 from __future__ import annotations
 
 import pytest

@@ -1,4 +1,4 @@
-"""Phase 07.2-06 R4 / A4 / D7.2-14 regression fence — no bare sync calls
+"""-06 R4 / A4 / regression fence — no bare sync calls
 to known-blocking functions inside `async def` in daemon-side modules.
 
 Mechanism: parse target Python files with ast.parse, walk AsyncFunctionDef
@@ -12,7 +12,7 @@ Allowlist sites must be listed in 07.2-BLOCKING-CALLS-AUDIT.md as
 Background: prevents the daemon-CPU-saturation regression that caused
 the 71-min 99-363% CPU run on 2026-04-27. The smoking-gun call was
 `retrieve.build_runtime_graph(store)` at daemon.py:653 inside
-`_hippea_cascade_loop` (an asyncio task) — Plan 07.2-03 wrapped it at
+`_hippea_cascade_loop` (an asyncio task) — wrapped it at
 daemon.py:785 (`await asyncio.to_thread(retrieve.build_runtime_graph,
 store)`). This fence catches re-introduction.
 
@@ -205,7 +205,7 @@ def test_blocking_names_set_is_non_empty() -> None:
     assert "build_runtime_graph" in BLOCKING_NAMES, (
         "BLOCKING_NAMES must contain 'build_runtime_graph' (the "
         "smoking-gun call that drove the 2026-04-27 71-min CPU "
-        "saturation). Fence is useless without this. Plan 07.2-03 "
+        "saturation). Fence is useless without this. "
         "wrapped this site; fence catches future re-introduction."
     )
 

@@ -1,4 +1,4 @@
-"""Plan 07-02 Wave 2 R1 acceptance: every dispatch method reachable over socket.
+"""Wave 2 R1 acceptance: every dispatch method reachable over socket.
 
 Boots SocketServer (NEW per D7-07) against a tmp_path-isolated
 ~/.iai-mcp/.daemon.sock equivalent and asserts that JSON-RPC 2.0 envelopes
@@ -176,7 +176,7 @@ def test_memory_recall_routed_over_socket(short_socket_paths):
     async def _runner(sock_path, store):
         return await _send_jsonrpc(
             sock_path, "memory_recall",
-            {"cue": "phase 7 done", "budget_tokens": 400},
+            {"cue": "test done", "budget_tokens": 400},
             req_id=1,
         )
 
@@ -240,7 +240,7 @@ def test_profile_get_routed(short_socket_paths):
     assert isinstance(result, dict), result
     # profile.profile_get(None, ...) returns
     #   {'live': {<10 AUTIST + wake_depth>}, 'deferred': {}, 'total_knobs': 11}
-    # per src/iai_mcp/profile.py (Plan 07.12-02 removed AUTIST-02/08/11/12).
+    # per src/iai_mcp/profile.py (removed AUTIST-02/08/11/12).
     # keeps literal_preservation live.
     assert "live" in result, result
     assert "literal_preservation" in result["live"], result

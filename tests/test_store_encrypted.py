@@ -1,4 +1,4 @@
-"""Plan 02-08 RED: MemoryStore insert/get transparent encryption.
+"""MemoryStore insert/get transparent encryption.
 
 Exercises the store-level encryption layer that wraps insert()/get() so callers
 never see ciphertext. Covers:
@@ -9,9 +9,9 @@ never see ciphertext. Covers:
 - Query similar still works (embeddings remain plaintext)
 - Wrong key / tampered row -> InvalidTag / CryptoError
 - AD binding: copy ciphertext from row A into row B -> decrypt fails
-- Plaintext rows (pre-migration / Phase 2<=02-07 data) read correctly
+- Plaintext rows (pre-migration / <=02-07 data) read correctly
 - provenance_json + profile_modulation_gain_json also encrypted
-- append_provenance_batch (Plan 02-07 batch API) re-encrypts on write
+- append_provenance_batch (batch API) re-encrypts on write
 """
 from __future__ import annotations
 
@@ -79,7 +79,7 @@ def _make(text: str = "hello", language: str = "en", detail: int = 2):
 
 
 def test_insert_writes_encrypted_literal_surface_on_disk(tmp_path):
-    """Plan 02-08 acceptance: raw LanceDB row's literal_surface starts with iai:enc:v1:."""
+    """acceptance: raw LanceDB row's literal_surface starts with iai:enc:v1:."""
     from iai_mcp.store import MemoryStore, RECORDS_TABLE
     store = MemoryStore(path=tmp_path)
     rec = _make(text="top-secret Russian phrase: Привет")
@@ -304,11 +304,11 @@ def test_get_passes_through_plaintext_rows(tmp_path):
     assert got.profile_modulation_gain == rec.profile_modulation_gain
 
 
-# ---------------------------------- batch-API integration (Plan 02-07 carry-over)
+# ---------------------------------- batch-API integration (carry-over)
 
 
 def test_append_provenance_batch_still_writes_encrypted(tmp_path):
-    """Plan 02-07 append_provenance_batch must keep provenance_json encrypted."""
+    """append_provenance_batch must keep provenance_json encrypted."""
     from iai_mcp.store import MemoryStore, RECORDS_TABLE
     store = MemoryStore(path=tmp_path)
     rec = _make()

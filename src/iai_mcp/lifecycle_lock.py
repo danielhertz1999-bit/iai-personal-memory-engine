@@ -1,4 +1,4 @@
-"""Phase 10.6 -- single-machine ``~/.iai-mcp/.locked`` lockfile.
+"""-- single-machine ``~/.iai-mcp/.locked`` lockfile.
 
 Realises LOCKED contract (single-machine assumption): the
 daemon writes ``~/.iai-mcp/.locked`` on startup with PID + hostname +
@@ -7,7 +7,7 @@ started_at. A second daemon attempt on the same host raises
 iCloud / NFS sync of ``~/.iai-mcp``) detects the foreign hostname and
 takes over with a warning.
 
-This is **distinct from** ``ProcessLock`` (Phase 04-01,
+This is **distinct from** ``ProcessLock`` (-01,
 ``~/.iai-mcp/.lock``): that fcntl flock guards LanceDB writers / heavy
 consolidation against concurrent in-host processes. The ``.locked``
 lockfile is a higher-level, human-readable singleton marker for the
@@ -48,7 +48,7 @@ def _default_lock_path() -> Path:
     """Resolve the default lockfile path, honoring ``IAI_MCP_STORE``.
 
     Tests + multi-tenant deployments override the iai-mcp data root via
-    the ``IAI_MCP_STORE`` env var (HIGH-4 LOCK precedent, Plan 07-04).
+    the ``IAI_MCP_STORE`` env var ( LOCK precedent, ).
     Falling back to ``~/.iai-mcp`` keeps the production default
     untouched.
     """

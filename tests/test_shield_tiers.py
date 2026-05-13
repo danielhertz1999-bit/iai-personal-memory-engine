@@ -1,4 +1,4 @@
-"""Tests for shield tier integration with guarded_insert (OPS-07, D-31).
+"""Tests for shield tier integration with guarded_insert .
 
 Tier determination logic in `guarded_insert`:
 - HARD_BLOCK: record.pinned OR record.s5_trust_score >= 0.9
@@ -10,7 +10,7 @@ On detection:
 - FLAG_FOR_REVIEW -> proceed + write shield_flag event
 - LOG_ONLY -> proceed + write shield_log event (info severity)
 
-MEM-01 guarantee: even when shield flags/logs (not rejects), literal_surface
+ guarantee: even when shield flags/logs (not rejects), literal_surface
 written to store is byte-exact.
 """
 from __future__ import annotations

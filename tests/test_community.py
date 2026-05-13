@@ -1,4 +1,4 @@
-"""Tests for iai_mcp.community (D-05 bootstrap, stable UUIDs, CONN-01/04)."""
+"""Tests for iai_mcp.community ( bootstrap, stable UUIDs, /04)."""
 from __future__ import annotations
 
 import random
@@ -73,7 +73,7 @@ def test_stable_uuids_on_identical_rerun() -> None:
 
 
 def test_top_communities_capped_at_seven() -> None:
-    """CONN-01: MAX_TOP_COMMUNITIES = 7 enforced on level 1 output."""
+    """: MAX_TOP_COMMUNITIES = 7 enforced on level 1 output."""
     g = MemoryGraph()
     for i in range(SMALL_N_FLAT + 10):
         g.add_node(uuid4(), community_id=None, embedding=_random_emb(i))
@@ -87,7 +87,7 @@ def test_top_communities_capped_at_seven() -> None:
 
 
 def test_mid_regions_exposes_community_members() -> None:
-    """CONN-01 level 2: mid_regions maps community UUID -> member UUIDs."""
+    """ level 2: mid_regions maps community UUID -> member UUIDs."""
     g = MemoryGraph()
     nodes = [uuid4() for _ in range(50)]
     for i, n in enumerate(nodes):
@@ -98,7 +98,7 @@ def test_mid_regions_exposes_community_members() -> None:
 
 
 def test_needs_refresh_threshold() -> None:
-    """CONN-04: |Δ Q| > 0.05 -> refresh, else stable."""
+    """: |Δ Q| > 0.05 -> refresh, else stable."""
     prior = CommunityAssignment(modularity=0.30)
     assert needs_refresh(prior, 0.36) is True  # Δ = 0.06 > 0.05
     assert needs_refresh(prior, 0.31) is False  # Δ = 0.01 < 0.05

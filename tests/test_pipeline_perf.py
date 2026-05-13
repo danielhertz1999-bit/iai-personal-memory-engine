@@ -1,4 +1,4 @@
-"""Pipeline perf regression guard (Plan 02-07 Task 2, D-SPEED gap closure).
+"""Pipeline perf regression guard (Task 2, D-SPEED gap closure).
 
 Load-bearing tests:
   - test_recall_for_response_p95_under_threshold: seeds N=100 records, runs
@@ -209,7 +209,7 @@ def test_recall_for_response_single_provenance_batch_call(tmp_path, monkeypatch)
 
 
 def test_recall_for_response_mem05_provenance_preserved(tmp_path):
-    """MEM-05 correctness: every hit has a NEW provenance entry post-recall.
+    """ correctness: every hit has a NEW provenance entry post-recall.
 
     Establishes provenance len-before per hit, runs recall_for_response, then
     confirms each hit's record has exactly one more provenance entry whose

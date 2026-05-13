@@ -1,4 +1,4 @@
-"""Plan 03-01 CONN-05 D-TEM-04: structure-edge Hebbian LTP tests.
+""" D-TEM-04: structure-edge Hebbian LTP tests.
 
 Verifies hebbian_structure.strengthen_structure_edge mirrors
 retrieve.reinforce_edges shape with edge_type="hebbian_structure",
@@ -88,7 +88,7 @@ def test_structural_similarity_handles_empty_inputs():
 
 
 def test_strengthen_structure_edge_writes_with_correct_edge_type(tmp_path, monkeypatch):
-    """Plan 03-01 D-TEM-04: edge type is exactly 'hebbian_structure'."""
+    """edge type is exactly 'hebbian_structure'."""
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
     from iai_mcp.hebbian_structure import strengthen_structure_edge
     from iai_mcp.store import EDGES_TABLE, MemoryStore

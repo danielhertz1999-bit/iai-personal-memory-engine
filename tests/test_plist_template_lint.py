@@ -1,4 +1,4 @@
-"""Plan 07.1-01 Task 2: lint + structural assertions for the LaunchAgent
+"""lint + structural assertions for the LaunchAgent
 plist template.
 
 The template ``scripts/com.iai-mcp.daemon.plist.template`` is rendered by
@@ -84,7 +84,7 @@ def test_template_does_not_have_RunAtLoad_true() -> None:
 
     The legacy ``deploy/launchd/com.iai-mcp.daemon.plist`` uses
     ``<key>RunAtLoad</key><true/>`` which defeats socket activation
-    (eager spawn at user login = no listener pre-bind). The Phase 7.1
+    (eager spawn at user login = no listener pre-bind). The
     template MUST use ``<false/>`` so launchd defers spawn until the
     first incoming connection on the pre-bound socket.
     """

@@ -1,4 +1,4 @@
-"""Plan 07.1-03 Task 3: pytest verifying scripts/install.sh + scripts/uninstall.sh.
+"""pytest verifying scripts/install.sh + scripts/uninstall.sh.
 
 All tests run with DRY_RUN=1 (short-circuits real launchctl + kill + rm calls)
 + IAI_TEST_SKIP_BUILD=1 (short-circuits venv/pip/npm in install.sh) so the
@@ -49,9 +49,9 @@ def _dry_run_env() -> dict[str, str]:
 def _scripts_exist() -> None:
     """Skip all tests if the scripts haven't been created yet (TDD safety)."""
     if not INSTALL_SH.exists():
-        pytest.skip(f"{INSTALL_SH} missing — run Plan 07.1-03 Task 1 first")
+        pytest.skip(f"{INSTALL_SH} missing — run Task 1 first")
     if not UNINSTALL_SH.exists():
-        pytest.skip(f"{UNINSTALL_SH} missing — run Plan 07.1-03 Task 2 first")
+        pytest.skip(f"{UNINSTALL_SH} missing — run Task 2 first")
 
 
 # ---------------------------------------------------------------------------

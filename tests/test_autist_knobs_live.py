@@ -2,7 +2,7 @@
 
 History: flipped the 9 Phase-2 deferred knobs to phase=1.
 PHASE_1_LIVE became a 13-member frozenset, then 14 with flip, then 15
-after wake_depth append. Plan 07.12-02 removed 4 dead KnobSpec
+after wake_depth append. removed 4 dead KnobSpec
 entries (AUTIST-02 sensory_channel_weights, event_vs_time_cue,
 AUTIST-11 alexithymia_accommodation, double_empathy) — final shape
 is 11 sealed entries, 10 AUTIST + wake_depth.
@@ -30,10 +30,10 @@ from iai_mcp.profile import (
 # --------------------------------------------------------------- registry shape
 
 def test_phase_1_live_has_14_knobs():
-    """Plan 07.12-02: 10 autistic-kernel + wake_depth = 11 live.
+    """: 10 autistic-kernel + wake_depth = 11 live.
 
     Test name kept for git stability (was 14 pre-MCP-12, 15 post-MCP-12, 11
-    after Plan 07.12-02 removed AUTIST-02/08/11/12). The autistic-kernel-only
+    after removed AUTIST-02/08/11/12). The autistic-kernel-only
     invariant (10) is checked via filter in test_all_14_requirement_ids_present.
     """
     assert len(PHASE_1_LIVE) == 11
@@ -52,10 +52,10 @@ def test_phase_2_deferred_empty():
 
 
 def test_all_14_requirement_ids_present():
-    """Plan 07.12-02: autistic-kernel slice has exactly 10 knobs (AUTIST-02/08/11/12 removed).
+    """: autistic-kernel slice has exactly 10 knobs (AUTIST-02/08/11/12 removed).
 
     appended wake_depth bringing the registry to 15 entries.
-    Plan 07.12-02 removed 4 dead knobs (AUTIST-02/08/11/12) for final shape
+    removed 4 dead knobs (AUTIST-02/08/11/12) for final shape
     of 11 sealed entries (10 AUTIST + 1 MCP-12). Test name kept for git stability.
     """
     autist_specs = [
@@ -102,7 +102,7 @@ def test_monotropism_depth_live_rejects_non_dict():
     assert r["status"] == "error"
 
 
-# Plan 07.12-02 removed test_sensory_channel_weights_live_accepts_dict /
+# removed test_sensory_channel_weights_live_accepts_dict /
 # test_sensory_channel_weights_live_rejects_out_of_range — was a
 # DEAD knob (declared but never read in any production scoring/response code);
 # the registry entry was removed and profile_set now returns the unknown-knob
@@ -133,7 +133,7 @@ def test_demand_avoidance_tolerance_live():
     assert state["demand_avoidance_tolerance"] == "imperative"
 
 
-# Plan 07.12-02 removed test_event_vs_time_cue_live / test_alexithymia_accommodation_live —
+# removed test_event_vs_time_cue_live / test_alexithymia_accommodation_live —
 # (event_vs_time_cue) and (alexithymia_accommodation) were
 # DEAD knobs (no taxonomy in schema, never read in production). Removed from
 # registry; profile_set now returns the unknown-knob error.
@@ -151,7 +151,7 @@ def test_inertia_awareness_live():
     assert r_bad["status"] == "error"
 
 
-# Plan 07.12-02 removed test_double_empathy_live — (double_empathy)
+# removed test_double_empathy_live — (double_empathy)
 # was promoted to a passive system invariant (CLAUDE.md "Architectural
 # Invariants — Pinned"); the system never translates phrasing toward NT style
 # at any path, so a runtime knob was redundant. Removed from registry.
@@ -199,7 +199,7 @@ def test_HIPPEA_precision_spec_added_wire_to_autist_03():
 
 
 def test_profile_get_returns_14_live_entries():
-    """Plan 07.12-02: 11 live (10 autistic + wake_depth MCP-12). Test name kept for git stability."""
+    """: 11 live (10 autistic + wake_depth MCP-12). Test name kept for git stability."""
     state = default_state()
     result = profile_get(None, state)
     assert len(result["live"]) == 11

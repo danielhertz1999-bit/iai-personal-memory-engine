@@ -1,4 +1,4 @@
-"""Phase 07.9 W5 / — cross-cut data-integrity integration soak.
+"""W5 / — cross-cut data-integrity integration soak.
 
 Exercises the W1-W4 hardening fixes *together* under load shapes that no
 per-wave unit test reaches. Each case maps 1:1 to the four CONTEXT.md
@@ -121,7 +121,7 @@ def test_w5_provenance_overflow_sustained_load(tmp_path, monkeypatch):
 
     cues = [p[1]["cue"] for p in flushed]
     assert sorted(cues) == [f"sustained-{i}" for i in range(10)], (
-        f"MEM-05 violated: expected all 10 cues exactly once; got {sorted(cues)}"
+        f" violated: expected all 10 cues exactly once; got {sorted(cues)}"
     )
     overflow_dir = tmp_path / ".iai-mcp" / ".provenance-overflow"
     assert list(overflow_dir.glob("*.jsonl")) == []

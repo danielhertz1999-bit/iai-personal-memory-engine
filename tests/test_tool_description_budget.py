@@ -1,6 +1,6 @@
-"""Phase 5 RED-state test scaffold. Tasks 2-5 turn these GREEN.
+"""RED-state test scaffold. Tasks 2-5 turn these GREEN.
 
-Covers TOK-15 / D5-07: MCP tool description budget audit.
+Covers / D5-07: MCP tool description budget audit.
 - Each of the 11 tools in mcp-wrapper/src/tools.ts has description ≤30 raw tok.
 - Total description budget ≤330 raw tok.
 - Exactly 11 tools present.
@@ -88,7 +88,7 @@ def _extract_top_level_descriptions() -> list[tuple[str, str]]:
 
 # ------------------------------------------------------------------- tests
 def test_tool_count_unchanged_at_12():
-    """Plan 06 raised the hot-surface from 11 to 12 by adding memory_capture."""
+    """raised the hot-surface from 11 to 12 by adding memory_capture."""
     descs = _extract_top_level_descriptions()
     assert len(descs) == 12, (
         f"expected 12 tool descriptions, found {len(descs)}: {[n for n, _ in descs]}"
@@ -103,7 +103,7 @@ def test_each_tool_description_le_30_tokens():
         if n > 30:
             offenders.append((name, n, desc[:80]))
     assert not offenders, (
-        "TOK-15 violation: some descriptions exceed 30 tokens:\n"
+        " violation: some descriptions exceed 30 tokens:\n"
         + "\n".join(f"  {n}: {t} tok -- {d!r}" for n, t, d in offenders)
     )
 
@@ -112,6 +112,6 @@ def test_total_tool_descriptions_le_330_tokens():
     descs = _extract_top_level_descriptions()
     total = sum(_tok(d) for _, d in descs)
     assert total <= 330, (
-        f"TOK-15 violation: total description budget {total} tok > 330\n"
+        f" violation: total description budget {total} tok > 330\n"
         + "\n".join(f"  {n}: {_tok(d)} tok" for n, d in descs)
     )

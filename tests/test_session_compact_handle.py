@@ -1,4 +1,4 @@
-"""Plan 05-06 Task 1 — compact <iai:HHHHHHHHHHHHHHHH> handle tests.
+"""compact <iai:HHHHHHHHHHHHHHHH> handle tests.
 
 Replaces the three legacy pointer fields at wake_depth=minimal with one
 blake2s-derived 16-hex opaque handle. The payload dataclass still
@@ -187,7 +187,7 @@ def test_minimal_payload_cached_tokens_within_budget(_fresh_store):
 
 def test_compact_handle_is_hex_only_no_knob_leak():
     """Constitutional: profile-knob names must NOT surface through the
-    session-start prefix (TOK-13 grep guard). The compact handle is
+    session-start prefix ( grep guard). The compact handle is
     ``<iai:{16 hex chars}>`` by construction so any knob name would have to
     smuggle itself through the hash digest, which is cryptographically
     impossible to engineer for arbitrary ASCII substrings."""

@@ -1,6 +1,6 @@
-"""S5 identity kernel -- invariant protection via M-of-N consensus (MEM-09, D-22).
+"""S5 identity kernel -- invariant protection via M-of-N consensus (, ).
 
-D-22 constitutional rules enforced here:
+ constitutional rules enforced here:
 - ρ_identity = 0.99 (stricter than write-path ρ=0.95 and S4 ρ_s4=0.97).
 - 3-of-5 session-window consensus: an invariant update only commits after 3
   vigilance-passing proposals within the consensus window. A single-session
@@ -17,7 +17,7 @@ Proposal events (kind=s5_invariant_proposal) are emitted for EVERY proposal
 so the M-of-N tally can be reconstructed from the events table alone -- no
 hidden in-memory state. Cooldown lookups read kind=s5_invariant_update.
 
-Plan 02-05 additions (OPS-07 / gradual-drift detection):
+additions ( / gradual-drift detection):
 - `detect_drift_anomaly` reads trajectory_metric events for M4 (profile-vector
   variance). When the last `window_sessions` consecutive values have been
   monotonically increasing (was-decreasing becoming increasing), emits an
@@ -90,7 +90,7 @@ def propose_invariant_update(
     new_fact: str,
     session_id: str,
 ) -> tuple[str, UUID | None]:
-    """D-22 M-of-N voting on identity-tier updates.
+    """ M-of-N voting on identity-tier updates.
 
     Workflow:
     1. If the anchor is in 48h cooldown, reject (``cooldown``).
@@ -228,9 +228,9 @@ def check_identity_anchor_on_write(
 
     Records with s5_trust_score >= TRUST_THRESHOLD_IDENTITY (0.9) are
     considered invariant-tier. They may NOT be written through any path that
-    bypasses propose_invariant_update (D-22 consensus requirement).
+    bypasses propose_invariant_update ( consensus requirement).
 
-    extension (OPS-07, D-31): the shield is evaluated in
+    extension (, ): the shield is evaluated in
     HARD_BLOCK tier BEFORE the consensus marker check. Any detected
     injection signal short-circuits with "shield HARD_BLOCK" -- a
     mitigation for the "direct override" branch of the threat model.
@@ -326,7 +326,7 @@ def detect_drift_anomaly(
     store: MemoryStore,
     window_sessions: int = 5,
 ) -> list[dict]:
-    """D-30 gradual-drift detection via trajectory M4 reversal.
+    """ gradual-drift detection via trajectory M4 reversal.
 
     Reads trajectory_metric events filtered to metric=m4 (profile-vector
     variance). The expected direction is DECREASING (the profile is

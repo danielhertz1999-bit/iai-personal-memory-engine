@@ -1,4 +1,4 @@
-"""Tests for iai_mcp.richclub (CONN-02 top-10% pre-fetch)."""
+"""Tests for iai_mcp.richclub ( top-10% pre-fetch)."""
 from __future__ import annotations
 
 from uuid import uuid4
@@ -8,7 +8,7 @@ from iai_mcp.richclub import rich_club_nodes
 
 
 def test_rich_club_selects_top_10_percent() -> None:
-    """CONN-02: 20-node chain, percent=0.10 -> exactly 2 nodes (top centralities)."""
+    """: 20-node chain, percent=0.10 -> exactly 2 nodes (top centralities)."""
     g = MemoryGraph()
     nodes = [uuid4() for _ in range(20)]
     for n in nodes:

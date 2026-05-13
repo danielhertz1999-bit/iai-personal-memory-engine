@@ -1,4 +1,4 @@
-"""Plan 03-02 Task 2 Step 5: M2 precision@5 LIVE tests.
+"""Task 2 Step 5: M2 precision@5 LIVE tests.
 
 Reads ``kind='retrieval_used'`` events emitted by retrieve.py / pipeline.py.
 """

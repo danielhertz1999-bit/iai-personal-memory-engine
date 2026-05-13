@@ -1,4 +1,4 @@
-"""Phase 10.4 L4 — daemon-side heartbeat scanner (per-wrapper, PID-scoped).
+"""L4 — daemon-side heartbeat scanner (per-wrapper, PID-scoped).
 
 Reads ``~/.iai-mcp/wrappers/heartbeat-<pid>-<uuid>.json`` files written by
 each MCP wrapper instance, validates freshness (``now - last_refresh <= M``)
@@ -13,7 +13,7 @@ Constraints (carried from CONTEXT 10.4):
 - No new third-party dependencies — stdlib only.
 - macOS-only PID semantics carried through (Linux subset works the same; only
   Windows is unsupported, which matches the phase's macOS-only stance).
-- This module is STANDALONE — daemon main-loop integration lands in Phase 10.5.
+- This module is STANDALONE — daemon main-loop integration lands in .
 
 Heartbeat file schema (written by wrapper, read here)::
 
@@ -130,7 +130,7 @@ def _parse_heartbeat_file(path: Path) -> tuple[int, str, datetime] | None:
     A JSON-parse failure falls back to the file's mtime so that a torn
     write produced by a wrapper crash mid-rename is treated as STALE-on-
     age rather than silently dropped — matches the "reentrant + safe under
-    concurrent writers" requirement in PLAN 10.4-01 Task 1.1.
+    concurrent writers" requirement.
     """
     try:
         raw = path.read_text(encoding="utf-8")

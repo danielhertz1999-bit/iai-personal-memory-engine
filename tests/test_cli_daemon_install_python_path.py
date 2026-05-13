@@ -1,4 +1,4 @@
-"""Plan 07.14-02 tests: regression-lock for `iai-mcp daemon install`
+"""tests: regression-lock for `iai-mcp daemon install`
 sys.executable substitution into launchd plist + systemd user unit.
 
 Locks the contract that `_render_launchd_plist` and `_render_systemd_unit`
@@ -106,7 +106,7 @@ def test_install_uses_sys_executable_linux(monkeypatch):
 # ============================================================================
 
 
-# Plan 10.6-01 Task 1.7: plist invariants -----------------------------
+# plist invariants -----------------------------
 
 
 def test_plist_keepalive_is_crashed_only(monkeypatch):
@@ -127,7 +127,7 @@ def test_plist_keepalive_is_crashed_only(monkeypatch):
     assert "<key>Crashed</key>" in rendered
     # Legacy SuccessfulExit=false must be GONE.
     assert "<key>SuccessfulExit</key>" not in rendered, (
-        "Phase 10.6 removed SuccessfulExit=false from the plist. Its presence "
+        "removed SuccessfulExit=false from the plist. Its presence "
         "would create a respawn loop because exit 0 is now the steady state."
     )
 

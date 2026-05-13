@@ -1,4 +1,4 @@
-"""Lucid moment orchestration -- (D-13 Option A).
+"""Lucid moment orchestration -- ( Option A).
 
 The "main insight of the day": exactly ONE `claude -p` subprocess call per
 night, at the end of the last REM cycle. The prompt is built from 3 locally-
@@ -126,7 +126,7 @@ async def generate_overnight_insight(store, session_id: str) -> dict:
     Pre-flight gate sequence (every one MUST pass before spawning subprocess):
         1. verify_credentials_subscription (bug #43333 layer 2)
         2. BudgetTracker.host_disabled_after_billing_event (bug #43333 layer 3)
-        3. BudgetTracker.can_spend(PROMPT_ESTIMATE_TOKENS) (D-15 budget)
+        3. BudgetTracker.can_spend(PROMPT_ESTIMATE_TOKENS) ( budget)
     """
     creds = verify_credentials_subscription()
     if not creds.get("ok"):
@@ -215,7 +215,7 @@ async def generate_overnight_insight(store, session_id: str) -> dict:
     )
     # Dataclass has `tags` (list) not `tag` (scalar); we also expose `tag`
     # via attribute assignment for callers that prefer the scalar form. This
-    # is NOT a literal_surface mutation so it does not violate C5 MEM-01.
+    # is NOT a literal_surface mutation so it does not violate C5 .
     try:
         object.__setattr__(record, "tag", "overnight_insight")
     except Exception:  # noqa: BLE001 -- attribute attach is best-effort

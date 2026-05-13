@@ -1,4 +1,4 @@
-"""Plan 07-02 Wave 2 R6 acceptance: stdio path unchanged + parity with socket path.
+"""Wave 2 R6 acceptance: stdio path unchanged + parity with socket path.
 
 `python -m iai_mcp.core` is the legacy stdio JSON-RPC entry point used by every
 pre-Phase-7 wrapper instance and by ~50 existing tests. R6 mandates zero

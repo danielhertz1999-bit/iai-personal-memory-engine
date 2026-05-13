@@ -1,8 +1,8 @@
-"""Phase 07.10 W3 / Plan 05: doctor `check_h_crypto_file_state` + top-of-output hint.
+"""doctor `check_h_crypto_file_state` + top-of-output hint.
 
 Locks the executable spec for the 8th doctor check row + the migration
 remediation hint that prints at the very top of doctor's output when the
-file-missing-but-Keychain-entry-exists state is detected (Phase 07.10 D-12).
+file-missing-but-Keychain-entry-exists state is detected .
 
 Detection matrix:
 | file present + valid | keyring entry | doctor output       |
@@ -200,7 +200,7 @@ def test_run_diagnosis_includes_check_h(monkeypatch: pytest.MonkeyPatch, tmp_pat
     """D-12 wire-in -- `run_diagnosis()` includes the check_h crypto-key row.
 
     Originally a positional assertion (8th row); rewritten to name-based
-    lookup so subsequent doctor-row additions (Phase 10.4 added m + n)
+    lookup so subsequent doctor-row additions (added m + n)
     do not regress this contract. The (h) and (i) rows must both be
     present in the returned list.
 
@@ -298,7 +298,7 @@ def test_cmd_doctor_prints_hint_at_top_when_check_h_warns(
 # ---------------------------------------------------------------- CheckResult back-compat
 
 def test_check_result_three_arg_constructor_still_works() -> None:
-    """Phase 07.10 (Rule 1 deviation): adding `status` to CheckResult must NOT
+    """(Rule 1 deviation): adding `status` to CheckResult must NOT
     break existing tests that construct it with 3 positional args
     (test_doctor_checklist.py uses the 3-arg form ~14 times).
     """

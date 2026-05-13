@@ -1,4 +1,4 @@
-"""Plan 02-08 / AES-256-GCM encryption-at-rest primitives + file-backed key storage.
+"""/ AES-256-GCM encryption-at-rest primitives + file-backed key storage.
 
 Ciphertext format (string-encoded for LanceDB string-column storage):
 
@@ -15,11 +15,12 @@ Associated data (AD) is the UUID bytes of the record id: this binds the
 ciphertext to its row so an attacker with write access cannot swap ciphertext
 values between rows (T-02-08-01 tampering mitigation).
 
-Key storage (Phase 07.10 — file-backed primary, no keyring at module scope):
+Key storage (— file-backed primary, no keyring at module scope):
 - Primary: a 32-raw-byte file at ``{store_root}/.crypto.key`` (default
   ``~/.iai-mcp/.crypto.key``), mode ``0o600``, owner-uid validated. Resolved
   via the ``store_root`` constructor argument (single-source path, threaded
   from ``MemoryStore.root`` — see D-03). When ``store_root`` is
+
   ``None`` the path is read lazily from ``IAI_MCP_STORE`` env or the
   ``DEFAULT_STORAGE_PATH`` (``~/.iai-mcp``).
 - Fallback: passphrase via ``IAI_MCP_CRYPTO_PASSPHRASE`` env var (CI / fresh
@@ -30,7 +31,7 @@ Key storage (Phase 07.10 — file-backed primary, no keyring at module scope):
 - If neither path resolves, ``CryptoKey.get_or_create()`` raises
   ``CryptoKeyError`` with a dual-remediation message naming
   ``iai-mcp crypto migrate-to-file`` (existing macOS Keychain key from before
-  Phase 07.10), ``iai-mcp crypto init`` (fresh install), and the
+  ), ``iai-mcp crypto init`` (fresh install), and the
   ``IAI_MCP_CRYPTO_PASSPHRASE`` env var (CI / non-interactive). No silent
   key generation — that would render existing data unreadable.
 
@@ -38,7 +39,7 @@ The migration CLI command ``iai-mcp crypto migrate-to-file`` keeps
 a function-local ``import keyring`` to read an existing macOS Keychain key
 once and write it to the file backend; this module never imports ``keyring``
 at file scope, so daemon boot under launchd does not block on the Keychain
-ACL prompt (Phase 07.10 / D-12).
+ACL prompt (/ ).
 
 Module contract:
 - encrypt_field(plaintext, key, associated_data) -> str (prefixed base64)
@@ -48,7 +49,7 @@ Module contract:
 - derive_key_from_passphrase(passphrase, salt) -> bytes (32)
 
 Constitutional fit:
-- D-STORAGE: no keys stored in the LanceDB store; only ciphertext.
+- : no keys stored in the LanceDB store; only ciphertext.
 - D-GUARD: file backend missing degrades to passphrase fallback; absent both,
   refusal is loud with an actionable error pointing at both remediation paths.
 - encryption is lossless -- decrypt(encrypt(x)) == x byte-for-byte.
@@ -91,7 +92,7 @@ class CryptoKeyError(RuntimeError):
     - Neither a key file NOR ``IAI_MCP_CRYPTO_PASSPHRASE`` is present;
       ``MemoryStore`` surfaces the error so the daemon refuses to start with
       a clear actionable message instead of silently proceeding without
-      encryption (Phase 07.10 D-04).
+      encryption .
     """
 
 
@@ -255,7 +256,7 @@ class CryptoKey:
         return hashlib.sha256(self.user_id.encode("utf-8")).digest()[:16]
 
     def _key_file_path(self) -> Path:
-        """Resolve ``{store_root}/.crypto.key`` (Phase 07.10 D-03).
+        """Resolve ``{store_root}/.crypto.key`` .
 
         Lazy resolution: if ``self.store_root`` was not supplied at
         construction, read ``IAI_MCP_STORE`` env or fall back to the project
@@ -290,7 +291,7 @@ class CryptoKey:
             return None
         # Use ``os.stat`` rather than ``Path.stat`` so test harnesses can
         # monkeypatch ``os.stat`` to simulate foreign-uid scenarios at the
-        # syscall boundary (Phase 07.10 W1 case 4 path-scoped fake stat).
+        # syscall boundary (W1 case 4 path-scoped fake stat).
         st = os.stat(path)
         # Mode check: owner-only bits permitted.
         if st.st_mode & 0o077 != 0:
@@ -314,7 +315,7 @@ class CryptoKey:
         return raw
 
     def _try_file_set(self, key: bytes) -> None:
-        """Atomically write ``key`` to the key file (Phase 07.10 D-07).
+        """Atomically write ``key`` to the key file .
 
         Pattern:
         1. ``mkdir -p`` the parent directory.
@@ -378,7 +379,7 @@ class CryptoKey:
         if self._cached_key is not None:
             return self._cached_key
 
-        # Priority 1: file backend (Phase 07.10 D-02).
+        # Priority 1: file backend .
         existing = self._try_file_get()
         if existing is not None:
             self._cached_key = existing
@@ -391,14 +392,14 @@ class CryptoKey:
             self._cached_key = derived
             return derived
 
-        # Priority 3: refuse with a dual-remediation error message (Phase 07.10 D-04).
+        # Priority 3: refuse with a dual-remediation error message .
         path = self._key_file_path()
         raise CryptoKeyError(
             f"crypto key file not found at {path} and IAI_MCP_CRYPTO_PASSPHRASE "
             f"is not set.\n"
             f"\n"
             f"To fix:\n"
-            f"  - Existing install (key was in macOS Keychain before Phase 07.10): "
+            f" - Existing install (key was in macOS Keychain before ): "
             f"run `iai-mcp crypto migrate-to-file` from a Terminal where the "
             f"Keychain prompt can appear, then click \"Always Allow\".\n"
             f"  - Fresh install: run `iai-mcp crypto init` to generate a new key "

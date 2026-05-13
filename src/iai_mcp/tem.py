@@ -1,4 +1,4 @@
-"""Plan 03-01 CONN-05: TEM factorization (Whittington-Behrens 2020 Cell 183:1249-1263).
+""": TEM factorization (Whittington-Behrens 2020 Cell 183:1249-1263).
 
 Tolman-Eichenbaum Machine factorization of *structure* and *content* into
 binary BSC hypervectors at D=10000 (TorchHD semantics, packed to 1250 bytes).
@@ -8,7 +8,7 @@ multiple role-filler pairs are bundled via per-bit majority vote so a single
 attributes per record (D-TEM-02: unbind fidelity >= 0.95 at 15 pairs).
 
 Constitutional fit:
-- CONN-05 = TEM factorization. Structural queries are FIRST-CLASS peers of
+- = TEM factorization. Structural queries are FIRST-CLASS peers of
   cosine queries in the retrieval pipeline. NOT a "VSA retrieval layer over
   cosine" -- structural and content signals merge in the ranker as siblings.
 - D-TEM-01: BSC binary (NOT FHRR), D=10000.

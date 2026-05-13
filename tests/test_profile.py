@@ -1,6 +1,6 @@
-"""Tests for the 11-knob profile registry (D-11 + + + Plan 07.12-02 removals).
+"""Tests for the 11-knob profile registry ( + + + removals).
 
-Plan 03-03 flipped the 14th autistic-kernel knob camouflaging_relaxation
+flipped the 14th autistic-kernel knob camouflaging_relaxation
 from phase=3 (deferred) to phase=1 (live). appends the
 15th sealed knob `wake_depth` (operator-facing, default="minimal"). All 15
 knobs now live; PHASE_3_DEFERRED empty.
@@ -33,16 +33,16 @@ from iai_mcp.profile import (
 
 
 def test_profile_has_exactly_14_knobs():
-    """Plan 07.12-02: 11 knobs total (10 autistic-kernel + wake_depth).
+    """: 11 knobs total (10 autistic-kernel + wake_depth).
 
     Test name kept for git stability (was 14 pre-MCP-12, 15 post-MCP-12, 11
-    after Plan 07.12-02 removed AUTIST-02/08/11/12).
+    after removed AUTIST-02/08/11/12).
     """
     assert len(PROFILE_KNOBS) == 11
 
 
 def test_phase_1_live_has_exactly_fourteen():
-    """Plan 07.12-02: 11 live knobs (10 autistic-kernel + wake_depth MCP-12)."""
+    """: 11 live knobs (10 autistic-kernel + wake_depth MCP-12)."""
     assert len(PHASE_1_LIVE) == 11
     # original four must remain
     assert "literal_preservation" in PHASE_1_LIVE
@@ -65,13 +65,13 @@ def test_phase_2_deferred_is_empty():
 
 
 def test_phase_3_deferred_is_empty_after_autist13_flip():
-    """Plan 03-03 FLIP: camouflaging_relaxation flipped to live; nothing deferred."""
+    """camouflaging_relaxation flipped to live; nothing deferred."""
     assert PHASE_3_DEFERRED == frozenset()
     assert len(PHASE_3_DEFERRED) == 0
 
 
 def test_every_knob_has_autist_requirement_id():
-    """Plan 07.12-02: 10 autistic-kernel knobs carry AUTIST-*; wake_depth carries MCP-12."""
+    """: 10 autistic-kernel knobs carry AUTIST-*; wake_depth carries MCP-12."""
     for name, spec in PROFILE_KNOBS.items():
         if name == "wake_depth":
             assert spec.requirement_id == "MCP-12", (
@@ -96,7 +96,7 @@ def test_default_state_excludes_deferred_knobs():
     """default_state() returns only the live knobs; deferred keys must be absent."""
     state = default_state()
     assert set(state.keys()) == PHASE_1_LIVE
-    # Plan 07.12-02: 11 live knobs (10 autistic-kernel + wake_depth MCP-12).
+    # : 11 live knobs (10 autistic-kernel + wake_depth MCP-12).
     assert len(state) == 11
 
 
@@ -104,10 +104,10 @@ def test_default_state_excludes_deferred_knobs():
 
 
 def test_profile_get_none_returns_total_14():
-    """Plan 07.12-02: 11 live + 0 deferred = 11 total (10 autistic-kernel + wake_depth).
+    """: 11 live + 0 deferred = 11 total (10 autistic-kernel + wake_depth).
 
     Test name kept for git stability (was 14 pre-MCP-12, 15 post-MCP-12, 11
-    after Plan 07.12-02 removed AUTIST-02/08/11/12).
+    after removed AUTIST-02/08/11/12).
     """
     state = default_state()
     result = profile_get(None, state)
@@ -152,7 +152,7 @@ def test_profile_get_monotropism_depth_now_live():
 
 
 def test_profile_get_camouflaging_now_live_after_autist13_flip():
-    """Plan 03-03 FLIP: camouflaging_relaxation is live; profile_get returns value."""
+    """camouflaging_relaxation is live; profile_get returns value."""
     state = default_state()
     r = profile_get("camouflaging_relaxation", state)
     assert r["knob"] == "camouflaging_relaxation"
@@ -211,7 +211,7 @@ def test_profile_set_monotropism_depth_rejects_non_dict():
 
 
 def test_profile_set_camouflaging_now_accepts_value_after_autist13_flip():
-    """Plan 03-03 FLIP: camouflaging_relaxation is live; profile_set succeeds."""
+    """camouflaging_relaxation is live; profile_set succeeds."""
     state = default_state()
     r = profile_set("camouflaging_relaxation", 0.5, state)
     assert r["status"] == "ok"
@@ -233,7 +233,7 @@ def test_profile_set_unknown_knob_returns_unknown_reason():
 
 
 def test_profile_set_task_support_enum_accepts_blank_recall():
-    """Plan 02 exposed task_support="cued_recognition" default; enum allows toggle."""
+    """exposed task_support="cued_recognition" default; enum allows toggle."""
     state = default_state()
     r = profile_set("task_support", "blank_recall", state)
     assert r["status"] == "ok"

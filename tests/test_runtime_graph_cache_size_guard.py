@@ -1,11 +1,11 @@
-"""Phase 07.6 W2 / tests for the dry-size-estimator drop loop in
+"""W2 / tests for the dry-size-estimator drop loop in
 `runtime_graph_cache.save`. Defends against the regression where save()
 materialised a multi-GB intermediate Python string by calling json.dumps
 up to 4 times per save (CONTEXT.md py-spy 2026-04-29 PID 7959
-RSS 7.6GB). After Plan 07.6-02 Task 1, json.dumps runs AT MOST once per
+RSS 7.6GB). After Task 1, json.dumps runs AT MOST once per
 save invocation, regardless of how many fields are dropped.
 
-Phase 07.9 W3 / cache file is now AES-256-GCM-wrapped. These
+W3 / cache file is now AES-256-GCM-wrapped. These
 tests use ``_decrypt_cache_for_inspection`` to peek at the JSON shape.
 """
 from __future__ import annotations
@@ -36,7 +36,7 @@ def _make_fake_store(tmp_path):
 
 
 def _decrypt_cache_for_inspection(store, path: pathlib.Path) -> dict:
-    """Phase 07.9 W3: read the encrypted sidecar and decode the inner
+    """W3: read the encrypted sidecar and decode the inner
     JSON. Used by size-guard tests that previously did
     ``real_json.load(f)`` directly on the cache file.
     """

@@ -1,4 +1,4 @@
-"""Tests for TOK-07 subagent delegation (Plan 02-04 Task 3, D-27).
+"""Tests for subagent delegation (Task 3, ).
 
 serialize_session_for_subagent emits a JSON-safe dict containing:
 - l0, l1, l2, rich_club segments (D-10 session-start payload)

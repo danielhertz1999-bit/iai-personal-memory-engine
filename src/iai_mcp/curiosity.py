@@ -1,9 +1,9 @@
-"""Active curiosity (LEARN-04, D-23, D-24) -- Task 4.
+"""Active curiosity (LEARN-04, , ) -- Task 4.
 
-D-23 trigger: prediction entropy > 0.7 bits AND 3-turn cooldown since last
+ trigger: prediction entropy > 0.7 bits AND 3-turn cooldown since last
 curiosity question in this session.
 
-D-24 tiered style:
+ tiered style:
 - entropy in [ENTROPY_LOW, ENTROPY_MID)  -> silent log event, no question
 - entropy in [ENTROPY_MID, ENTROPY_HIGH) -> inline hint
 - entropy >= ENTROPY_HIGH                -> direct clarifying question
@@ -94,7 +94,7 @@ def fire_curiosity(
     session_id: str,
     turn: int,
 ) -> CuriosityQuestion | None:
-    """D-23 gate + tiering.
+    """ gate + tiering.
 
     Returns a CuriosityQuestion (or None) and, as a side effect:
     - emits a curiosity_silent_log event for low-entropy misses

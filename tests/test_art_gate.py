@@ -1,4 +1,4 @@
-"""ART vigilance gate tests (MEM-03, D-07, D-14)."""
+"""ART vigilance gate tests (, , )."""
 from __future__ import annotations
 
 from iai_mcp.types import EMBED_DIM
@@ -7,7 +7,7 @@ from tests.test_store import _make
 
 
 def test_vigilance_rho_is_0_95():
-    """ρ fixed at 0.95 for Phase 1."""
+    """ρ fixed at 0.95 for """
     assert VIGILANCE_RHO == 0.95
 
 

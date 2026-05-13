@@ -1,15 +1,15 @@
-"""TOK-09 Batch API consolidation (Plan 02-04 Task 3, D-29).
+""" Batch API consolidation (Task 3, ).
 
-D-29 (unified daily process): when Tier 1 is enabled + credentials + budget
+ (unified daily process): when Tier 1 is enabled + credentials + budget
 + rate-limit all green (D-GUARD ladder via should_call_llm), submit a batch
 to Anthropic's Batch API at 50% discount vs synchronous calls. Falls back
 to Tier 0 stub results on any gate failure or SDK absence.
 
-Plan 02-04 scope: the D-GUARD gate + budget side-effect + llm_health event
+scope: the D-GUARD gate + budget side-effect + llm_health event
 emission are load-bearing. The actual anthropic.batches.create call is
 scaffolded behind a lazy import; when the SDK surface differs from what the
 Python core expects (e.g. version skew), the stub returns an empty result
-list and records llm_health fallback. Plan 03 / future phases own the real
+list and records llm_health fallback. / future phases own the real
 wire-up once the SDK API settles.
 
 Pricing model:
@@ -31,7 +31,7 @@ BATCH_DISCOUNT = 0.5
 # scope: we do not poll in-process. Real-world Batch API can take
 # up to ~24h. The dispatch path is "submit -> return (True, 'ok', stub)" with
 # the actual results arriving via a future polling job. Tests assert the
-# gate + side-effects; the stub list is empty in Phase 2.
+# gate + side-effects; the stub list is empty in
 BATCH_POLL_TIMEOUT_SEC = 60
 
 # Haiku 4.5 approximate sync pricing (USD per 1M tokens).
@@ -79,7 +79,7 @@ def submit_batch_consolidation(
       3. Budget daily + monthly caps (can_spend)
       4. Rate-limit cooldown (last 429 < 15 min)
       5. SDK import path
-      6. Real batch submission (Plan 02-04 stub; see module docstring)
+      6. Real batch submission (stub; see module docstring)
     """
     has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
     estimated_usd = _aggregate_estimated_usd(tasks)
@@ -125,7 +125,7 @@ def submit_batch_consolidation(
         )
         return False, f"SDK unavailable: {exc}", []
 
-    # H-02 FIX (Phase 2 gap closure): budget stays untouched and
+    # H-02 FIX (gap closure): budget stays untouched and
     # effective_tier stays tier0 until a REAL successful anthropic.batches.create
     # response lands. The previous behaviour called budget.record_spend + returned
     # (True, "ok", []), which caused run_heavy_consolidation to flip
@@ -144,8 +144,8 @@ def submit_batch_consolidation(
             "task_count": len(tasks),
             "estimated_usd": estimated_usd,
             "note": (
-                "Plan 02-06 disables the scaffold-true return; "
-                "real anthropic.batches.create wire-up is Phase 3. Budget "
+                "disables the scaffold-true return; "
+                "real anthropic.batches.create wire-up is Budget "
                 "stays untouched and effective_tier stays tier0 until a "
                 "real successful SDK response lands."
             ),

@@ -1,4 +1,4 @@
-"""Plan 03-03 — camouflaging detector + register relaxer (ecological self-regulation).
+"""— camouflaging detector + register relaxer (ecological self-regulation).
 
 Constitutional anchor:
 - Observes the user's SURFACE formality over a weekly sliding 5-point window.
@@ -11,7 +11,7 @@ Constitutional anchor:
 Detection (D-AUTIST13-03): sliding 5-point weekly window. Trigger condition:
 linear-regression slope > 0.05/week AND current mean > 0.6. Both must hold.
 
-Event kinds emitted (new in Phase 3):
+Event kinds emitted (new in ):
 - `formality_score_weekly` — weekly aggregate of the user's formality scores.
 - `camouflaging_detected` — the detector fired (over-formal trajectory confirmed).
 - `register_relaxed` — OUR `camouflaging_relaxation` knob was bumped UP (toward

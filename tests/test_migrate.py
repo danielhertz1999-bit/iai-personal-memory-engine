@@ -36,7 +36,7 @@ def _v1_record(
     """Construct a legacy-looking v1 record.
 
     language="" + schema_version=1 simulates a Phase-1 row; __post_init__
-    requires non-empty language for Phase 2, so we set it to a placeholder
+    requires non-empty language for , so we set it to a placeholder
     during construction and then clear it via attribute assignment for the
     simulated-v1 state.
     """
@@ -162,7 +162,7 @@ def test_migrate_writes_event(tmp_path):
 
 
 def test_migrate_preserves_literal_surface_verbatim(tmp_path):
-    """MEM-01 constitutional: migration MUST NOT rewrite literal_surface."""
+    """ constitutional: migration MUST NOT rewrite literal_surface."""
     from iai_mcp.migrate import migrate_v1_to_v2
     from iai_mcp.store import MemoryStore
 

@@ -1,4 +1,4 @@
-"""Plan 05-10 — MemoryStore async-write integration tests.
+"""— MemoryStore async-write integration tests.
 
 Covers the glue between MemoryStore and AsyncWriteQueue:
 

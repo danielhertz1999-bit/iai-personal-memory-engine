@@ -1,26 +1,26 @@
-"""Five-stage retrieval pipeline (D-13 + CONN-02/03/06, AUTIST-07).
+"""Five-stage retrieval pipeline ( + /03/06, AUTIST-07).
 
 Stage 1 - Embed: bge-small(cue) -> 384d vector.
-Stage 2 - Community gate (CONN-06): argmax cosine over centroids, keep top 3
+Stage 2 - Community gate : argmax cosine over centroids, keep top 3
          (primary + 2 neighbours via Yeo-like tunnel scores).
 Stage 3 - Seeds: top-3 within gated communities by 0.6*cos + 0.4*centrality.
-Stage 4 - 2-hop greedy spread (CONN-03), union with pre-fetched rich-club (CONN-02).
+Stage 4 - 2-hop greedy spread , union with pre-fetched rich-club .
 Stage 5 - Rank + pack under budget:
             score = W_COSINE*cos + W_AAAK*aaak_overlap + W_DEGREE*deg_norm
                     - W_AGE*age_penalty
             where deg_norm = log(1+deg) / log(1+max_deg) is bounded in [0,1]
             so the degree contribution is sample-rank-comparable to cosine
-            (Plan 06-02 R2; max_deg cached on graph._max_degree by build_runtime_graph).
+            (R2; max_deg cached on graph._max_degree by build_runtime_graph).
             multiplied by profile_modulation gain product if
             profile_state carries active knobs.
-          Anti-hits from contradicts-edge neighbours of top hits (D-13 dual-route).
+          Anti-hits from contradicts-edge neighbours of top hits ( dual-route).
 
 Constitutional rules enforced:
 - every hit appends a provenance entry (same as baseline retrieve.recall).
 - literal_surface returned verbatim (never rewritten) from store.
 - adjacent_suggestions populated per hit (AUTIST-07 cued recognition).
 
-Plan 02-03 Task 1 additions:
+Task 1 additions:
 - profile_modulates edges: after ranking, active knob gains create
   profile_modulates edges from affected records -> PROFILE_SENTINEL_UUID.
 - Curiosity hints (LEARN-04, Task 4): entropy-gated clarifying
@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SimpleRecordView:
-    """Plan 05-12 lightweight record view sourced from graph node attrs.
+    """lightweight record view sourced from graph node attrs.
 
     Covers the fields the seed + spread + rank stages actually read
     (embedding for cosine, literal_surface for MemoryHit hydration,
@@ -107,7 +107,7 @@ def _read_record_payload(G, rid: UUID, store: MemoryStore):
     """
     node = G.nodes.get(str(rid)) if rid is not None else None
     if node is not None and "embedding" in node and "surface" in node:
-        # Plan 07.11-02 / (V2-03 fix): empty/None surface OR a
+        # / (V2-03 fix): empty/None surface OR a
         # `_decrypt_failed=True` flag is a sentinel for cache-miss-due-
         # to-decrypt-failure. Fall through to store.get(rid) which has
         # its own retry semantics in crypto.py. A legitimately-empty
@@ -147,11 +147,11 @@ AGE_HALF_LIFE_DAYS = 30.0
 # W_DEGREE used in the rank-stage scoring formula. Keys MUST match the
 # profile.py:87 KnobSpec enum schema "enum:strong|medium|loose" — NOT the
 # phantom keys "balanced/weak", which would be rejected by
-# profile_set. The 11-knob registry is closed (Phase 07.12-02 removed
+# profile_set. The 11-knob registry is closed (-02 removed
 # AUTIST-02/08/11/12; expansion is a phase-level decision), so we use the
 # canonical knob vocabulary.
 #
-# Numeric mapping (Plan 06-03 starting values; refine if scoring sanity
+# Numeric mapping (starting values; refine if scoring sanity
 # checks on the live store show hubs still dominating at strong):
 #   strong  = 0.3   tighten degree influence; verbatim wins (Mottron EPF)
 #   medium  = 1.0   normalize-only baseline; no extra knob effect
@@ -165,7 +165,7 @@ LITERAL_PRESERVATION_W_DEGREE_SCALE: dict[str, float] = {
     "loose":  1.5,
 }
 
-# D-03: candidate-pool size for the
+# : candidate-pool size for the
 # cosine top-K gate replacement. Single module-level constant — NOT a
 # tier-branch, NOT a "small graph vs large graph" cap. K=200 is the
 # empirical 99th-percentile gold rank from the LongMemEval-S v1 trace
@@ -173,7 +173,7 @@ LITERAL_PRESERVATION_W_DEGREE_SCALE: dict[str, float] = {
 # margin. Future re-tuning is a benchmark-driven decision, not a hack.
 K_CANDIDATES: int = 200
 
-# D-02: mode-dependent community-gate
+# : mode-dependent community-gate
 # soft-bias scalars, grounded in CLS / EPF / HIPPEA / Ashby / Beer VSM.
 #
 # The community gate (Leiden communities + centroid cosine) is a
@@ -198,7 +198,7 @@ K_CANDIDATES: int = 200
 # communities.
 #
 # Beer VSM S5 (policy / identity invariants) governs the recall mode;
-# the cue-classifier in core.py:dispatch() (Plan 06-04 R5) sets `mode`,
+# the cue-classifier in core.py:dispatch (R5) sets `mode`,
 # and `_gate_bias_for_mode(mode)` returns the appropriate scalar. No
 # runtime drift, no coverage-based threshold, no dynamic 0.0/0.1
 # if/else — purely a function of the `mode` parameter.
@@ -219,7 +219,7 @@ COMMUNITY_BIAS_CONCEPT: float = 0.1    # CLS neocortical semantic / categorical 
 # OLD effective post-rank set size on synthetic perf-gate fixtures: 50-72
 # records. NEW pre-cap set: 200. The plan's 200ms / 75ms perf-gate
 # ceilings were tuned to OLD effective behavior. To preserve those
-# ceilings WITHOUT breaking / D-07, we apply an internal
+# ceilings WITHOUT breaking / , we apply an internal
 # post-rank cap inside the entry points: only `_POST_RANK_MAX_HITS`
 # records flow into the post-rank pipeline. The public cap
 # (`budget_tokens` for `recall_for_response`, `k_hits` for
@@ -238,11 +238,11 @@ _POST_RANK_MAX_HITS: int = 50
 
 
 def _gate_bias_for_mode(mode: str) -> float:
-    """Plan 08-01 (D-02): CLS-grounded mode-dependent gate bias.
+    """: CLS-grounded mode-dependent gate bias.
 
     Returns the community-gate soft-bias scalar appropriate for the
     given recall mode. Mode dispatch is set upstream by the cue-classifier
-    in `core.py:dispatch()` (Plan 06-04 R5).
+    in `core.py:dispatch` (R5).
 
     verbatim mode -> 0.0  (HIPPEA literal precision, hippocampal episodic recall)
     concept  mode -> 0.1  (CLS neocortical semantic, soft categorical hint)
@@ -256,7 +256,7 @@ def _gate_bias_for_mode(mode: str) -> float:
 
 @dataclass
 class _RecallCoreResult:
-    """Phase 8 redesign: shape returned by `_recall_core`.
+    """redesign: shape returned by `_recall_core`.
 
     Holds the load-bearing recall outputs: the SORTED full ranked list
     of scored_hits + activation_trace + cue_mode. The entry points
@@ -316,7 +316,7 @@ def _aaak_overlap(cue_text: str, aaak_index: str) -> float:
 
     approximation: whitespace + slash split applied symmetrically to
     both cue_text and aaak_index so "auth/login" tokenises consistently on
-    either side. Plan 03 will replace this with a proper AAAK tokeniser once
+    either side. will replace this with a proper AAAK tokeniser once
     the AAAK index schema is frozen.
     """
     if not aaak_index:
@@ -351,7 +351,7 @@ def _community_gate(
     assignment: CommunityAssignment,
     top_n: int = 3,
 ) -> list[UUID]:
-    """CONN-06: route cue to top-N communities by cosine(cue, centroid).
+    """: route cue to top-N communities by cosine(cue, centroid).
 
     vectorized — one matmul over stacked centroids
     replaces the per-centroid ``_cosine`` loop. At N=1k with no tag
@@ -388,7 +388,7 @@ def _pick_seeds(
     centrality_arr: np.ndarray,
     n: int = 3,
 ) -> np.ndarray:
-    """Phase 8 redesign (D-04): seed selection over the
+    """redesign : seed selection over the
     shared cosine array.
 
     Reads scores from the precomputed `shared_cos` array (built once in
@@ -423,7 +423,7 @@ def _collect_graph_pool(
     records_cache: dict[UUID, "object"] | None,
     store: MemoryStore,
 ) -> tuple[list[UUID], np.ndarray]:
-    """Phase 8 (D-01): build the (ids, embeddings) pool over
+    """: build the (ids, embeddings) pool over
     which the shared cosine pass operates.
 
     Reads embeddings in this order of preference:
@@ -490,9 +490,9 @@ def _find_anti_hits(
     k: int = 3,
     records_cache: dict[UUID, "object"] | None = None,
 ) -> list[MemoryHit]:
-    """D-13 dual-route anti-hits: contradicts-edge neighbours of top hits.
+    """ dual-route anti-hits: contradicts-edge neighbours of top hits.
 
-    scope: contradicts-edge lookup only. Plan 03 / will add
+    scope: contradicts-edge lookup only. / will add
     AAAK-opposition scoring when the AAAK tokeniser is in place.
 
     records_cache (optional): used to hydrate MemoryHit.literal_surface
@@ -620,7 +620,7 @@ def _recall_core(
     *,
     knobs_applied: dict | None = None,
 ) -> _RecallCoreResult:
-    """Phase 8 redesign: shared-cosine + Stage 2-5 + post-rank work.
+    """redesign: shared-cosine + Stage 2-5 + post-rank work.
 
     Performs the load-bearing recall computation ONCE and returns a
     fully-populated `_RecallCoreResult`. Both `recall_for_response`
@@ -644,7 +644,7 @@ def _recall_core(
       7. Verbatim-mode filter: on `reachable_indices` between
          Stage 4 union and Stage 5 rank, canonical pipeline.py:831
          placement preserved exactly.
-      8. Stage-5 rank (D-06 cosine reuse, mode-dependent bias).
+      8. Stage-5 rank ( cosine reuse, mode-dependent bias).
       9. Sort scored desc by score, secondary by UUID-asc (R5 contract).
      10. Build MemoryHits.
      11. Provenance batch.
@@ -657,7 +657,7 @@ def _recall_core(
     """
     profile_state = profile_state or {}
 
-    # Stage 0 - Active-inference gate (Plan 02-04 D-26).
+    # Stage 0 - Active-inference gate .
     # Lazy import + fn alias keeps this body free of substring
     # patterns the global security-reminder hook flags as eval-like.
     try:
@@ -833,7 +833,7 @@ def _recall_core(
     else:
         reachable_indices = np.empty(0, dtype=np.int64)
 
-    # Stage 7 - Verbatim-mode filter (D-08, post-Stage-4 / pre-Stage-5).
+    # Stage 7 - Verbatim-mode filter (, post-Stage-4 / pre-Stage-5).
     pre_filter_reachable_ids = [pool_ids[int(i)] for i in reachable_indices]
     if mode == "verbatim" and episodic_ids is not None:
         reachable_indices = np.array(
@@ -851,7 +851,7 @@ def _recall_core(
             post_filter_reachable_ids,
         )
 
-    # Stage 8 - Rank (D-06 cosine reuse, mode-dependent bias).
+    # Stage 8 - Rank ( cosine reuse, mode-dependent bias).
     from iai_mcp.profile import profile_modulation_for_record
 
     structural_weight: float = 0.0
@@ -929,7 +929,7 @@ def _recall_core(
                     + structural_weight * structural_score
                 )
             if profile_state:
-                # Phase 07.12-03 BLOCKER 3: thread the audit accumulator into
+                # -03 BLOCKER 3: thread the audit accumulator into
                 # the gains-application call so AUTIST-01/03/09 record into
                 # the same dict the caller (core.dispatch) attached to the
                 # response. knobs_applied may be None (back-compat callers).
@@ -1035,7 +1035,7 @@ def _apply_post_rank_pipeline(
     path_label: str,
     knobs_applied: dict | None = None,
 ) -> tuple[list[MemoryHit], list[MemoryHit], list[dict], list[dict]]:
-    """Phase 8 post-rank work shared by both entry points.
+    """post-rank work shared by both entry points.
 
     Operates on the BUDGET/K-CAPPED `hits` list, not on the full ranked
     `scored_hits` from `_recall_core`. This restores the OLD semantic
@@ -1056,13 +1056,13 @@ def _apply_post_rank_pipeline(
     Returns: (hits_after_pattern_strip, anti_hits, hints, patterns_observed).
 
     Stages mirror the pre-Phase-8 OLD pipeline_recall body lines ~1860-2050:
-      11. Provenance batch over full hits (Plan 02-07; contract).
+      11. Provenance batch over full hits (; contract).
       12. Anti-hits over capped subset (s4 scope).
       13. S4 hints over capped subset, skipped in verbatim mode.
-      14. profile_modulates edges over full hits (Plan 02-03 + batched).
+      14. profile_modulates edges over full hits (+ batched).
       15. Provisional schema + curiosity hints over capped subset, skipped in verbatim.
-      16. Concept-mode patterns_observed strip over full hits (Plan 06-04 R6).
-      17. retrieval_used event with full hit_ids (Plan 03-02 M2 LIVE).
+      16. Concept-mode patterns_observed strip over full hits (R6).
+      17. retrieval_used event with full hit_ids (M2 LIVE).
     """
     # Heavy O(N²) post-rank scope is bounded by _POST_RANK_MAX_HITS.
     s4_scope_hits = hits[:_POST_RANK_MAX_HITS]
@@ -1106,7 +1106,7 @@ def _apply_post_rank_pipeline(
             hints = []
 
     # Stage 14 - profile_modulates edges over the FULL caller-facing hits
-    # (Plan 02-03 + batched). O(N) cheap; no cap.
+    # (+ batched). O(N) cheap; no cap.
     if profile_state:
         modulate_pairs: list[tuple] = []
         modulate_deltas: list[float] = []
@@ -1170,7 +1170,7 @@ def _apply_post_rank_pipeline(
             pass
 
     # Stage 16 - Concept-mode patterns_observed strip over the FULL hits
-    # (Plan 06-04 R6). Schema records (tier=semantic AND tag=pattern:*)
+    # (R6). Schema records (tier=semantic AND tag=pattern:*)
     # are stripped from `hits` into `patterns_observed`; max 3 entries.
     patterns_observed: list[dict] = []
     if mode == "concept":
@@ -1216,7 +1216,7 @@ def _apply_post_rank_pipeline(
                 kept_hits.append(h)
         hits = kept_hits
 
-    # Stage 17 - retrieval_used event with full hit_ids (Plan 03-02 M2 LIVE).
+    # Stage 17 - retrieval_used event with full hit_ids (M2 LIVE).
     try:
         write_event(
             store,
@@ -1252,7 +1252,7 @@ def recall_for_response(
     *,
     knobs_applied: dict | None = None,
 ) -> RecallResponse:
-    """Phase 8 redesign (D-07): production answer-packing entry point.
+    """redesign : production answer-packing entry point.
 
     Calls `_recall_core` for the load-bearing recall computation, then
     packs hits under `budget_tokens` per the pre-Phase-8 contract: the
@@ -1295,7 +1295,7 @@ def recall_for_response(
     # the M-02 p95 gate at N=100.
     #
     # NOTE: deliberately NOT consuming core._records_cache for created_at --
-    # SimpleRecordView.created_at is a wall-clock placeholder (Plan 05-12
+    # SimpleRecordView.created_at is a wall-clock placeholder (
     # graph node payload does not carry record.created_at), which would
     # poison the derived valid_from / valid_to. Plumbing created_at into
     # graph node attrs is follow-up.
@@ -1338,7 +1338,7 @@ def recall_for_response(
     # respects `_POST_RANK_MAX_HITS` (default 50) as a safety cap on
     # the number of records that flow into the post-rank pipeline. This
     # matches OLD pipeline_recall's effective behavior on healthy graphs
-    # (gate-restricted reachable to ~50-72 records); the wider D-03
+    # (gate-restricted reachable to ~50-72 records); the wider
     # candidate pool (K_CANDIDATES=200) is preserved for ranking
     # accuracy, but the response surface stays bounded by the same cap
     # the OLD pipeline naturally produced. Without this cap, on small-
@@ -1411,7 +1411,7 @@ def recall_for_benchmark(
     *,
     knobs_applied: dict | None = None,
 ) -> RecallResponse:
-    """Phase 8 redesign (D-07): benchmark top-K entry point.
+    """redesign : benchmark top-K entry point.
 
     Calls `_recall_core` for the load-bearing recall computation, then
     takes the top `k_hits` from the sorted `scored_hits`. Deterministic:

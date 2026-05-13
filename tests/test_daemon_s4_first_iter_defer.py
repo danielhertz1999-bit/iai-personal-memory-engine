@@ -1,4 +1,4 @@
-"""Phase 07.6 W1 / tests for the startup grace before the first
+"""W1 / tests for the startup grace before the first
 `_s4_offline_loop` iteration.
 
 Defends against the regression where a freshly-spawned daemon immediately

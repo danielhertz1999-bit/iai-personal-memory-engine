@@ -1,4 +1,4 @@
-"""Phase 7.4 — Hebbian write-batching coverage.
+"""— Hebbian write-batching coverage.
 
 Eight sync tests (project does NOT use pytest-asyncio):
 
@@ -200,7 +200,7 @@ def test_sleep_consolidated_from_batches_into_two_versions(tmp_path):
     # any incidental merge_insert version when the merge_insert path is empty.
     assert delta_versions <= 2, (
         f"sleep.cls boost emitted {delta_versions} versions for 5 sources "
-        f"(expected <= 2 after Phase 7.4)"
+        f"(expected <= 2 after )"
     )
 
     tbl = store.db.open_table(EDGES_TABLE)
@@ -259,7 +259,7 @@ def test_curiosity_bridge_batches_into_two_versions(tmp_path):
     delta_versions = versions_after - versions_before
     assert delta_versions <= 2, (
         f"curiosity boost emitted {delta_versions} versions for 5 triggers "
-        f"(expected <= 2 after Phase 7.4)"
+        f"(expected <= 2 after )"
     )
 
     tbl = store.db.open_table(EDGES_TABLE)
@@ -307,7 +307,7 @@ def test_schema_bind_batches_into_two_versions(tmp_path):
     # + tbl.add for 5 fresh schema_instance_of edges.
     assert delta_versions <= 2, (
         f"schema.bind boost emitted {delta_versions} versions for 5 evidence "
-        f"(expected <= 2 after Phase 7.4)"
+        f"(expected <= 2 after )"
     )
 
     tbl = store.db.open_table(EDGES_TABLE)
@@ -373,7 +373,7 @@ def test_pipeline_profile_modulates_batches_with_sequence_delta(tmp_path):
     delta_versions = versions_after - versions_before
     assert delta_versions <= 2, (
         f"profile_modulates boost emitted {delta_versions} versions "
-        f"(expected <= 2 after Phase 7.4)"
+        f"(expected <= 2 after )"
     )
 
     # 4 edges created, each with the per-hit delta.

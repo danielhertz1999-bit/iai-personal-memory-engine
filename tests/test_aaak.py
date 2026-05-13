@@ -1,11 +1,11 @@
-"""Tests for the AAAK index generator + English-raw enforcement (D-08, TOK-10).
+"""Tests for the AAAK index generator + English-raw enforcement .
 
 D-08 constitutional rule:
 - Storage is RAW VERBATIM English always.
 - AAAK is a RETRIEVAL VIEW only: wing/room/entities/tags metadata string.
 - The index MUST NOT contain literal_surface content.
 
-TOK-10:
+:
 - Non-English literal_surface must be flagged with a `raw:<lang>` tag; unflagged
   non-English content raises ValueError at write time via enforce_english_raw.
 """
@@ -142,7 +142,7 @@ def test_parse_aaak_dash_segments_become_empty_lists():
     assert parsed["tags"] == []
 
 
-# ------------------------------------------ TOK-10 English-raw enforcement
+# ------------------------------------------ English-raw enforcement
 
 
 def test_enforce_english_raw_accepts_pure_english():

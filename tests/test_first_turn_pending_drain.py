@@ -1,4 +1,4 @@
-"""Phase 07.2-02 R3 unit tests for prune_first_turn_pending pure helper.
+"""-02 R3 unit tests for prune_first_turn_pending pure helper.
 
 Distinct from tests/test_daemon_state.py::test_prune_* which covers the
 24h-default `prune_stale_first_turn`. This file covers the new 1h-default

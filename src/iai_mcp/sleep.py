@@ -1,6 +1,6 @@
-"""CLS sleep-cycle replay (MEM-07, D-16, D-19, D-29).
+"""CLS sleep-cycle replay (, , , ).
 
-Two phases (dual-tier per D-16):
+Two phases (dual-tier per ):
 
 - `run_light_consolidation` -- runs at every session_exit. Pure-local. NO LLM.
   FSRS tick on recently-recalled records. Sub-second. Always on.
@@ -12,19 +12,19 @@ Two phases (dual-tier per D-16):
   records to their source episodes. Runs FSRS edge decay sweep. Logs
   `cls_consolidation_run` event with mode=heavy, tier=tier0|tier1.
 
-D-16 scheduler (`should_run_heavy`):
+ scheduler (`should_run_heavy`):
 - ACTIVITY (default): idle>=30min AND local time in quiet_window.
 - TIME: strict cron at hour==3 local.
 - MANUAL: never fires automatically.
 - 48h max defer: if idle >= max_defer_hours, force-run regardless of window.
 
-D-19 decay sweep (`_decay_edges`):
+ decay sweep (`_decay_edges`):
 - Only hebbian edges are decayed. contradicts / invariant_anchor /
   consolidated_from / schema_instance_of / temporal_next / curiosity_bridge /
   profile_modulates all survive forever (by design).
 - Edges > 90d stale: weight *= 0.9 ** (days - 90); prune if < ε (default 0.01).
 
-D-29 unification: heavy cycle drives FSRS decay + CLS summarisation +
+ unification: heavy cycle drives FSRS decay + CLS summarisation +
 schema-candidate surfacing in a single pass -- no duplicated IO.
 """
 from __future__ import annotations
@@ -48,7 +48,7 @@ from iai_mcp.types import MemoryRecord
 
 
 class SleepMode(str, Enum):
-    """D-16 trigger mode for heavy consolidation."""
+    """ trigger mode for heavy consolidation."""
 
     ACTIVITY = "activity"   # Idle-triggered (default). 30min idle + quiet window.
     TIME = "time"           # Strict cron at hour==3 local.
@@ -57,7 +57,7 @@ class SleepMode(str, Enum):
 
 @dataclass
 class SleepConfig:
-    """User-configurable sleep-cycle schedule knobs (D-16)."""
+    """User-configurable sleep-cycle schedule knobs ."""
 
     mode: SleepMode = SleepMode.ACTIVITY
     quiet_window: tuple[int, int] = (22, 6)   # local-hour start..end (wrap-around)
@@ -91,7 +91,7 @@ def should_run_heavy(
     config: SleepConfig,
     tz: ZoneInfo,
 ) -> tuple[bool, str]:
-    """D-16 trigger evaluator.
+    """ trigger evaluator.
 
     Returns (ok, reason). reason is "" on success, a short diagnostic otherwise.
 
@@ -141,7 +141,7 @@ def _apply_fsrs(record: MemoryRecord, now: datetime) -> MemoryRecord:
     """Simple FSRS-inspired stability boost for recently-recalled records.
 
     scope: linear +0.2 per recall, capped at 1.0. Full FSRS (Woz et al
-    2022) with per-difficulty retrievability modelling is Phase 3.
+    2022) with per-difficulty retrievability modelling is
     """
     if record.never_decay:
         return record
@@ -153,9 +153,9 @@ def _apply_fsrs(record: MemoryRecord, now: datetime) -> MemoryRecord:
 def _decay_edges(
     store: MemoryStore, epsilon: float = DECAY_EPSILON,
 ) -> dict:
-    """D-19 nightly sweep: decay stale hebbian + hebbian_structure edges, prune below e.
+    """ nightly sweep: decay stale hebbian + hebbian_structure edges, prune below e.
 
-    CONN-05 D-TEM-04 extension: structure-edge LTP from
+     D-TEM-04 extension: structure-edge LTP from
     hebbian_structure.strengthen_structure_edge decays under the SAME formula
     and grace period as content-edge hebbian (constitutional contract: FSRS
     decay on structure edges is IDENTICAL to record-edge decay).
@@ -237,7 +237,7 @@ def _decay_edges(
 def run_light_consolidation(
     store: MemoryStore, session_id: str,
 ) -> dict:
-    """D-16 light phase -- always on, pure local, no LLM.
+    """ light phase -- always on, pure local, no LLM.
 
     Runs at every session_exit. Nudges FSRS stability on records that were
     recalled in this session (identified by fresh provenance entry within the
@@ -332,7 +332,7 @@ def _build_hebbian_clusters(store: MemoryStore) -> list[list[UUID]]:
 def _tier0_schema_surfacing(store: MemoryStore) -> list[dict]:
     """Tier-0 fallback schema candidate surfacing: tags appearing in >=3 records.
 
-    Plan 02-03's LEARN-03 schema induction consumes these candidates.
+    's LEARN-03 schema induction consumes these candidates.
 
     W3: rewritten on ``store.iter_record_columns(["tags_json"])``.
     No more full-store load + full-record decrypt -- only the ``tags_json`` column
@@ -442,7 +442,7 @@ def run_heavy_consolidation(
     rate: RateLimitLedger,
     has_api_key: bool = False,
 ) -> dict:
-    """D-16 heavy phase -- cluster-find, summarise, decay-sweep, schema-surface.
+    """ heavy phase -- cluster-find, summarise, decay-sweep, schema-surface.
 
     D-GUARD: the Tier-1 gate is consulted at the top of the function. If
     `should_call_llm` returns False for any reason (llm_enabled=false, no API
@@ -464,7 +464,7 @@ def run_heavy_consolidation(
     decay_result = _decay_edges(store)
 
     # Step 2: Decide Tier 0 vs Tier 1. This is consulted BEFORE any API call;
-    # even if Tier 1 is allowed, Plan 02-02's scope is Tier 0 summarisation
+    # even if Tier 1 is allowed, 's scope is Tier 0 summarisation
     # only. adds the actual Haiku Batch API call. The gate is here
     # so the event log reflects what WOULD have happened had Tier 1 been
     # implemented.
@@ -486,7 +486,7 @@ def run_heavy_consolidation(
 
             # Summarise the workload before submission. scope:
             # the real cluster/schema task payload is populated post-hoc by
-            # Phase 3; for now we submit placeholder tasks so the D-GUARD
+            # ; for now we submit placeholder tasks so the D-GUARD
             # side-effects (budget spend + events) fire on the correct path.
             tasks: list[dict] = [
                 {
@@ -509,14 +509,14 @@ def run_heavy_consolidation(
 
     # Step 3: cluster-find + summarise.
     clusters = _build_hebbian_clusters(store)
-    # Phase 07.7-04 W4 (D-13/D-14/D-20 + amendment): single-materialisation
-    # invariant. After Plan 07.7-03 W3 rewrites _tier0_schema_surfacing on
-    # iter_record_columns and Plan 07.7-04 D-26-A/B migrate schema.py
+    # -04 W4 (// + amendment): single-materialisation
+    # invariant. After W3 rewrites _tier0_schema_surfacing on
+    # iter_record_columns and -A/B migrate schema.py
     # induce_schemas_tier0 + persist_schema to iter_record_columns, this is
     # the ONLY all_records() call left inside run_heavy_consolidation. The
     # cluster-lookup primitive choice (switch this site to iter_records or
     # per-id store.get) is DEFERRED to with the rest of W6
-    # (D-20 deferred). Regression test:
+    # ( deferred). Regression test:
     #   tests/test_sleep_consolidation_streaming.py
     #   ::test_run_heavy_consolidation_calls_all_records_at_most_once
     records_by_id = {r.id: r for r in store.all_records()}
@@ -554,7 +554,7 @@ def run_heavy_consolidation(
     # Step 4: Tier-0 schema candidate surfacing.
     schemas = _tier0_schema_surfacing(store)
 
-    # Step 4b (Plan 02-03 LEARN-03 primary): schema induction batch run.
+    # Step 4b (LEARN-03 primary): schema induction batch run.
     # Tier-1 attempts the Haiku path via D-GUARD ladder; falls back to tier0.
     # auto-status candidates are persisted (creating schema_instance_of edges).
     schemas_induced = 0

@@ -1,13 +1,13 @@
 """crypto.py AES-256-GCM primitives + file-backed key storage.
 
-Originally Plan 02-08; updated in W1 to retire the keyring
+Originally ; updated in W1 to retire the keyring
 backend (which deadlocked the daemon under launchd via the macOS
 Keychain ACL prompt) in favor of a file-backed primary backend at
 `{IAI_MCP_STORE}/.crypto.key` (32 raw bytes, mode 0o600, uid-validated).
 
 Covers:
 - encrypt_field / decrypt_field round-trip (byte-for-byte)
-- Cyrillic / CJK / Arabic round-trip (MEM-01 across languages)
+- Cyrillic / CJK / Arabic round-trip ( across languages)
 - Associated data binding (swapped AD -> InvalidTag)
 - Tamper detection (mutated ciphertext -> InvalidTag)
 - is_encrypted prefix check
@@ -183,7 +183,7 @@ def test_derive_key_uses_600k_iterations() -> None:
 def test_crypto_key_passphrase_fallback_when_file_missing(
     tmp_path, monkeypatch
 ) -> None:
-    """Phase 07.10 W1 RED — file-backed CryptoKey falls back to passphrase
+    """W1 RED — file-backed CryptoKey falls back to passphrase
     when no `.crypto.key` file exists in store_root.
 
     Priority order under the new backend: file -> passphrase env var

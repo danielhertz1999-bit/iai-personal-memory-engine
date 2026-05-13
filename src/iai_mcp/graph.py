@@ -8,7 +8,7 @@ Exposed surface (consumed by community.py, richclub.py, pipeline.py):
 - add_node, add_edge
 - node_count, backend (property)
 - centrality() -> dict[UUID, float]       # betweenness
-- two_hop_neighborhood(seeds, top_k)      # CONN-03 greedy spread
+- two_hop_neighborhood(seeds, top_k) # greedy spread
 - rich_club_coefficient()                  # van den Heuvel & Sporns 2011
 - get_embedding(node_id)
 """
@@ -133,7 +133,7 @@ class MemoryGraph:
     def two_hop_neighborhood(
         self, seeds: list[UUID], top_k: int = 5
     ) -> list[UUID]:
-        """CONN-03: 2-hop greedy spread.
+        """: 2-hop greedy spread.
 
         At each hop, for each frontier node, take the top_k highest-weight
         neighbours (Seguin 2018 local-information reconstruction). Dedup

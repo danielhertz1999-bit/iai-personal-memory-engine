@@ -1,4 +1,4 @@
-"""Tests for TOK-09 Batch API consolidation (Plan 02-04 Task 3, D-29).
+"""Tests for Batch API consolidation (Task 3, ).
 
 submit_batch_consolidation passes through D-GUARD (should_call_llm) before
 any network work. On Tier 0 fallback (no llm_enabled, no api key, budget
@@ -101,7 +101,7 @@ def test_batch_records_spend_when_eligible(tmp_path, monkeypatch):
     )
     after = budget.daily_used()
     # Whether the SDK is present or not, the eligible gate records a nominal
-    # spend (Plan 02-04 scaffolds the budget side-effect; real batch API is
+    # spend (scaffolds the budget side-effect; real batch API is
     # implemented via mock/stub so tests don't hit the network).
     if ok:
         assert after >= before

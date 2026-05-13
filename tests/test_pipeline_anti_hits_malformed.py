@@ -1,4 +1,4 @@
-"""Phase 07.9 W4 / — pipeline._find_anti_hits defensive UUID parse.
+"""W4 / — pipeline._find_anti_hits defensive UUID parse.
 
 Pre-fix: a single malformed src/dst value in the edges table aborts
 ``_find_anti_hits`` at the inner ``UUID(lid)`` call, which in turn

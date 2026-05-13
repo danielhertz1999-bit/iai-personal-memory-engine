@@ -1,4 +1,4 @@
-"""Phase 7.1 Plan 05 / R3 acceptance — `iai-mcp capture-transcript --no-spawn`.
+"""/ R3 acceptance — `iai-mcp capture-transcript --no-spawn`.
 
 Eliminates the third spawn vector from forensic anomaly #3 (Stop-hook
 spawning iai_mcp.daemon under N-session race). When 3 Claude sessions close
@@ -11,7 +11,7 @@ This module covers:
   - Test A: writes deferred file when daemon is unreachable
   - Test B: completes in under 2s wall-clock (R3 budget)
   - Test C: spawns ZERO new iai_mcp.* processes
-  - Test D: --no-spawn surfaces in --help; default (no flag) keeps Phase 6
+  - Test D: --no-spawn surfaces in --help; default (no flag) keeps
             behavior (exit 0 + stdout JSON, no deferred file)
   - Test E: deferred JSONL v1 header + per-turn event lines (D7.1-04)
   - Test F: missing transcript -> header-only file, no exception
@@ -219,7 +219,7 @@ def test_no_spawn_flag_default_false(tmp_path):
     Per design, capture_transcript() returns a JSON dict with errors=1
     on missing transcript and the CLI prints that to stdout (NOT stderr).
     Default invocation without --no-spawn must:
-      - exit 0 (fail-safe hook contract from Plan 06)
+      - exit 0 (fail-safe hook contract)
       - produce JSON-parsable stdout
       - NOT create any deferred-captures file (only --no-spawn does that)
     """

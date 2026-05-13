@@ -1,4 +1,4 @@
-"""Phase 10.3 — Sleep cycle pipeline + L3 failure grammar.
+"""— Sleep cycle pipeline + L3 failure grammar.
 
 Five ordered atomic steps run only inside the SLEEP lifecycle state:
     1. SCHEMA_MINE       — extract schemas from episodic
@@ -13,7 +13,7 @@ Design invariants:
   schema_mine / knob_tune / dream_decay write their own atomic temp+swap
   semantics through the modules they delegate to. The pipeline never
   modifies `MemoryRecord.literal_surface` (verbatim-recall invariant
-  carried forward from / Plan 5/6).
+  carried forward from initial implementation).
 
 * On exception mid-step N, `lifecycle_state.json.sleep_cycle_progress`
   records `{last_completed_step: N-1, attempt: K, last_error: "..."}`
@@ -34,14 +34,14 @@ Design invariants:
 This module's heavy lifting **delegates to existing functions** —
 schema mining (`schema.induce_schemas_tier0`), Hebbian decay
 (`sleep._decay_edges`), table optimize (`maintenance.optimize_lance_storage`),
-records compaction (Phase 07.14-01 `optimize_lance_storage(retention=0d)`).
+records compaction (-01 `optimize_lance_storage(retention=0d)`).
 The pipeline is orchestration only.
 
-Daemon main-loop integration (Phase 10.4/10.5) and yield-gate removal
-(Phase 10.6) are shipped. ``continuous_audit`` (identity_audit.py) and
+Daemon main-loop integration (/10.5) and yield-gate removal
+ are shipped. ``continuous_audit`` (identity_audit.py) and
 ``_hippea_cascade_loop`` (daemon.py) remain as background tasks
 running alongside the sleep-cycle pipeline; ``dream_daemon`` was
-removed in Phase 10.6.
+removed in .
 
 Constitutional guards
 ---------------------
@@ -145,7 +145,7 @@ class SleepPipeline:
     happens inside `run()` / `force_run()` step bodies.
 
     Concurrency note: the pipeline is single-threaded by design. The
-    caller (state machine in Phase 10.4/10.5; CLI in this phase) must
+    caller (state machine in /10.5; CLI in this phase) must
     ensure no overlapping invocations — typically by holding the
     SLEEP-state guard. There is no internal lock; running two
     `SleepPipeline` instances against the same `lifecycle_state_path`
@@ -409,7 +409,7 @@ class SleepPipeline:
 
         `induce_schemas_tier0(store)` is the migration source — it does
         a single MVCC pass over `records.tags_json` and returns
-        candidates without persisting (Plan 02-03 contract). For Phase
+        candidates without persisting (contract). For Phase
         10.3 the chunk granularity is one (the underlying call is a
         single batch read internally; we do NOT slice it). The chunk
         boundary is honoured by checking `interrupt_check` BEFORE the
@@ -475,7 +475,7 @@ class SleepPipeline:
         """Step 3: Hebbian decay + edge prune via existing `_decay_edges`.
 
         `sleep._decay_edges(store)` is the migration source — Plan
-        03-01 CONN-05 D-TEM-04. It walks every hebbian/hebbian_structure
+        03-01 D-TEM-04. It walks every hebbian/hebbian_structure
         edge and either decays the weight in place or prunes when
         below epsilon. The function is monolithic; for we
         wrap it as a single chunk (chunk_idx=0) and check
@@ -500,7 +500,7 @@ class SleepPipeline:
         """Step 4: per-table Lance optimize via existing helper.
 
         `optimize_lance_storage(store, retention=None)` is the
-        migration source (Phase 7.3 D7.3-09). It iterates the three
+        migration source . It iterates the three
         daemon-owned tables (records / edges / events) internally; we
         cannot subdivide without reimplementing. For the
         chunk boundary is one (chunk_idx=0). The retention defaults to
@@ -513,7 +513,7 @@ class SleepPipeline:
         ):
             return False, {}
         report = optimize_lance_storage(self._store)
-        # Helper never raises (D7.3-09); per-table errors live inside
+        # Helper never raises ; per-table errors live inside
         # the report dict. We surface a compact summary in the event.
         tables_with_errors = [
             t for t, r in (report or {}).items()
@@ -529,7 +529,7 @@ class SleepPipeline:
     ) -> tuple[bool, dict[str, Any]]:
         """Step 5: final records.lance compaction with retention=0d.
 
-        Phase 07.14-01 helper: `optimize_lance_storage(store,
+        -01 helper: `optimize_lance_storage(store,
         retention=timedelta(days=0))` reclaims version manifests
         accumulated since the last compaction. This is intentionally
         a separate step from
@@ -635,7 +635,7 @@ class SleepPipeline:
 
         Failure isolation: the helper functions used by step bodies
         already have their own "never-raise" disciplines where
-        applicable (e.g. `optimize_lance_storage` per D7.3-09); this
+        applicable (e.g. `optimize_lance_storage` per ); this
         method's try/except is a defense-in-depth wrapper around the
         whole step call.
         """

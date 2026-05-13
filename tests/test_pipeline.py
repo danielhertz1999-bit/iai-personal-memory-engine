@@ -80,7 +80,7 @@ def _make(vec: list[float], text: str = "rec", aaak: str = "", detail: int = 2) 
 
 
 def test_community_gate_picks_nearest() -> None:
-    """CONN-06: top-1 gate on 3 centroids picks the one nearest the cue."""
+    """: top-1 gate on 3 centroids picks the one nearest the cue."""
     c0 = uuid4()
     c1 = uuid4()
     c2 = uuid4()
@@ -201,7 +201,7 @@ def test_pipeline_returns_hits_with_adjacent_suggestions(tmp_path) -> None:
 
 
 def test_pipeline_provenance_appended_to_every_hit(tmp_path) -> None:
-    """MEM-05 regression: every hit returned gets a provenance entry."""
+    """ regression: every hit returned gets a provenance entry."""
     store = MemoryStore(path=tmp_path)
     r1 = _make([1.0] + [0.0] * (EMBED_DIM - 1), text="primary")
     store.insert(r1)

@@ -1,4 +1,4 @@
-"""Phase 10.4 — comprehensive tests for ``HeartbeatScanner``.
+"""— comprehensive tests for ``HeartbeatScanner``.
 
 Covers the 9-test matrix from CONTEXT 10.4:
 - Empty dir scan returns [].

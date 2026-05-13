@@ -1,6 +1,6 @@
-"""OPS-10 regression guard: small-N latency stays under D-SPEED p95 ceiling.
+""" regression guard: small-N latency stays under D-SPEED p95 ceiling.
 
-Plan 05-05 (D5-08) — CI-runnable guard for bench/neural_map.py at the
+(D5-08) — CI-runnable guard for bench/neural_map.py at the
 small-N end of the matrix. The full N ∈ {100, 1k, 5k, 10k} matrix runs
 ad-hoc on this dev Mac and is recorded in the published bench report; this
 test exercises N=100 only so CI catches regressions in <30s.
@@ -47,12 +47,12 @@ def _isolated_keyring(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_neural_map_small_n_p95_under_regression_ceiling(tmp_path: Path):
-    """OPS-10 regression guard at N=100.
+    """ regression guard at N=100.
 
     The strict D-SPEED p95 < 100 ms gate is asserted by
     tests/test_bench_neural_map.py::test_neural_map_bench_reports_passed_flag
     — an existing test that famously trips under concurrent system load
-    (Plan 05-02 SUMMARY notes the same flake). This guard is a
+    (SUMMARY notes the same flake). This guard is a
     REGRESSION fence: it asserts the bench still produces a numeric p95
     in the same order of magnitude as the D-SPEED ceiling, so a
     structural regression (e.g. someone breaks the spread pruning and
@@ -68,7 +68,7 @@ def test_neural_map_small_n_p95_under_regression_ceiling(tmp_path: Path):
     out = run_neural_map_bench(n=100, iterations=10, store_path=tmp_path / "store")
 
     assert out["latency_ms_p95"] < 200.0, (
-        f"OPS-10 regression: p95 {out['latency_ms_p95']:.2f}ms > 200ms at N=100 "
+        f" regression: p95 {out['latency_ms_p95']:.2f}ms > 200ms at N=100 "
         f"(2x D-SPEED ceiling — likely a real regression, not concurrency noise)"
     )
     # Sanity: the harness always returns a positive p95.
@@ -84,7 +84,7 @@ def test_neural_map_main_with_matrix_returns_int(tmp_path: Path):
 
 
 def test_neural_map_argparse_has_reference_flags():
-    """OPS-10 comparative gate: argparse exposes the reference-p95 flags so
+    """ comparative gate: argparse exposes the reference-p95 flags so
     the bench can compare IAI to mempalace/claude-mem reference numbers
     measured separately on this host.
 

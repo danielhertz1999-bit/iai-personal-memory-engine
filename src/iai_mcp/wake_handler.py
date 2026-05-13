@@ -1,4 +1,4 @@
-"""Phase 10.5 L5 — daemon-side ``wake.signal`` consumer.
+"""L5 — daemon-side ``wake.signal`` consumer.
 
 The TypeScript MCP wrapper (``mcp-wrapper/src/lifecycle.ts``) writes a
 small marker file at ``~/.iai-mcp/wake.signal`` when:
@@ -17,7 +17,7 @@ either sees the file fully or not at all; we never have to defend
 against a torn read of the signal payload itself.
 
 The placeholder integration in :func:`iai_mcp.daemon.main` calls
-:meth:`WakeHandler.consume_wake_signal` once during startup. Phase 10.6
+:meth:`WakeHandler.consume_wake_signal` once during startup.
 will dispatch the result into the lifecycle state machine's
 ``WAKE_SIGNAL`` event channel — until then this module is a write-once
 hook so the wrapper's L5 path has somewhere to write to.

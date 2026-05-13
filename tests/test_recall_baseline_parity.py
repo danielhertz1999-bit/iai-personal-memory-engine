@@ -1,4 +1,4 @@
-"""Plan 06-04 R7: baseline parity tests.
+"""baseline parity tests.
 
 R7 acceptance per SPEC.md:
 - retrieve.recall accepts mode kwarg (default 'verbatim' per D-14).

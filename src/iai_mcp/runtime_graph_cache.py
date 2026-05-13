@@ -1,4 +1,4 @@
-"""Plan 05-09 (P4.A): persist Leiden community assignment + rich-club
+"""(P4.A): persist Leiden community assignment + rich-club
 to disk so the first ``memory_recall`` call in a fresh core process
 does not rebuild these expensive artefacts from scratch.
 
@@ -21,7 +21,7 @@ and the security-vs-speed trade-off is not worth it for ~100 ms.
 - Record count changed (user saved / consolidated / merged)
 - Edge count changed (Hebbian reinforcement or contradiction added)
 - SCHEMA_VERSION_CURRENT bumped (store migrated)
-- store.embed_dim changed (user swapped embedder; Plan 05-08)
+- store.embed_dim changed (user swapped embedder; )
 - CACHE_VERSION bumped (this module's on-disk format changed)
 
 Any inconsistency — corrupt JSON, unreadable file, unknown keys —
@@ -109,7 +109,7 @@ def _cache_path(store: Any) -> Path:
 
 
 def _cache_encryption_key(store: Any) -> bytes:
-    """Phase 07.9 W3 / 32-byte AES key for the runtime-graph-cache
+    """W3 / 32-byte AES key for the runtime-graph-cache
     sidecar. Reuses the store's already-cached key whenever possible to
     avoid a second keyring round-trip. Falls back to a fresh CryptoKey
     lookup keyed on the store's user_id (or "default") when the store
@@ -220,7 +220,7 @@ def _decode_rich_club(raw: Any) -> list[UUID]:
 
 # ----------------------------------------------------------------- size estimator
 #
-# W2 / D-07, D-08, bound peak RSS in save() by estimating
+# W2 / , , bound peak RSS in save by estimating
 # serialised byte cost without materialising the full JSON string.
 #
 # The legacy save() path encoded the cache payload up to 4 times -- once
@@ -251,13 +251,13 @@ _JSON_DICT_ENTRY_OVERHEAD: int = 4
 _NODE_PAYLOAD_BYTES_PER_RECORD: int = 10240
 
 # community_centroids entry value width upper bound. Shape:
-#   {"<UUID-36>": [<384 float>]}
+# {"<UUID-36>": [<384 float>]}
 # 384-dim float same calculus as node_payload embedding -> 9216. Plus
 # 36-char UUID quoted -> 38. Plus brackets / commas -> ~16. Round up.
 _CENTROID_BYTES_PER_RECORD: int = 9472
 
 # mid_regions entry value width upper bound. Shape:
-#   {"<UUID-36>": ["<UUID-36>", ..., "<UUID-36>"]}
+# {"<UUID-36>": ["<UUID-36>", ..., "<UUID-36>"]}
 # Variable length; bound by typical mid-region size <= 32 UUIDs * 38 bytes
 # = 1216, plus brackets / commas -> 1280.
 _MID_REGION_BYTES_PER_RECORD: int = 1280
@@ -428,8 +428,8 @@ def try_load(store: Any) -> tuple | None:
             # Shallow dict-of-dicts; embedding list[float] round-trips
             # through JSON natively.
             #
-            # Plan 07.11-02 / (V2-03 fix): defensively drop
-            # poisoned entries on rehydrate. Even though Plan 07.11-02's
+            # / (V2-03 fix): defensively drop
+            # poisoned entries on rehydrate. Even though 's
             # retrieve.py fix prevents future writes of empty-surface
             # entries, an existing on-disk cache from before this fix
             # may still contain them. Belt-and-braces: rehydrate-side
@@ -564,7 +564,7 @@ def save(
     # balloons to 70+ MiB (one 384-dim float vector per record).
     #
     # Drop candidates in decreasing marginal-value order. W2 /
-    # D-07, D-08, estimate the encoded byte cost BEFORE materialising
+    # , , estimate the encoded byte cost BEFORE materialising
     # the JSON string, so peak RSS during save matches the final on-disk
     # file size instead of the pre-drop full payload size. ``json.dumps``
     # is called AT MOST ONCE per ``save`` invocation, after all drop
@@ -594,7 +594,7 @@ def save(
         # recompute everything from the live store.
         return False
 
-    # Single final encode -- AT MOST ONE json.dumps per save() per D-10.
+    # Single final encode -- AT MOST ONE json.dumps per save per .
     serialised = json.dumps(data, ensure_ascii=False)
 
     # W3 / encrypt the JSON payload before writing.

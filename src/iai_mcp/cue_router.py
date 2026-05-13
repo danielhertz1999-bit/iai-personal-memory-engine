@@ -1,4 +1,4 @@
-"""Plan 06-04 R4: cue-detection router.
+"""cue-detection router.
 
 Classifies a memory_recall cue into 'verbatim' or 'concept' mode based on
 surface signals (quoted phrases, exact-recall markers, RU starts-with

@@ -1,4 +1,4 @@
-"""Phase 7 daemon socket-server (R1, R3, R4, R6).
+"""daemon socket-server (R1, R3, R4, R6).
 
 NDJSON JSON-RPC 2.0 server over ~/.iai-mcp/.daemon.sock. Reuses
 core.dispatch() with stdio (R6 -- both transports share one function per D7-08).
@@ -13,19 +13,19 @@ Constitutional guards:
 - C3 ZERO API COST: imports stdlib + core.dispatch only; no SDK references.
 - C5 LITERAL PRESERVATION: zero record mutation paths; transport-only adapter.
 - R5 fail-loud surface: daemon-side raises become JSON-RPC error code -32001;
-  wrapper-side socket-death surfaces as -32002 (see bridge.ts in Plan 07-04).
+  wrapper-side socket-death surfaces as -32002 (see bridge.ts in ).
 - R6 backward-compat: imports core.dispatch; no transport branching.
 
 D7-17 single-socket dispatcher fork: each accepted NDJSON line is parsed once,
 then routed by shape:
-  - jsonrpc=='2.0'  -> core.dispatch (Phase 7 MCP methods)
-  - 'type' in CONTROL_MSG_TYPES (Phase 4 control plane) -> forward verbatim to
+  - jsonrpc=='2.0' -> core.dispatch (MCP methods)
+  - 'type' in CONTROL_MSG_TYPES (control plane) -> forward verbatim to
     concurrency._dispatch_socket_request (lock + state must be wired by Wave 3
     via SocketServer(store, lock=..., state=...); Wave 2 standalone tests do not
     exercise this branch -- the forks are independent).
   - else -> JSON-RPC ERR_INVALID_REQUEST.
 
-D7.1-02 launchd socket activation: serve() forks on LISTEN_FDS env var. When
+ launchd socket activation: serve forks on LISTEN_FDS env var. When
 launchd-managed (LISTEN_FDS=1, LISTEN_PID==os.getpid()), inherit pre-bound fd 3
 via the systemd-compatible inherited-fd protocol; SKIP cleanup_stale_socket,
 mkdir, chmod, and post-serve unlink (launchd owns the socket file). Otherwise
@@ -54,7 +54,7 @@ ERR_METHOD_NOT_FOUND = -32601   # core.dispatch raised UnknownMethodError
 ERR_INVALID_PARAMS = -32602     # core.dispatch raised TypeError or KeyError on params
 ERR_PARSE_ERROR = -32700        # json.loads failed
 
-# Plan 10.6-01 Task 1.4: REMOVED `IDLE_CHECK_INTERVAL_SECS`
+# REMOVED `IDLE_CHECK_INTERVAL_SECS`
 # and the socket-side `idle_watcher` task. The lifecycle state machine
 # (heartbeat scanner + idle detector + sleep_pipeline + Hibernation
 # transition) now owns the "idle daemon -> shut down" responsibility.
@@ -68,7 +68,7 @@ def _inherit_launchd_socket() -> socket.socket | None:
     """Return inherited unix socket from launchd, or None for manual run.
 
     Implements the systemd-style inherited-fd protocol (also honored by
-    macOS launchd) per D7.1-02:
+    macOS launchd) per :
       - LISTEN_FDS env var = number of inherited fds (must be >= 1).
       - LISTEN_PID env var = pid of process meant to inherit (must == os.getpid()).
       - First inherited fd is 3 (SD_LISTEN_FDS_START).
@@ -115,7 +115,7 @@ def _validate_jsonrpc_envelope(req: Any) -> tuple[bool, str | None]:
 class SocketServer:
     """Per-connection multiplexed JSON-RPC 2.0 server over unix socket.
 
-    D7-17 single-socket dispatcher: same accept loop handles both Phase 4
+    D7-17 single-socket dispatcher: same accept loop handles both
     control messages (forwarded to concurrency._dispatch_socket_request when
     lock + state are wired) and JSON-RPC MCP envelopes (routed via
     core.dispatch on a worker thread per R3).
@@ -146,7 +146,7 @@ class SocketServer:
         state: dict | None = None,
     ) -> None:
         self.store = store
-        # Plan 10.6-01 Task 1.4: env override
+        # env override
         # `IAI_DAEMON_IDLE_SHUTDOWN_SECS` removed; the constructor
         # default falls through to IDLE_SECS_DEFAULT (1800). The
         # attribute is kept for back-compat with telemetry / tests
@@ -171,7 +171,7 @@ class SocketServer:
         """One coroutine per accepted connection. Reads NDJSON lines, dispatches each.
 
         D7-17 fork on each line:
-          - jsonrpc=='2.0'  -> core.dispatch (Phase 7 MCP, R1)
+          - jsonrpc=='2.0' -> core.dispatch (MCP, R1)
           - 'type' in CONTROL_MSG_TYPES and no jsonrpc -> control plane
           - else -> JSON-RPC ERR_INVALID_REQUEST.
         """
@@ -251,7 +251,7 @@ class SocketServer:
                     from iai_mcp.core import dispatch
                     # CRITICAL R3: dispatch is sync + can take 50-500 ms.
                     # asyncio.to_thread prevents head-of-line blocking across
-                    # connections. The threading.RLock added in Plan 07-01
+                    # connections. The threading.RLock added in
                     # (_profile_lock in core.py) keeps profile mutations safe
                     # under concurrent worker-thread access.
                     result = await asyncio.to_thread(
@@ -310,7 +310,7 @@ class SocketServer:
             except Exception:
                 pass
 
-    # Plan 10.6-01 Task 1.4: REMOVED `idle_watcher`. The
+    # REMOVED `idle_watcher`. The
     # lifecycle state machine + heartbeat scanner + idle detector
     # supersede this in-process timer. `last_activity_ts` /
     # `active_connections` accounting on this object is preserved (used
@@ -320,11 +320,11 @@ class SocketServer:
     async def serve(self, socket_path: Path | None = None) -> None:
         """Bind socket, run server until shutdown_event set, drain in-flight, unlink socket.
 
-        D7.1-02 fork: when launchd has pre-bound the listener (LISTEN_FDS env set
+         fork: when launchd has pre-bound the listener (LISTEN_FDS env set
         and LISTEN_PID==os.getpid()), inherit fd 3 and call asyncio.start_unix_server
         with sock=. SKIP cleanup_stale_socket, mkdir, chmod, post-serve unlink, and
         the cleanup_socket=True kwarg -- launchd owns the socket file's lifecycle
-        (SockPathMode=384 already applied at bind time per D7.1-01). Otherwise
+        (SockPathMode=384 already applied at bind time per ). Otherwise
         (development, tests, non-Darwin) preserve the original manual-bind
         path: cleanup_stale -> mkdir -> bind -> chmod, with post-serve unlink on
         Python < 3.13.
@@ -341,7 +341,7 @@ class SocketServer:
 
         inherited = _inherit_launchd_socket()
         if inherited is not None:
-            # D7.1-02 launchd socket activation. launchd owns the socket file:
+            # launchd socket activation. launchd owns the socket file:
             # do NOT cleanup_stale_socket (would unlink launchd's listener and
             # brick subsequent activations), do NOT mkdir (path already exists
             # since launchd bound it), do NOT chmod (SockPathMode=384 applied
@@ -364,13 +364,13 @@ class SocketServer:
                 path=str(socket_path),
                 **server_kwargs,
             )
-            # T-04-07 mitigation (Phase 4 threat model): chmod 0o600 immediately after bind.
+            # T-04-07 mitigation (threat model): chmod 0o600 immediately after bind.
             try:
                 os.chmod(str(socket_path), 0o600)
             except OSError:
                 pass
 
-        # Plan 10.6-01 Task 1.4: idle_task removed (was
+        # idle_task removed (was
         # `asyncio.create_task(self.idle_watcher())`). The lifecycle
         # state machine drives shutdown via Hibernation transitions.
         try:

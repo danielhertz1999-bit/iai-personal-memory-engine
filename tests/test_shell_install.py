@@ -37,7 +37,7 @@ def _bash_available() -> bool:
 @pytest.mark.skipif(not _bash_available(), reason="bash unavailable")
 @pytest.mark.skipif(platform.system() != "Darwin", reason="macOS-only")
 def test_launchd_install_idempotency() -> None:
-    """C4 + Pitfall 5 + DAEMON-10 idempotency end-to-end on the host."""
+    """C4 + Pitfall 5 + idempotency end-to-end on the host."""
     result = subprocess.run(
         ["bash", str(LAUNCHD_SCRIPT)],
         capture_output=True,
@@ -59,7 +59,7 @@ def test_launchd_install_idempotency() -> None:
 @pytest.mark.skipif(not _bash_available(), reason="bash unavailable")
 @pytest.mark.skipif(platform.system() != "Linux", reason="Linux-only")
 def test_systemd_install_idempotency() -> None:
-    """C4 + Pitfall 5 + DAEMON-10 idempotency end-to-end on the host."""
+    """C4 + Pitfall 5 + idempotency end-to-end on the host."""
     result = subprocess.run(
         ["bash", str(SYSTEMD_SCRIPT)],
         capture_output=True,
@@ -126,7 +126,7 @@ def test_shell_scripts_are_executable() -> None:
 
 
 def test_shell_scripts_have_skip_branch() -> None:
-    """Cross-platform skip branch must exist in both scripts (Plan 04-05 AC)."""
+    """Cross-platform skip branch must exist in both scripts (AC)."""
     if LAUNCHD_SCRIPT.exists():
         text = LAUNCHD_SCRIPT.read_text()
         assert "SKIP: not macOS" in text, "launchd script missing macOS skip branch"

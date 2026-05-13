@@ -1,6 +1,6 @@
-"""Phase 5 RED-state test scaffold. Tasks 2-5 turn these GREEN.
+"""RED-state test scaffold. Tasks 2-5 turn these GREEN.
 
-Covers TOK-11 / / D5-02: wake_depth-branched session-start payload
+Covers / / D5-02: wake_depth-branched session-start payload
 shape + token budget enforcement at each branch.
 """
 from __future__ import annotations
@@ -74,7 +74,7 @@ def _seed_a_few_pinned(store: MemoryStore, n: int = 3) -> None:
 
 # ---------------------------------------------------------------- minimal mode
 def test_minimal_payload_le_30_tokens(tmp_path):
-    """TOK-11: minimal wake_depth yields ≤30 raw tok across new pointer fields."""
+    """: minimal wake_depth yields ≤30 raw tok across new pointer fields."""
     store = MemoryStore(path=tmp_path)
     _seed_l0_identity(store)
     from iai_mcp import profile

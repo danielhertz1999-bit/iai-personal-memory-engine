@@ -1,4 +1,4 @@
-"""Plan 07-02 Wave 2 R3 acceptance: per-connection multiplexing without HOL blocking.
+"""Wave 2 R3 acceptance: per-connection multiplexing without HOL blocking.
 
 10 concurrent clients × 5 sequential calls each must complete within 2× the
 latency of a single client doing the same workload alone (SPEC R3 invariant).

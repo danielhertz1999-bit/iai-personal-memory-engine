@@ -1,4 +1,4 @@
-"""TOK-07 subagent delegation context (Plan 02-04 Task 3, D-27).
+""" subagent delegation context (Task 3, ).
 
 Parent session exposes a JSON blob containing the 4-segment session-start
 payload (L0, L1, L2, rich-club) plus per-component hashes (for delta
@@ -17,7 +17,7 @@ introspection stays with the parent session.
 from __future__ import annotations
 
 
-# The 5 memory tools exposed to subagents (Phase 1 hot surface). Plan 02-04's
+# The 5 memory tools exposed to subagents (hot surface). 's
 # new user-introspection tools are intentionally excluded.
 SUBAGENT_HOT_TOOLS: tuple[str, ...] = (
     "memory_recall",

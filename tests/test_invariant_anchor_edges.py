@@ -1,4 +1,4 @@
-"""Tests for the invariant_anchor edge type (MEM-09, D-22).
+"""Tests for the invariant_anchor edge type .
 
 invariant_anchor edges are the structural marker of S5 identity commitments:
 - created when propose_invariant_update reaches 3-of-5 consensus

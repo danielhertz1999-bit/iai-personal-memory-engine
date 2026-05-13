@@ -1,4 +1,4 @@
-"""Plan 03-02 Task 2 Step 8: live integration test (catches false-GREEN trap).
+"""Task 2 Step 8: live integration test (catches false-GREEN trap).
 
 The trap: if M2/M4/M6 unit tests SEED their own retrieval_used / profile_updated
 / session_started events, they will pass even when production code emits

@@ -15,7 +15,7 @@ Fix:
       between co-cluster members are potentiated.
     - Non-cluster edges remain untouched.
 
-Constitutional contract (MEM-07 biological fidelity + symmetry):
+Constitutional contract ( biological fidelity + symmetry):
     Hebbian LTP/LTD symmetry is the core Hebbian-learning invariant. Without
     LTP during consolidation the graph drifts monotonically weaker. Matches
     Woz 2022 SRS reinforcement on co-retrieval.

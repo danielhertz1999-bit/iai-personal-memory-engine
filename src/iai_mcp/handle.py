@@ -1,4 +1,4 @@
-"""Compact session handle (Plan 05-06 -- ≤16 raw tok target).
+"""Compact session handle (-- ≤16 raw tok target).
 
 Collapses three pointer fields historically emitted at session-start::
 

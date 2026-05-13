@@ -1,4 +1,4 @@
-"""Plan 03-01 CONN-05 GREEN: memory_recall_structural via core.dispatch.
+""" GREEN: memory_recall_structural via core.dispatch.
 
 Verifies the new MCP tool branch:
 - Structural query enters as a dict[str, str] of role->filler pairs.
@@ -222,7 +222,7 @@ def test_pipeline_ranker_structural_weight_shifts_ordering(tmp_path, monkeypatch
 def test_unknown_method_does_not_match(tmp_path, monkeypatch):
     """The new branch only matches the canonical method name.
 
-    Phase 07.13-02 V3-03 fix: dispatch fall-through now raises
+    -02 V3-03 fix: dispatch fall-through now raises
     UnknownMethodError instead of returning {"error": ...} dict. The
     bogus-suffix branch is name-gated; an exact-match-only assertion is
     that the bogus method raises UnknownMethodError specifically.

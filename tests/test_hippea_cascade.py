@@ -1,4 +1,4 @@
-"""Tests for src/iai_mcp/hippea_cascade.py — TOK-14 / D5-05.
+"""Tests for src/iai_mcp/hippea_cascade.py — / D5-05.
 
 HIPPEA activation cascade prefetch:
 - Salience formula: variance-weighted prediction error over 7 days of

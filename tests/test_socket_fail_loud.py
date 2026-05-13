@@ -1,4 +1,4 @@
-"""Plan 07-03 Wave 3 R5 daemon-side fail-loud + HIGH-3 yield acceptance tests.
+"""Wave 3 R5 daemon-side fail-loud + HIGH-3 yield acceptance tests.
 
 R5 daemon-side semantics
 ------------------------
@@ -318,7 +318,7 @@ def test_kill_daemon_during_active_connection(short_socket_paths, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Plan 10.6-01 Task 1.8: REMOVED the HIGH-3 yield-acceptance
+# REMOVED the HIGH-3 yield-acceptance
 # tests (test_scheduler_yields_to_mcp_within_35s and
 # test_should_yield_called_in_loop_returns_true_every_5s).
 #

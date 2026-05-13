@@ -1,4 +1,4 @@
-"""Phase 07.10 W1 RED: file-backed crypto key {`_try_file_get`, `_try_file_set`,
+"""W1 RED: file-backed crypto key {`_try_file_get`, `_try_file_set`,
 get_or_create priority, migrate-to-file CLI}.
 
 Locks the executable spec for the file-backed crypto key per CONTEXT.md

@@ -1,11 +1,11 @@
-"""OPS-07 prompt-injection shield (D-30, D-31) -- Plan 02-05.
+""" prompt-injection shield (, ) -- .
 
-Three-tier deployment per D-31:
+Three-tier deployment per :
     HARD_BLOCK     -> L0 identity + S5 invariant writes (reject on detection)
     FLAG_FOR_REVIEW -> profile updates (flag + warn, write proceeds)
     LOG_ONLY        -> content records (log only, allow)
 
-D-30 threat model (three severities):
+ threat model (three severities):
   - Direct override (e.g. "forget X, now Y") -> HARD BLOCK via signal words
   - Gradual drift (subtle lies over weeks)   -> DETECT via trajectory M4 anomaly
                                                  (see s5.detect_drift_anomaly)
@@ -107,7 +107,7 @@ SIGNAL_WORDS_CRITICAL_BY_LANG: dict[str, list[str]] = {
 
 
 class ShieldTier(str, Enum):
-    """D-31 three-tier deployment."""
+    """ three-tier deployment."""
 
     HARD_BLOCK = "hard_block"          # L0 identity + S5 invariants
     FLAG_FOR_REVIEW = "flag"           # profile updates

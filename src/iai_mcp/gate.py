@@ -1,4 +1,4 @@
-"""TOK-06 active-inference retrieval gate (Plan 02-04 Task 2, D-26).
+""" active-inference retrieval gate (Task 2, ).
 
 Skip full pipeline_recall when the expected free-energy reduction for the
 current cue is below THETA_SKIP bits. Trivial cues (greetings, "thanks",
@@ -12,7 +12,7 @@ The heuristic uses a simple token-count proxy for EFE:
   one rare/novel token can still justify a retrieval).
 - General cues: min(2.0, log2(1 + unique_token_count) * 0.5).
 
-Phase 2 note: this is an approximation. can replace with a real
+note: this is an approximation. can replace with a real
 embedding-distance-to-prior computation once the write policy is active.
 """
 from __future__ import annotations
@@ -65,7 +65,7 @@ def expected_free_energy_reduction(cue: str) -> float:
 
 
 def should_skip_retrieval(cue: str) -> tuple[bool, str]:
-    """Return (skip, reason) per D-26.
+    """Return (skip, reason) per .
 
     reason is a short English diagnostic suitable for a RecallResponse hint.
     """

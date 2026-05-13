@@ -1,6 +1,6 @@
 """Tests for iai_mcp.insight -- (D-13 Option A lucid moment).
 
-Covers 12 behaviours (DAEMON-08):
+Covers 12 behaviours :
 1. Exactly ONE invoke_host_once call per generate_overnight_insight invocation.
 2. Prompt text contains the Option A verbatim template fragments.
 3. Top-3 recent schemas pulled from schema.induce_schemas_tier0 by confidence.

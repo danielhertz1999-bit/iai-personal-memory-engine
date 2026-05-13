@@ -1,4 +1,4 @@
-"""Trajectory metrics M1..M6 (LEARN-07, D-32) -- Task 4.
+"""Trajectory metrics M1..M6 (LEARN-07, ) -- Task 4.
 
 Every session_exit writes one `trajectory_metric` event per metric. The CLI
 aggregator reads these events via aggregate_trajectory.
@@ -11,7 +11,7 @@ Metrics (all computed in session-local scope):
 - M5: curiosity question frequency (entropy dropping)
 - M6: context-repeat rate (> 90% by session ~20)
 
-Plan 02-03 scope: event emission + basic aggregation. wires the
+scope: event emission + basic aggregation. wires the
 CLI aggregator + synthetic-corpus benchmark.
 """
 from __future__ import annotations
@@ -147,7 +147,7 @@ def compute_session_metrics_snapshot(
 # -------------------------------------------------- M2/M4/M6 LIVE
 
 
-# Backward-compat synthetic constants (Phase 2 baseline; bench compares
+# Backward-compat synthetic constants (baseline; bench compares
 # live vs synthetic to prove the promotion is real -- see test_trajectory_live_smoke.py).
 M2_SYNTHETIC_CONSTANT: float = 0.0
 M4_SYNTHETIC_CONSTANT: float = 0.0

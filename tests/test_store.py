@@ -1,4 +1,4 @@
-"""Tests for types + LanceDB store + ART gate invariants (MEM-01..03, MEM-06)."""
+"""Tests for types + LanceDB store + ART gate invariants (..03, )."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -65,7 +65,7 @@ def test_query_empty_store_returns_empty_list(tmp_path):
 
 
 def test_detail_level_3_forces_never_decay():
-    """MEM-06 + detail_level >= 3 always sets never_decay=True."""
+    """ + detail_level >= 3 always sets never_decay=True."""
     r = _make(detail=3)
     assert r.never_decay is True
     # Even if caller tries to override at detail_level 4

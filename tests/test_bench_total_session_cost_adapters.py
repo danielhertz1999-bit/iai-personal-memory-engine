@@ -1,4 +1,4 @@
-"""Plan 05-06 Task 3 — mempalace / claude-mem subprocess adapters in
+"""mempalace / claude-mem subprocess adapters in
 ``bench/total_session_cost.py``.
 
 These adapters let the reference column carry a live measurement

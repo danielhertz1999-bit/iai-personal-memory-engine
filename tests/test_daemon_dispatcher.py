@@ -1,4 +1,4 @@
-"""End-to-end round-trip tests for the daemon socket dispatcher (Plan 04-gap-1).
+"""End-to-end round-trip tests for the daemon socket dispatcher.
 
 Unlike tests/test_core_bedtime_inject.py (which uses _ThreadedFakeDaemon that
 echoes canned OK replies), these tests spin up the REAL serve_control_socket
@@ -161,7 +161,7 @@ def test_status_returns_version_and_full_snapshot(short_socket_paths):
     # backwards-compat keys.
     assert resp["state"] == "WAKE"
     assert isinstance(resp["uptime_sec"], (int, float))
-    # Plan 04-gap-1 additions.
+    # Gap-fill additions.
     assert resp["version"] == pkg_version
     assert resp["fsm_state"] == "WAKE"
     assert resp["last_tick_at"] == "2026-04-18T12:30:00+00:00"

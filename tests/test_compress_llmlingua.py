@@ -1,4 +1,4 @@
-"""Tests for TOK-04 LLMLingua-2 compression (Plan 02-04 Task 2, D-25).
+"""Tests for LLMLingua-2 compression (Task 2, ).
 
 Scope (constitutional):
 - ALLOWED: L2 community descriptors, session summaries, cls_summary records.

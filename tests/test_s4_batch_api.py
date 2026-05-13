@@ -1,4 +1,4 @@
-"""Tests for s4.on_read_check_batch (Plan 02-07 D-SPEED gap closure).
+"""Tests for s4.on_read_check_batch (D-SPEED gap closure).
 
 D-SPEED contract: bench/neural_map p95<100ms at N=100. Root cause:
 `s4.on_read_check` called per-hit inside pipeline_recall with no records_cache,

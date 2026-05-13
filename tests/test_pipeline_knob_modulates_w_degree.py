@@ -1,4 +1,4 @@
-"""Plan 06-03 R3 acceptance suite — literal_preservation knob modulates W_DEGREE.
+"""R3 acceptance suite — literal_preservation knob modulates W_DEGREE.
 
 Two-tier coverage matching the plan's two TDD tasks:
 
@@ -26,7 +26,7 @@ Score budget per knob (W_DEGREE = 0.1):
   strong (scale 0.3):  effective = 0.03
     hub_score      = 0.50 + 0.03 * 1.0 = 0.53
     verbatim_score = 0.60 + 0.03 * 0.0 = 0.60   → verbatim wins all hubs (pos 0)
-  medium (scale 1.0):  effective = 0.10  (Plan 06-02 baseline)
+  medium (scale 1.0): effective = 0.10 (baseline)
     hub_score      = 0.50 + 0.10 * 1.0 = 0.60
     verbatim_score = 0.60                        → ties hub on score; UUID tie-break
                                                    places between depending on UUID order
@@ -38,8 +38,8 @@ Position delta strong→loose = 5 ≥ 3 (R3 acceptance).
 
 The reconciled scale-map keys are `strong | medium | loose` per the canonical
 profile.py:87 KnobSpec enum (`enum:strong|medium|loose`), NOT the CONTEXT D-07
-phantom keys `balanced/weak`. The 11-knob registry is closed (Plan 07.12-02
-removed AUTIST-02/08/11/12) — expanding the enum was out of scope for Phase 6
+phantom keys `balanced/weak`. The 11-knob registry is closed (
+removed AUTIST-02/08/11/12) — expanding the enum was out of scope for
 and remains a phase-level decision. Numeric ordering and semantic intent
 (strong tightens degree influence; loose lets hubs speak louder) are preserved.
 """
@@ -147,7 +147,7 @@ def _make_schema_hub(vec: list[float], text: str, pattern: str) -> MemoryRecord:
     here as a high-cosine-but-low-cosine-vs-verbatim foil so the rank-stage
     W_DEGREE knob is the only modulating signal.
 
-    R6 deviation note: Plan 06-03's original fixture tagged hubs
+    R6 deviation note: 's original fixture tagged hubs
     with `pattern:{pattern}` anticipating the eventual R6 router. R6 then
     LANDED with the contract "schema records (tier=semantic AND any tag
     startswith 'pattern:') are stripped from hits[] into patterns_observed[]
@@ -394,7 +394,7 @@ def test_literal_preservation_knob_moves_verbatim_position(tmp_path):
 
 
 def test_literal_preservation_medium_is_normalize_only_baseline(tmp_path):
-    """Medium (scale 1.0) preserves Plan 06-02's normalize-only behaviour
+    """Medium (scale 1.0) preserves 's normalize-only behaviour
     — no extra knob effect on top of bounded deg_norm. Verbatim's position
     under medium must lie BETWEEN its position under strong (low pos) and
     loose (high pos). Strict inequality is informational; equality is
@@ -539,10 +539,10 @@ def test_dispatch_passes_profile_state_to_recall_for_response(tmp_path, monkeypa
 
 @pytest.mark.skip(
     reason=(
-        "Plan 06-03 R3 dispatch-integration test — fixture geometry "
+        "R3 dispatch-integration test — fixture geometry "
         "(verbatim cos=0.60, hub cos=0.50, deg_norm spread 0→1.0) "
         "was authored when dispatch routed to the OLD pipeline_recall "
-        "body which had no community-bias term. Plan 08 "
+        "body which had no community-bias term. "
         "puts a +0.1*cos community-bias on records inside top-3 gated "
         "communities for concept-mode recalls. On this fixture, BOTH "
         "verbatim AND hubs land in top-3 communities, so verbatim's "

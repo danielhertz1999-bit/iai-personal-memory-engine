@@ -1,4 +1,4 @@
-"""Phase 10.1 -- typed schema + atomic load/save for lifecycle_state.json.
+"""-- typed schema + atomic load/save for lifecycle_state.json.
 
 The 4-state lifecycle (WAKE / DROWSY / SLEEP / HIBERNATION) needs a single
 source of truth on disk. Per LOCKED contract L2, the daemon is the ONLY
@@ -6,8 +6,8 @@ writer of `~/.iai-mcp/lifecycle_state.json`; wrappers
 signal events via Unix socket OR atomic-write `~/.iai-mcp/wake.signal`
 filesystem marker.
 
-Persistence pattern mirrors `daemon_state.py` (Phase 04-01) and
-`maintenance.py` (Phase 07.11-03):
+Persistence pattern mirrors `daemon_state.py` (-01) and
+`maintenance.py` (-03):
 - Writes via `tempfile.mkstemp` + `os.replace` (POSIX atomic rename).
 - Crash mid-write leaves the prior file intact; readers either see
   the old complete blob or the new complete blob, never partial bytes.
@@ -65,7 +65,7 @@ class LifecycleStateRecord(TypedDict):
     `sleep_cycle_progress` and `quarantine` are nullable; the rest are
     always present in a well-formed record. `shadow_run` toggles whether
     the state machine actually executes process termination on
-    HIBERNATION (False post-Phase 10.6) or merely logs the would-action.
+    HIBERNATION (False post-) or merely logs the would-action.
     """
 
     current_state: str   # one of LifecycleState values
@@ -93,12 +93,12 @@ def _utc_now_iso() -> str:
 
 
 def default_state() -> LifecycleStateRecord:
-    """Return a fresh WAKE record with shadow_run=False (Phase 10.6 default).
+    """Return a fresh WAKE record with shadow_run=False (default).
 
     Used by `load_state` when the file is absent or malformed (self-heal),
     and by tests / callers that need a known starting point.
 
-    Plan 10.6-01 Task 1.6 flipped the default from True to False:
+    Task 1.6 flipped the default from True to False:
     HIBERNATION transitions now actually exit the daemon process via the
     global shutdown event in `daemon.main()`. The legacy RSS-watchdog has
     been removed in Task 1.4; the lifecycle state machine owns shutdown
@@ -199,7 +199,7 @@ def load_state(path: Path | None = None) -> LifecycleStateRecord:
 def save_state(record: LifecycleStateRecord, path: Path | None = None) -> None:
     """Atomically persist `record` via tempfile + os.replace.
 
-    Mirrors `daemon_state.save_state` (Phase 04-01) bullet-for-bullet:
+    Mirrors `daemon_state.save_state` (-01) bullet-for-bullet:
     creates parent dir if missing; writes to a sibling temp file in the
     same directory (required so os.replace is an atomic same-filesystem
     rename); fsyncs the file contents before rename so the data is on

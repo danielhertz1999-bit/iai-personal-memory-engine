@@ -1,6 +1,6 @@
-"""Plan 07.1-04 R5 acceptance — compile-output regression trap.
+"""R5 acceptance — compile-output regression trap.
 
-This is the regression-trap that catches a future revert of Phase 7.1's
+This is the regression-trap that catches a future revert of 's
 no-spawn architecture. If `child_process.spawn` reappears in
 `mcp-wrapper/dist/bridge.js`, this test FAILS — alerting the developer
 (or a future Claude) that someone has reintroduced the TOCTOU spawn
@@ -23,7 +23,7 @@ THAT is the load-bearing assertion.
 
 # Reference
 
-- Plan 07.1-04 Task 3
+- Task 3
 - 07.1-CONTEXT.md D7.1-07 (bridge.ts spawn-removal scope)
 - The mirror source-level assertion lives in Task 1
   (``grep -c 'child_process[.]spawn|^import.*spawn|spawnDaemon'
@@ -107,7 +107,7 @@ def test_dist_bridge_js_has_no_child_process_spawn(built_bridge_js):
     assert not found, (
         "REGRESSION: dist/bridge.js contains spawn-related substring(s) "
         f"that explicitly removed: {found}. "
-        "Someone has re-introduced the TOCTOU spawn race that Phase 7.1's "
+        "Someone has re-introduced the TOCTOU spawn race that 's "
         "pure-connector refactor eliminated. Re-read 07.1-CONTEXT.md "
         "D7.1-07 (bridge.ts spawn-removal scope) before pushing."
     )
@@ -130,7 +130,7 @@ def test_dist_bridge_js_has_DaemonUnreachableError(built_bridge_js):
     """
     text = built_bridge_js.read_text(encoding="utf-8")
 
-    # Plan 07.1-04 done criteria for Task 1: DaemonUnreachableError
+    # done criteria for Task 1: DaemonUnreachableError
     # appears ≥2 times in the source (class def + at least one throw).
     # Same expectation for the compiled output — tsc preserves named
     # class identifiers exactly.

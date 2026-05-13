@@ -246,7 +246,7 @@ def test_dispatch_status_still_works(tmp_state: Path) -> None:
     )
     assert resp.get("ok") is True
     assert resp.get("state") == "WAKE"
-    # Version echoed per Plan 04-gap-1.
+    # Version echoed in session-open response.
     assert "version" in resp
 
 

@@ -14,7 +14,7 @@ Fix:
     - Call store.update_record(r) inside run_light_consolidation after
       _apply_fsrs mutates r.
 
-Constitutional contract (MEM-07 FSRS biological fidelity + D-STORAGE):
+Constitutional contract ( FSRS biological fidelity + D-STORAGE):
     FSRS stability is the biological decay curve state. Losing it on every
     restart equivalates to wiping short-term memory at every session
     switch -- unacceptable for a system whose promise is "Claude remembers

@@ -1,4 +1,4 @@
-"""Phase 8 redesign — load-bearing infrastructure tests.
+"""redesign — load-bearing infrastructure tests.
 
 Verifies the new shared-cosine helpers introduced by against
 the locked decisions in `internal architecture spec
@@ -10,7 +10,7 @@ the locked decisions in `internal architecture spec
   (0.0, HIPPEA pure / EPF literal / hippocampal episodic) and
   `COMMUNITY_BIAS_CONCEPT` (0.1, CLS neocortical semantic / categorical
   hint), dispatched by `_gate_bias_for_mode(mode)` from the cue-classifier
-  in `core.dispatch()` (Plan 06-04 R5).
+  in `core.dispatch` (R5).
 - candidate-pool size — `K_CANDIDATES = 200`, justified by the
   empirical 99th-percentile gold rank from the LongMemEval-S v1 trace
   plus 30% margin.

@@ -1,5 +1,5 @@
-"""ART vigilance write gate (MEM-03, D-07) + S5 identity guard (MEM-09, D-22)
-+ prompt-injection shield (OPS-07, D-30, D-31).
+"""ART vigilance write gate (, ) + S5 identity guard (, )
++ prompt-injection shield (, , ).
 
 Grossberg-style Adaptive Resonance Theory vigilance: on write, compare the new
 record against existing records by cosine similarity. If the best match exceeds
@@ -8,12 +8,12 @@ vigilance ρ, merge; else create a new distinct record.
 ρ is fixed at 0.95 for per (matches autistic-kernel literal_preservation=strong).
 High ρ = prefer distinct record over merge = preserves fine detail.
 
-Plan 02-02 adds `guarded_insert` which layers the S5 identity gate on top of
+adds `guarded_insert` which layers the S5 identity gate on top of
 the ART decision. Identity-tier records (s5_trust_score >= 0.9) must carry
 the `s5_consensus` tag -- direct writes are rejected to prevent prompt-
 injection poisoning.
 
-Plan 02-05 extends `guarded_insert` with a shield pre-check (OPS-07 / D-31):
+extends `guarded_insert` with a shield pre-check ( / ):
 the tier is determined from record properties, and the shield is consulted
 BEFORE the S5 gate. HARD_BLOCK rejects propagate as (False, "shield: ...");
 FLAG and LOG tiers emit events but allow the write to proceed.
@@ -49,7 +49,7 @@ def apply_art_gate(
 ) -> tuple[str, UUID]:
     """Return ('create', new_record.id) or ('merge', target_record_id).
 
-    Skips any existing record with `never_merge=True` (D-14 pinned-L0 guarantee):
+    Skips any existing record with `never_merge=True` ( pinned-L0 guarantee):
     even if the input matches L0 perfectly, L0 is never overwritten.
 
     Args:
@@ -75,7 +75,7 @@ def apply_art_gate(
 
 
 def _shield_tier_for_record(record: MemoryRecord):
-    """Plan 02-05 tier determination.
+    """tier determination.
 
     HARD_BLOCK: pinned records OR s5_trust_score >= 0.9 (identity-tier)
     FLAG_FOR_REVIEW: records tagged "profile" (profile-knob updates)
@@ -98,7 +98,7 @@ def guarded_insert(
 ) -> tuple[bool, str]:
     """Central write gate combining shield pre-check + S5 identity check + ART gate.
 
-    (D-30, D-31): determine the shield tier from the record
+    (, ): determine the shield tier from the record
     (HARD_BLOCK for pinned/identity-tier, FLAG for profile, LOG for content),
     evaluate the shield, then:
       - HARD_BLOCK + detection -> reject (shield_rejection event already logged)

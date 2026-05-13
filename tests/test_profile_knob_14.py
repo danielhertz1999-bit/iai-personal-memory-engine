@@ -1,4 +1,4 @@
-"""Plan 03-03 — 14th autistic-kernel profile knob FLIP verification.
+"""— 14th autistic-kernel profile knob FLIP verification.
 
 The 14th autistic-kernel knob `camouflaging_relaxation` is FLIPPED from phase=3
 (deferred) to phase=1 (live). subsequently appends the 15th
@@ -28,7 +28,7 @@ from iai_mcp.profile import (
 
 # ------------------------------------------------------------- static FLIP state
 def test_phase_1_live_is_14():
-    """Plan 07.12-02: 10 autistic-kernel + wake_depth = 11 live.
+    """: 10 autistic-kernel + wake_depth = 11 live.
 
     Test name kept for git stability. Verifies camouflaging_relaxation
     remained live after flipped it.
@@ -52,7 +52,7 @@ def test_knob_spec_phase_is_1():
     assert spec.phase == 1
     assert spec.requirement_id == "AUTIST-13"
     # Description reflects the FLIP (no stale label).
-    assert "Phase 3" not in spec.description
+    assert "live" in spec.description
 
 
 def test_core_import_succeeds_with_deferred_knobs_zero():
@@ -63,7 +63,7 @@ def test_core_import_succeeds_with_deferred_knobs_zero():
 
 # ------------------------------------------------------------- runtime semantics
 def test_profile_get_returns_14():
-    """Plan 07.12-02: 11 total (10 autistic-kernel + wake_depth MCP-12)."""
+    """: 11 total (10 autistic-kernel + wake_depth MCP-12)."""
     state = default_state()
     r = profile_get(None, state)
     assert r["total_knobs"] == 11

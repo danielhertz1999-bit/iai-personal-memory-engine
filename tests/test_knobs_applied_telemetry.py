@@ -1,4 +1,4 @@
-"""Phase 07.12-03: assert _knobs_applied audit-trail block on recall.
+"""-03: assert _knobs_applied audit-trail block on recall.
 
 Closes (RE-ASSERTED per CONTEXT D-08).
 
@@ -150,13 +150,13 @@ def test_knobs_applied_no_op_marker_for_scene_construction_off() -> None:
 
 
 def test_helper_to_knob_id_has_11_verified_entries() -> None:
-    """Plan 07.12-03 contract: HELPER_TO_KNOB_ID has exactly 11 verified
+    """contract: HELPER_TO_KNOB_ID has exactly 11 verified
     entries — 8 helper-keyed (the wired AUTIST helpers) + 2 upstream-gains
     (dunn_quadrant, interest_boost) + 1 session-start (wake_depth).
 
     NO entries for removed knobs (AUTIST-02 sensory_channel_weights,
     event_vs_time_cue, alexithymia_accommodation,
-    double_empathy) — those were deleted in Wave 1 (Plan 02).
+    double_empathy) — those were deleted in Wave 1 .
     Re-introducing them here = silent regression.
     """
     assert len(HELPER_TO_KNOB_ID) == 11, (
@@ -170,7 +170,7 @@ def test_helper_to_knob_id_has_11_verified_entries() -> None:
     # No removed knobs.
     for removed in ("AUTIST-02", "AUTIST-08", "AUTIST-11", "AUTIST-12"):
         assert removed not in knob_ids, (
-            f"{removed} was removed in Plan 07.12-02; do not re-add"
+            f"{removed} was removed in ; do not re-add"
         )
     # Required knob IDs are present.
     expected_autist = {f"AUTIST-{i:02d}" for i in (1, 3, 4, 5, 6, 7, 9, 10, 13, 14)}
@@ -375,7 +375,7 @@ def test_knobs_applied_via_production_dispatch_path(tmp_path, monkeypatch) -> No
     assert "profile.py" in ka["AUTIST-09"], ka["AUTIST-09"]
     assert "session.py" in ka["MCP-12"], ka["MCP-12"]
 
-    # Removed-knob keys MUST NOT appear (Plan 07.12-02 deleted them).
+    # Removed-knob keys MUST NOT appear (deleted them).
     for removed in ("AUTIST-02", "AUTIST-08", "AUTIST-11", "AUTIST-12"):
         assert removed not in ka, (removed, ka)
 

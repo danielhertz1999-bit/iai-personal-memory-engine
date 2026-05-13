@@ -1,4 +1,4 @@
-"""Phase 9.1 — Registry invariant tests for the all-MiniLM-L6-v2 additive entry.
+"""— Registry invariant tests for the all-MiniLM-L6-v2 additive entry.
 
 Locks (additive-only registry expansion) and (source-freeze-modulo-registry)
 from internal architecture spec Verifies that:

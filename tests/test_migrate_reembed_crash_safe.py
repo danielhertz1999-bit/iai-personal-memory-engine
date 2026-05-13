@@ -1,4 +1,4 @@
-"""Plan 07.11-03 / regression tests for crash-safe reembed migration.
+"""/ regression tests for crash-safe reembed migration.
 
 Closes V2-05: the reembed migration at migrate.py:300-305 dropped the records
 table and rebuilt row-by-row from a stashed iterator. A crash, kill, power
@@ -202,7 +202,7 @@ def test_mid_migration_kill_preserves_old_table(tmp_path, monkeypatch):
         migrate_reembed_to_current_dim(store, target)
 
     names = set(store.db.table_names())
-    # Original records intact (Phase 1 doesn't touch records).
+    # Original records intact (doesn't touch records).
     assert "records" in names
     assert store.db.open_table("records").count_rows() == 10, (
         "Original records table must stay intact when kill fires mid-stage"
@@ -223,7 +223,7 @@ def test_mid_migration_kill_preserves_old_table(tmp_path, monkeypatch):
 
 def test_rollback_handler_restores_from_old(tmp_path, monkeypatch):
     """D-05 case 2 / rollback: from the kill state, _rollback drops
-    records_v_new. records is intact (Phase 1 didn't touch it). Drops
+    records_v_new. records is intact (didn't touch it). Drops
     progress file. No records_old_<ts> in this scenario because the kill
     fired before the atomic swap."""
     src = _DimEmbedder(384)
@@ -251,7 +251,7 @@ def test_rollback_handler_restores_from_old(tmp_path, monkeypatch):
     assert rc == 0, "rollback must succeed on a clean kill-mid-stage state"
 
     names = set(store.db.table_names())
-    assert "records" in names, "records must still exist (Phase 1 never dropped it)"
+    assert "records" in names, "records must still exist (never dropped it)"
     assert store.db.open_table("records").count_rows() == 10, (
         "records must hold the original 10 rows after rollback"
     )

@@ -1,4 +1,4 @@
-"""Plan 05-14 — async provenance write queue (OPS-10 / M-02).
+"""— async provenance write queue ( / M-02).
 
 Moves provenance writes off the recall critical path via a daemon-thread
 queue so pipeline_recall returns before append_provenance_batch runs.

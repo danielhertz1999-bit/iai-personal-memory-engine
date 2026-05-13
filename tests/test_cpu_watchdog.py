@@ -1,4 +1,4 @@
-"""Phase 07.2-05 R5 / A5 regression test — CPU watchdog emits one event under sustained overload.
+"""-05 R5 / A5 regression test — CPU watchdog emits one event under sustained overload.
 
 Mock psutil.Process.cpu_percent with a scripted sequence so the test runs
 in seconds instead of 75s wall time. D7.2-23 explicitly allows mocks for

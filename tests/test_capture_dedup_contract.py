@@ -1,4 +1,4 @@
-"""Phase 07.11 Plan 01 / — `memory_capture` dedup contract.
+"""/ — `memory_capture` dedup contract.
 
 These four regression tests are the executable specification for D-01:
 

@@ -1,4 +1,4 @@
-"""Phase 4 daemon concurrency primitives (DAEMON-04, DAEMON-05).
+"""daemon concurrency primitives (, ).
 
 Persistent-fd flock wrapper. Hold one instance for process lifetime.
 fcntl.flock (NOT lockf) -- fd-close does not release (see apenwarr 2010, Pitfall 2).
@@ -10,7 +10,7 @@ Constitutional guard:
   branch of _dispatch_socket_request only sets pending flags after receiving
   an explicit consent payload from the wrapper; the FSM transition itself is
   performed by _tick_body, never by the dispatcher (C-DISPATCHER-FSM-ISOLATION).
-- C-DISPATCHER-FSM-ISOLATION (Phase 7 structural; supersedes the bare `C2`
+- C-DISPATCHER-FSM-ISOLATION (structural; supersedes the bare `C2`
   inline-comment shorthand previously used at the FSM-yield call sites): the
   socket dispatcher MUST NOT transition the FSM directly; it only sets pending
   flags consumed by _tick_body under the FSM lock. New socket_server
@@ -88,7 +88,7 @@ class ProcessLock:
             raise
 
     def holds_exclusive_nb(self) -> bool:
-        """D-06 cooperative-yield probe.
+        """ cooperative-yield probe.
 
         Non-blocking check: do we still hold the exclusive lock?
 
@@ -187,7 +187,7 @@ def _validate_socket_message(req: dict) -> tuple[bool, str | None]:
                 return False, "seconds must be an int"
         return True, None
 
-    # TOK-14 / D5-05: 7th message type `session_open`.
+    # / D5-05: 7th message type `session_open`.
     # Both session_id and ts are OPTIONAL; when supplied, they must be strings.
     # Absence is tolerated so the TS wrapper can emit a bare ping on MCP boot
     # without stalling on id/ts bookkeeping.
@@ -226,7 +226,7 @@ async def _dispatch_socket_request(
     - pause                   -> scheduler_paused=True
     - resume                  -> scheduler_paused=False
     - session_open            -> set first_turn_pending + hippea_cascade_request
-                                 (Plan 05-04 TOK-14 / D5-05)
+                                 ( / D5-05)
     - any other               -> {"ok": False, "reason": "unknown_message_type"}
     """
     # Reject non-dict requests (defence-in-depth; caller already json.loaded).
@@ -287,7 +287,7 @@ async def _dispatch_socket_request(
             # Backwards-compat key used by tests/test_concurrency.py Test 6.
             "state": fsm_state,
             "uptime_sec": uptime_sec,
-            # Plan 04-gap-1 additions:
+            # Gap-fill additions:
             "version": pkg_version,
             "fsm_state": fsm_state,
             "last_tick_at": state.get("last_tick_at"),
@@ -358,7 +358,7 @@ async def _dispatch_socket_request(
         return {"ok": True, "paused": False}
 
     # ---------------------------------------------------------- session_open
-    # TOK-14 / D5-05: 7th message type. Sets two flags:
+    # / D5-05: 7th message type. Sets two flags:
     #   - first_turn_pending[session_id] = True  -> consumed by core's
     #     _first_turn_recall_hook exactly once per session.
     #   - hippea_cascade_request {pending=True, session_id, ts} -> polled by

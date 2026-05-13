@@ -41,7 +41,7 @@ def test_recall_appends_provenance_twice(tmp_path):
 
 
 def test_contradict_creates_linked_record_without_rewrite(tmp_path):
-    """MEM-05 edge-based: original preserved, new record linked."""
+    """ edge-based: original preserved, new record linked."""
     store = MemoryStore(path=tmp_path)
     r = _make(text="Original fact")
     store.insert(r)
@@ -55,7 +55,7 @@ def test_contradict_creates_linked_record_without_rewrite(tmp_path):
     assert result["edge_type"] == "contradicts"
     assert result["original_id"] == str(r.id)
 
-    # original remains unchanged (full rewrite is Phase 2).
+    # original remains unchanged (full rewrite is ).
     assert store.get(r.id).literal_surface == original_text
 
     # New record contains the contradicting fact.

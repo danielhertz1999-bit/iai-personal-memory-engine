@@ -1,4 +1,4 @@
-"""Plan 03-01 CONN-05 RED: TEM bind_structure write-time fill side.
+""" RED: TEM bind_structure write-time fill side.
 
 Verifies that store.insert() invokes tem.bind_structure() to populate an
 empty structure_hv, that the result is exactly STRUCTURE_HV_BYTES (1250)

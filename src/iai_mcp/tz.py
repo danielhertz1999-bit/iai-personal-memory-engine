@@ -1,4 +1,4 @@
-"""D-34 IANA timezone handling (Plan 02-01, global-product mandate).
+""" IANA timezone handling (, global-product mandate).
 
 Every global-ready product must respect user timezone. We store all runtime
 timestamps (events table, BudgetLedger, record created_at, etc.) in UTC and
@@ -10,7 +10,7 @@ as an IANA string (e.g. "America/Los_Angeles", "Europe/Moscow", "Asia/Tokyo",
 thereafter the user can edit config.json to override.
 
 The sleep-cycle scheduler interprets `quiet_window` (22:00-06:00) in the
-user's LOCAL time, not UTC. Multi-tenant architecture-ready: Phase 3+ deployments
+user's LOCAL time, not UTC. Multi-tenant architecture-ready: deployments
 can carry per-user_id tz maps.
 
 Public surface:

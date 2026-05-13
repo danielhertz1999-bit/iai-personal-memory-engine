@@ -1,4 +1,4 @@
-"""Phase 10.1 -- Lifecycle State Machine + Shadow-Run Mode.
+"""-- Lifecycle State Machine + Shadow-Run Mode.
 
 Realises LOCKED contracts L1 (hibernation depth: kill process) and
 L2 (state authority: daemon-only writer for `lifecycle_state.json`).
@@ -9,7 +9,7 @@ and the dispatched event (with optional payload guards); side effects
 (persistence + event-log append + shadow-run warning) happen ONLY in
 `dispatch`.
 
-Phase 10.6 Plan 10.6-01 Task 1.6: flipped `shadow_run` default from
+flipped `shadow_run` default from
 True to False. HIBERNATION transitions now actually exit the daemon
 process via the global shutdown event in `daemon.main()`'s lifecycle
 tick. The legacy `_rss_watchdog_loop` was removed in Task 1.4; this
@@ -24,7 +24,7 @@ terminating the daemon process.
 Single-writer enforcement (L2): a separate lock file
 `~/.iai-mcp/.lifecycle.lock` carries the `fcntl.flock(LOCK_EX|LOCK_NB)`.
 The data file `lifecycle_state.json` is atomically replaced via
-`os.replace` (Phase 04-01 pattern), which swaps the inode — any lock
+`os.replace` (-01 pattern), which swaps the inode — any lock
 held on the data file's fd would not protect the new file. The lock
 file is never renamed, so the lock survives `save_state` cycles.
 """
@@ -202,7 +202,7 @@ class LifecycleStateMachine:
     Owns:
     - `lifecycle_state.json` reads + writes (single-writer enforced).
     - Event log emission (`state_transition`, `shadow_run_warning`).
-    - `shadow_run` flag (default False since Phase 10.6; True is a transition-test escape hatch).
+    - `shadow_run` flag (default False since ; True is a transition-test escape hatch).
 
     Construction is cheap; the lock is acquired only inside
     `dispatch`. Tests can drive transitions either via `dispatch`

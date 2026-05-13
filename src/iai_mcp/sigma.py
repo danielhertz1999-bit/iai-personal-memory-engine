@@ -1,4 +1,4 @@
-"""Plan 03-02 CONN-07: small-world sigma as Ashby ultrastability diagnostic.
+""": small-world sigma as Ashby ultrastability diagnostic.
 
 Ground-truth reference: Humphries MD, Gurney K (2008) "Network 'small-world-ness':
 a quantitative method for determining canonical network equivalence."
@@ -208,9 +208,9 @@ def compute_topology_snapshot(graph) -> dict:
     - C : average clustering on the largest connected component.
     - L : average shortest path length on the largest CC.
     - sigma : compute_sigma(graph) (None if N < SIGMA_N_FLOOR).
-    - community_count : Leiden community count (CONN-01 reuse via
+    - community_count : Leiden community count ( reuse via
       community.detect_communities); uses an isolated MemoryGraph wrapper.
-    - rich_club_ratio : len(rich_club_nodes) / N (CONN-02 reuse).
+    - rich_club_ratio : len(rich_club_nodes) / N ( reuse).
     - N : node count.
     - regime : classify_regime(N, sigma).
     """

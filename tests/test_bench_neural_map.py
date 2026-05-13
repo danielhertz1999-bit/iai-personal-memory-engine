@@ -1,4 +1,4 @@
-"""Tests for bench/neural_map.py (Plan 02-04 Task 4, D-SPEED).
+"""Tests for bench/neural_map.py (Task 4, D-SPEED).
 
 D-SPEED contract: pipeline_recall <100ms at 10k records. The bench harness
 measures per-N latency distribution (p50, p95) and returns a structured

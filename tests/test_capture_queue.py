@@ -1,4 +1,4 @@
-"""Phase 10.2 Plan 10.2-01 Task 1.2 -- capture_queue.py test suite.
+"""Task 1.2 -- capture_queue.py test suite.
 
 Covers atomic append (incl. crash simulation), 50-thread concurrent
 append, idempotent ingest with mid-handler crash, lock-skip semantics,

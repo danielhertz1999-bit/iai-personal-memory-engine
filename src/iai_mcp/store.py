@@ -1,16 +1,16 @@
-"""LanceDB-backed persistent memory store (D-01 storage engine, sync write).
+"""LanceDB-backed persistent memory store ( storage engine, sync write).
 
-Phase 1 tables:
+tables:
 - `records`: MemoryRecord rows (one per memory).
 - `edges`: (src, dst, edge_type, weight, updated_at) -- Hebbian + contradicts edges.
 
-Phase 2 additions (D-STORAGE):
+additions :
 - `events`: all runtime state (S4 contradictions, trajectory metrics, alerts,
   llm_health, schema_induction_run, cls_consolidation_run, etc.).
 - `budget_ledger`: D-GUARD per-day USD spend by kind (BudgetLedger).
 - `ratelimit_ledger`: D-GUARD 429 history for 15-min cooldown (RateLimitLedger).
 
-D-STORAGE: NO scattered .jsonl or .json files. Every runtime event lives here.
+: NO scattered .jsonl or .json files. Every runtime event lives here.
 
 Embedding dimension: (English-Only Brain pivot) defaults to
 `bge-small-en-v1.5` (384d). The records schema reads the configured dimension
@@ -18,10 +18,10 @@ from `iai_mcp.embed.DEFAULT_DIM` at first table creation. Stores created during
 the brief Phase-2 era still carry 1024d embeddings and stay readable via
 `embedder_for_store(store)` until the user re-embeds them down to 384d.
 
-Storage root defaults to `~/.iai-mcp/lancedb` (OPS-03 local-first), overridable
+Storage root defaults to `~/.iai-mcp/lancedb` ( local-first), overridable
 via IAI_MCP_STORE env var or the `path` constructor argument.
 
-Plan 02-08 encryption-at-rest (SEC-ENCRYPTION-AT-REST):
+encryption-at-rest :
 - literal_surface / provenance_json / profile_modulation_gain_json on records
   table are AES-256-GCM encrypted with a key sourced from the OS keychain.
 - events.data_json on events table is also encrypted.
@@ -77,7 +77,7 @@ DEFAULT_STORAGE_PATH = Path.home() / ".iai-mcp"
 RECORDS_TABLE = "records"
 EDGES_TABLE = "edges"
 
-# D-STORAGE tables
+# tables
 EVENTS_TABLE = "events"
 BUDGET_TABLE = "budget_ledger"
 RATELIMIT_TABLE = "ratelimit_ledger"
@@ -89,7 +89,7 @@ RATELIMIT_TABLE = "ratelimit_ledger"
 # invariant_anchor    -- S5 kernel stable-fact permanent hub
 # curiosity_bridge    -- LEARN-04 question -> triggering records
 # profile_modulates   -- profile knob runtime gain
-# hebbian_structure   -- CONN-05 TEM factorization LTP on structure edges
+# hebbian_structure -- TEM factorization LTP on structure edges
 EDGE_TYPES: frozenset[str] = frozenset({
     "hebbian",
     "contradicts",
@@ -115,7 +115,7 @@ def _uuid_literal(value: UUID | str) -> str:
 
     H-01: callers previously interpolated UUIDs into `where=` predicates via bare
     f-strings. Safe today (inputs are UUID objects), but the pattern propagates
-    risk as tag-based filtering arrives in Phase 2. This helper normalises any
+    risk as tag-based filtering arrives in This helper normalises any
     UUID (object or canonical str) into its canonical lowercase form and rejects
     anything that does not match the RFC-4122 shape, so the f-string cannot
     carry injection content.
@@ -253,7 +253,7 @@ class MemoryStore:
                 ("literal_surface", pa.string()),
                 ("aaak_index", pa.string()),
                 ("embedding", pa.list_(pa.float32(), self._embed_dim)),
-                # CONN-05 TEM factorization (Whittington-Behrens 2020).
+                # TEM factorization (Whittington-Behrens 2020).
                 # D=10000 BSC packed bits = 1250 bytes; plaintext like `embedding`
                 # because it is part of the retrieval surface.
                 # Renamed v3 -> v4 from the legacy `hd_vector_json` (pa.string())
@@ -272,7 +272,7 @@ class MemoryStore:
                 ("created_at", pa.timestamp("us", tz="UTC")),
                 ("updated_at", pa.timestamp("us", tz="UTC")),
                 ("tags_json", pa.string()),
-                # v2 columns (D-02a / prep / / D-35)
+                # v2 columns (D-02a / prep / / )
                 ("language", pa.string()),                    # ISO-639-1 tag
                 ("s5_trust_score", pa.float32()),             # prep, default 0.5
                 ("profile_modulation_gain_json", pa.string()),# runtime gain map
@@ -299,7 +299,7 @@ class MemoryStore:
             [
                 ("src", pa.string()),
                 ("dst", pa.string()),
-                ("edge_type", pa.string()),  # see EDGE_TYPES (8 values in Phase 2)
+                ("edge_type", pa.string()),
                 ("weight", pa.float32()),
                 ("updated_at", pa.timestamp("us", tz="UTC")),
             ]
@@ -307,7 +307,7 @@ class MemoryStore:
         if EDGES_TABLE not in self._table_names():
             self.db.create_table(EDGES_TABLE, schema=edges_schema)
 
-        # --------- D-STORAGE events table (single source of runtime state)
+        # --------- events table (single source of runtime state)
         events_schema = pa.schema(
             [
                 ("id", pa.string()),                             # UUID str
@@ -391,7 +391,7 @@ class MemoryStore:
 
     @functools.cached_property
     def _cached_aesgcm(self) -> AESGCM:
-        """Phase 07.7 W5: one AESGCM cipher per store lifetime.
+        """W5: one AESGCM cipher per store lifetime.
 
         Materialised lazily on first access. Reused across all
         :meth:`_decrypt_for_record` calls — saves the per-call ``AESGCM(key)``
@@ -399,7 +399,7 @@ class MemoryStore:
         on the 8105-record store before W5).
 
         Cache invalidation: if ``self._key()`` rotates (key rotation event),
-        callers must invoke :meth:`_invalidate_aesgcm_cache`. D-18
+        callers must invoke :meth:`_invalidate_aesgcm_cache`.
         accepts "no rotation during phase" — rotation hook is future work.
         """
         return AESGCM(self._key())
@@ -407,7 +407,7 @@ class MemoryStore:
     def _invalidate_aesgcm_cache(self) -> None:
         """Drop the cached AESGCM. Next access re-materialises against current key.
 
-        Reserved for future key-rotation events (D-18). Not invoked
+        Reserved for future key-rotation events . Not invoked
         by itself.
         """
         self.__dict__.pop("_cached_aesgcm", None)
@@ -421,7 +421,7 @@ class MemoryStore:
         W5: uses :attr:`_cached_aesgcm` instead of
         constructing a fresh ``AESGCM(key)`` on every call. Per-call cost
         drops from ``AESGCM.__init__ + AESGCM.decrypt`` to ``AESGCM.decrypt``
-        only. ``crypto.decrypt_field`` is intentionally NOT modified (D-17 —
+        only. ``crypto.decrypt_field`` is intentionally NOT modified ( —
         keep crypto.py decoupled + stateless for callers that pass key bytes
         directly).
         """
@@ -493,7 +493,7 @@ class MemoryStore:
         sensitive fields are encrypted in _to_row before the
         row hits LanceDB. Decryption happens in get()/_from_row for callers.
 
-        CONN-05: if record.structure_hv is empty bytes (the
+        : if record.structure_hv is empty bytes (the
         pre-migration sentinel), compute it via tem.bind_structure(record)
         before persisting. This is the autopoietic write-time fill -- the
         record carries its own structural fingerprint into LanceDB so the
@@ -567,7 +567,7 @@ class MemoryStore:
         callers (every existing user of ``store.insert``) can keep
         calling ``insert(record)`` and block on the batch flush via
         ``run_coroutine_threadsafe``. The read path stays synchronous
-        and untouched — is owned by Plan 05-12.
+        and untouched — is owned by .
 
         Idempotent: a second call while already enabled is a no-op.
         """
@@ -824,7 +824,7 @@ class MemoryStore:
         self._fire_graph_sync_hook("delete", _DeleteShim(record_id))
 
     def get(self, record_id: UUID) -> MemoryRecord | None:
-        """Plan 05-15 / filter-pushdown point read.
+        """/ filter-pushdown point read.
 
         Replaces the legacy O(N) ``tbl.to_pandas()`` full-scan (which
         materialised every row + every column into pandas and then
@@ -856,7 +856,7 @@ class MemoryStore:
         df = tbl.to_pandas()
         return [self._from_row(r.to_dict()) for _, r in df.iterrows()]
 
-    # (D-05..D-10): streaming + projection — see internal architecture spec
+    # (..): streaming + projection — see internal architecture spec
     def iter_records(
         self,
         *,
@@ -864,7 +864,7 @@ class MemoryStore:
         batch_size: int = 1024,
         where: str | None = None,
     ):
-        """Phase 07.7 W1: streaming + projection iterator over records.
+        """W1: streaming + projection iterator over records.
 
         Yields ``MemoryRecord`` instances batch by batch via LanceDB's
         documented memory-efficient pattern. Unlike :meth:`all_records`,
@@ -912,7 +912,7 @@ class MemoryStore:
         batch_size: int = 1024,
         where: str | None = None,
     ):
-        """Phase 07.7 W2: projection-only iteration; no MemoryRecord, no decrypt.
+        """W2: projection-only iteration; no MemoryRecord, no decrypt.
 
         Yields raw ``dict`` rows containing only the requested columns. Encrypted
         fields (literal_surface, provenance_json, profile_modulation_gain_json),
@@ -948,7 +948,7 @@ class MemoryStore:
         LanceDB's default L2 distance is mapped via explicit `.distance_type("cosine")`
         so `_distance` is cosine distance; we return `1.0 - _distance` as similarity.
 
-        Plan 07.11-01 / optional ``tier`` kwarg applies a LanceDB
+        / optional ``tier`` kwarg applies a LanceDB
         where-clause filter at the search layer. Validated against the
         canonical ``TIER_ENUM`` (imported from ``iai_mcp.types``); bad
         tier values raise ``ValueError`` BEFORE any I/O is attempted, so
@@ -989,7 +989,7 @@ class MemoryStore:
         return out
 
     def update_record(self, record: MemoryRecord) -> None:
-        """Plan 02-06 H-01: persist FSRS-relevant columns back to the records table.
+        """H-01: persist FSRS-relevant columns back to the records table.
 
         Scope (deliberately narrow):
             stability, difficulty, last_reviewed, updated_at
@@ -1029,7 +1029,7 @@ class MemoryStore:
     def append_provenance(self, record_id: UUID, entry: dict) -> None:
         """append a provenance entry to the record.
 
-        Read-modify-write per (sync write, acceptable for single-user Phase 1).
+        Read-modify-write per (sync write, acceptable for single-user ).
         existing provenance is decrypted when encrypted; the
         updated list is re-encrypted before write.
         """
@@ -1061,7 +1061,7 @@ class MemoryStore:
         self, pairs: "list[tuple[UUID, dict]]",
         records_cache: "dict | None" = None,
     ) -> None:
-        """Plan 02-07 D-SPEED: batched provenance append (MEM-05 preserved).
+        """: batched provenance append ( preserved).
 
         Collapses the per-hit N+1 `to_pandas()` scan pattern into:
           * ONE `tbl.to_pandas()` scan to read current provenance (or ZERO
@@ -1088,7 +1088,7 @@ class MemoryStore:
           tags_json, aaak_index, etc.) -- same guarantee as the single-call
           `tbl.update(values={...})` surface.
 
-        Why this is the perf-critical surface (D-SPEED SC-6):
+        Why this is the perf-critical surface ( SC-6):
         Pre-fix: pipeline_recall -> for hit in hits: store.append_provenance(...)
                  => N x to_pandas() scans (~20ms each, dominant cost at N=5-11).
         Post-fix: pipeline_recall -> store.append_provenance_batch([...],
@@ -1214,7 +1214,7 @@ class MemoryStore:
         delta: float | Sequence[float] = 0.1,
         edge_type: str = "hebbian",
     ) -> dict[tuple[str, str], float]:
-        """MEM-04 + edge-type extension: pairwise edge boost.
+        """ + edge-type extension: pairwise edge boost.
 
         accepts any edge_type from EDGE_TYPES (8 values):
         {hebbian, contradicts, consolidated_from, schema_instance_of,
@@ -1278,7 +1278,7 @@ class MemoryStore:
 
         # ONE full-table scan at entry. Acceptable at the project's edge-count
         # scale (<= ~5K rows). A scoped `tbl.search().where(...)` predicate is
-        # a follow-up micro-optimisation per CONTEXT D7.4-01.
+        # a follow-up micro-optimisation per CONTEXT .
         existing = tbl.to_pandas()
 
         update_rows: list[dict] = []
@@ -1372,9 +1372,9 @@ class MemoryStore:
         edge_type: str = "hebbian",
         delta: float = 0.1,
     ) -> dict[tuple[str, str], float]:
-        """MEM-04 typed wrapper: single-record Hebbian reinforcement.
+        """ typed wrapper: single-record Hebbian reinforcement.
 
-        Plan 07.11-01 / step 2 — the canonical reinforcement target for
+        / step 2 — the canonical reinforcement target for
         ``memory_capture`` dedup-on-cos>=0.95. Promoting this typed wrapper
         next to ``boost_edges`` makes the single-record-reinforcement intent
         explicit at the call site and prevents the Bug-C shape-mismatch
@@ -1410,7 +1410,7 @@ class MemoryStore:
         return self.boost_edges([pair], delta=delta, edge_type=edge_type)
 
     def add_contradicts_edge(self, original: UUID, new_id: UUID) -> None:
-        """MEM-05 edge-based reconsolidation: original unchanged."""
+        """ edge-based reconsolidation: original unchanged."""
         tbl = self.db.open_table(EDGES_TABLE)
         tbl.add(
             [
@@ -1441,7 +1441,7 @@ class MemoryStore:
             "literal_surface": literal_ct,
             "aaak_index": r.aaak_index,
             "embedding": [float(x) for x in r.embedding],
-            # CONN-05: structure_hv is raw bytes (D=10000 BSC packed
+            # : structure_hv is raw bytes (D=10000 BSC packed
             # to 1250 bytes). Empty bytes default for pre-migration / lazy bind.
             "structure_hv": bytes(r.structure_hv or b""),
             "community_id": str(r.community_id) if r.community_id else "",
@@ -1478,11 +1478,11 @@ class MemoryStore:
                 "iter_records consumer must include 'id' in column projection"
             )
 
-        # CONN-05 read path: prefer the v4 `structure_hv` (pa.binary())
+        # read path: prefer the v4 `structure_hv` (pa.binary)
         # column. Legacy v3 stores still expose the old `hd_vector_json` column
         # until migrate_hd_vector_to_structure_hv_v3_to_v4 has run; in that case
         # we surface b"" so MemoryRecord stays valid (the column carried JSON
-        # `null` / "" in Phase 1+2 -- it was never populated).
+        # `null` / "" in -- it was never populated).
         structure_raw = row.get("structure_hv")
         if structure_raw is None:
             structure_hv = b""

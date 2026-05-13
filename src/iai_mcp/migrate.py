@@ -1,22 +1,22 @@
-"""D-35 -> migration + encryption +
-Plan 03-01 CONN-05 TEM factorization (v3 -> v4 column rename + structure_hv fill).
+""" -> migration + encryption +
+ TEM factorization (v3 -> v4 column rename + structure_hv fill).
 
-Plan 02-01 (v1 -> v2):
+(v1 -> v2):
   One-time batch migration that re-embeds every record with the
-  configured embedder (bge-small-en-v1.5 by default per Plan 05-08; bge-m3
+  configured embedder (bge-small-en-v1.5 by default per ; bge-m3
   remains opt-in via IAI_MCP_EMBED_MODEL), backfills the v2 fields with
   their defaults, detects language via langdetect on literal_surface
   for legacy provenance, and marks each record schema_version=2.
 
-Plan 02-08 (v2 -> v3 data upgrade):
+(v2 -> v3 data upgrade):
   In-place AES-256-GCM encryption of literal_surface / provenance_json /
   profile_modulation_gain_json on the records table, and data_json on the
   events table. Runs lazily via `migrate_encryption_v2_to_v3(store)` and
   is idempotent (skips rows that already carry the iai:enc:v1: prefix).
 
-Plan 03-01 (v3 -> v4 TEM factorization):
+(v3 -> v4 TEM factorization):
   Renames the LanceDB records column `hd_vector_json` (pa.string(), JSON-
-  encoded list[int]|None reservation slot from Phase 1/2) to `structure_hv`
+  encoded list[int]|None reservation slot from ) to `structure_hv`
   (pa.binary(), packed D=10000 BSC bits = 1250 bytes per row). For stores
   created on the new schema (the typical case after this plan ships), the
   column name is already correct; the migration just (a) backfills any row
@@ -41,7 +41,7 @@ Resumable: each record is committed individually via delete + insert. If the
 process crashes mid-batch, re-running picks up where it left off.
 
 Emits events of kind='migration_v1_to_v2', 'migration_v2_to_v3', and
-'migration_v3_to_v4' (D-STORAGE).
+'migration_v3_to_v4' .
 
 CLI wrappers:
   iai-mcp migrate --from=1 --to=2 [--dry-run]  # (v1 -> v2)
@@ -82,7 +82,7 @@ from iai_mcp.types import (
 log = logging.getLogger(__name__)
 
 
-# Plan 07.11-03 / crash-safe reembed migration constants.
+# / crash-safe reembed migration constants.
 # `STAGING_TABLE` is the LanceDB table that receives re-embedded rows during
 # of the four-phase flow (stage -> validate -> atomic swap ->
 # deferred cleanup). `OLD_TABLE_PREFIX` is the timestamp-suffixed name of the
@@ -135,7 +135,7 @@ def migrate_v1_to_v2(
         Open MemoryStore. Migration rewrites in-place via delete+insert per record.
     embedder:
         Embedder instance; defaults to Embedder() (bge-small-en-v1.5, 384d,
-        per Plan 05-08). The store's records table schema must match the
+        per ). The store's records table schema must match the
         embedder's DIM; if they differ, the caller is responsible for using
         the appropriate model_key (e.g. legacy 1024d stores from the brief
         Phase-2 era should pass bge-m3 until the table schema is
@@ -174,7 +174,7 @@ def migrate_v1_to_v2(
             continue
 
         # Re-embed with the configured model (English-Only-Brain default,
-        # Plan 05-08). If the embedder's DIM differs from the store's current
+        # ). If the embedder's DIM differs from the store's current
         # schema, insert will raise; callers on legacy 1024d stores from the
         # brief Phase-2 era must pass a matching model_key.
         new_embedding = emb.embed(record.literal_surface)
@@ -244,7 +244,7 @@ def _records_schema_at_dim(dim: int) -> pa.Schema:
     for the `embedding` column's `list_size=dim`. Inlined here because the
     staged-swap reembed migration needs to create `records_v_new` at a
     DIFFERENT dim from the live store's `_embed_dim` — `store._ensure_tables`
-    is not parameterised on dim. Plan 07.11-03 / file-disjoint
+    is not parameterised on dim. / file-disjoint
     constraint forbids store.py changes; inlining is the conservative path.
     """
     return pa.schema(
@@ -417,7 +417,7 @@ def _stage_loop(
     the last successfully-staged record. Per-row exceptions are caught
     + structured-logged + counted (best-effort migration); KeyboardInterrupt
     and SystemExit propagate untouched so the caller (the live records
-    table is intact in Phase 1) sees the kill.
+    table is intact in ) sees the kill.
 
     Returns `(staged_count, failures)`. `failures` is the list of
     record-id strings whose re-embedding raised a recoverable exception.
@@ -523,9 +523,9 @@ def _validate_and_swap(
     failures: list[str],
     duration_sec: float,
 ) -> dict:
-    """Phase 2 (validate) + (atomic swap) + event emit.
+    """(validate) + (atomic swap) + event emit.
 
-    Refuses to swap if staged < orig * 0.99 (D-03 gross-mismatch guard).
+    Refuses to swap if staged < orig * 0.99 ( gross-mismatch guard).
     Emits `migration_reembed` BEFORE the rename so a crash mid-rename still
     leaves an audit trail. Swap uses filesystem-level `os.replace` on the
     table directories under `db.uri` (LanceDB 0.30.2 OSS raises
@@ -606,7 +606,7 @@ def migrate_reembed_to_current_dim(
     dry_run: bool = False,
     progress: Optional[Callable[[int, int], None]] = None,
 ) -> dict:
-    """Crash-safe re-embed migration (Plan 07.11-03 / four-phase flow).
+    """Crash-safe re-embed migration (/ four-phase flow).
 
     Closes V2-05: replaces the destructive drop-then-rebuild at the legacy
     line 300-305 with stage -> validate -> atomic swap -> deferred cleanup.
@@ -652,7 +652,7 @@ def migrate_reembed_to_current_dim(
     touching the store (preserves the legacy line-244-250 contract used
     by `tests/test_migrate_reembed_to_current_dim.py`).
 
-    Preserves (MEM-01 + full record fidelity):
+    Preserves ( + full record fidelity):
       - `literal_surface` byte-for-byte (re-embedded but content unchanged).
       - `structure_hv` (TEM factorization independent of content embedding).
       - All flags, tags, language, schema_version, provenance,
@@ -752,7 +752,7 @@ def migrate_reembed_to_current_dim(
 
 
 # ---------------------------------------------------------------------------
-# Plan 07.11-03 / boot-time partial-migration detector + rollback /
+# / boot-time partial-migration detector + rollback /
 # resume entry points. The detector runs at daemon boot BEFORE ready-state
 # advertisement (see daemon.py main() — the wire-up makes the rollback
 # handler actually fire, closing the V2-07 anti-pattern of declared-but-
@@ -1188,7 +1188,7 @@ def migrate_redact_undecryptable_records(store: MemoryStore) -> dict:
 
 
 def _rollback(db, store: MemoryStore) -> int:
-    """Roll back a partial reembed migration. Plan 07.11-03 / D-03.
+    """Roll back a partial reembed migration. / .
 
     Behaviour by state (per `detect_partial_migration` taxonomy):
       - records present + records_v_new present (mid-stage crash):
@@ -1416,7 +1416,7 @@ def migrate_encryption_v2_to_v3(
     dry_run: bool = False,
     progress: Optional[Callable[[int, int], None]] = None,
 ) -> dict:
-    """One-shot encryption migration for (SEC-ENCRYPTION-AT-REST).
+    """One-shot encryption migration for .
 
     Scans both the records table and the events table; anything whose
     sensitive column currently lives as plaintext is re-encrypted in place.
@@ -1587,7 +1587,7 @@ def migrate_encryption_v2_to_v3(
 
 
 # ---------------------------------------------------------------------------
-# CONN-05: v3 -> v4 TEM factorization migration
+# : v3 -> v4 TEM factorization migration
 # ---------------------------------------------------------------------------
 
 
@@ -1596,8 +1596,8 @@ def migrate_hd_vector_to_structure_hv_v3_to_v4(
     dry_run: bool = False,
     progress: Optional[Callable[[int, int], None]] = None,
 ) -> dict:
-    """Plan 03-01 CONN-05: rename `hd_vector_json` (pa.string()) -> `structure_hv`
-    (pa.binary()) and backfill every Phase 1/2 record with a freshly-bound
+    """: rename `hd_vector_json` (pa.string) -> `structure_hv`
+    (pa.binary) and backfill every record with a freshly-bound
     structural hypervector via tem.bind_structure().
 
     Idempotency contract:
@@ -1612,7 +1612,7 @@ def migrate_hd_vector_to_structure_hv_v3_to_v4(
         Each record is delete+insert'd individually; a crash mid-batch leaves
         a partially-migrated store that the next run picks up cleanly.
 
-    MEM-01:
+    :
         literal_surface is preserved byte-for-byte. The migration only touches
         structure_hv + schema_version on each row.
 
@@ -1652,7 +1652,7 @@ def migrate_hd_vector_to_structure_hv_v3_to_v4(
     total = len(all_records)
     result["processed"] = total
 
-    # Lazy import: tem.py is part of Plan 03-01; importing it at module top
+    # Lazy import: tem.py is part of ; importing it at module top
     # would create a load-time cycle (migrate.py is imported by cli.py which
     # is imported by sometimes-called CLI tooling -- keep it lazy).
     from iai_mcp.tem import bind_structure

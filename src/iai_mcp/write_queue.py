@@ -1,4 +1,4 @@
-"""Plan 05-10 — asyncio-backed coalescing write queue for LanceDB.
+"""— asyncio-backed coalescing write queue for LanceDB.
 
 Motivation (from 05-08 diagnosis + 05-10 plan): each synchronous
 ``tbl.add([row])`` call against a LanceDB table allocates roughly
@@ -30,7 +30,7 @@ version):
   synchronously inside the loop, **before** futures are resolved.
   The callback receives the exact list of records in the order
   they were flushed — use this to mirror writes to a secondary
-  index (Plan 05-12 runtime-graph hook).
+  index (runtime-graph hook).
 
 Constitutional invariants:
 - C3 (no paid-API): pure stdlib + a LanceDB async table handle.

@@ -1,4 +1,4 @@
-"""Phase 10.4 — regression tests for doctor rows (m) and (n).
+"""— regression tests for doctor rows (m) and (n).
 
 Tests cover:
 - (m) heartbeat scanner row with fresh wrappers + empty wrappers dir.
@@ -186,7 +186,7 @@ def test_doctor_row_n_hid_idle_source_missing() -> None:
 def test_run_diagnosis_includes_rows_m_and_n(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Phase 10.4 wire-in: run_diagnosis() now includes rows (m) and (n)."""
+    """wire-in: run_diagnosis now includes rows (m) and (n)."""
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
     from iai_mcp.doctor import run_diagnosis
 
@@ -201,7 +201,7 @@ def test_run_diagnosis_includes_rows_m_and_n(
     assert names.index(m_rows[0].name) < names.index(n_rows[0].name)
 
 
-# ----------------- Plan 10.6-01 Task 1.3: rows (j), (k), (l) ------
+# ----------------- rows (j), (k), (l) ------
 
 
 @pytest.fixture
@@ -432,7 +432,7 @@ def test_doctor_row_l_quarantine_expired_passes(
 def test_run_diagnosis_includes_rows_j_k_l_in_order(
     lifecycle_state_root: Path,
 ) -> None:
-    """Phase 10.6 wire-in: run_diagnosis returns 14 rows in correct order."""
+    """wire-in: run_diagnosis returns 14 rows in correct order."""
     from iai_mcp.doctor import run_diagnosis
 
     results = run_diagnosis()

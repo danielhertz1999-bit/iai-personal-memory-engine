@@ -1,4 +1,4 @@
-"""Plan 06-04 R4: cue-detection router tests.
+"""cue-detection router tests.
 
 Covers:
 - Task 1: classifier function _classify_cue (8 unit tests + parameterized).
@@ -99,7 +99,7 @@ def test_classify_cue_ru_european_quote_marker():
         "tell me about schema dedup",
         "how does the rank stage work",
         "community structure of the live store",
-        "каков статус Phase 6",
+        "каков статус ",
         "sleep daemon REM cycle behaviour",
         "что нового в проекте",
     ],
@@ -192,7 +192,7 @@ from iai_mcp.types import EMBED_DIM, MemoryRecord  # noqa: E402
 class _DispatchEmbedder:
     """Lightweight embedder for the dispatch tests — pins fixed cue vectors
     so dispatch's embedder_for_store-loaded bge does not destroy the
-    hand-crafted geometry. Same trick as Plan 06-03's deviation #1.
+    hand-crafted geometry. Same trick as 's deviation #1.
     """
 
     DIM = EMBED_DIM

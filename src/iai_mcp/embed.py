@@ -1,6 +1,6 @@
 """Embedding layer -- configurable embedder with a 3-model registry.
 
-Plan 05-08 (2026-04-20): the DEFAULT is now ``bge-small-en-v1.5`` (384d
+(2026-04-20): the DEFAULT is now ``bge-small-en-v1.5`` (384d
 English-only), reverting the Phase-2 deviation. PROJECT.md line
 125 always specified bge-small-en-v1.5 as the intended default; Phase-2
 swapped in bge-m3 (1024d multilingual). User directive
@@ -38,7 +38,7 @@ from sentence_transformers import SentenceTransformer
 
 # 4-model registry. Name convention: short logical key -> HF repo id + dim.
 # (2026-04-29): all-MiniLM-L6-v2 added as additive ablation entry;
-# DEFAULT_MODEL_KEY unchanged (English-Only Brain lock from / Plan 05-08).
+# DEFAULT_MODEL_KEY unchanged (English-Only Brain lock from / ).
 MODEL_REGISTRY: dict[str, dict] = {
     "bge-m3": {"hf": "BAAI/bge-m3", "dim": 1024},
     "multilingual-e5-small": {"hf": "intfloat/multilingual-e5-small", "dim": 384},
@@ -164,7 +164,7 @@ def _get_model(hf_id: str) -> SentenceTransformer:
 class Embedder:
     """English-Only Brain embedder with a configurable model registry.
 
-    Default model is `bge-small-en-v1.5` (384d, English) per Plan 05-08.
+    Default model is `bge-small-en-v1.5` (384d, English) per .
     Used by the retrieval pipeline (stage 1, cue embedding) and by session-start
     assembler. `.DIM` is per-instance (varies by model). `.DEFAULT_DIM` is a
     class-level default pointing at the registry's default model dimension.
@@ -182,7 +182,7 @@ class Embedder:
 
     DEFAULT_MODEL_KEY: str = DEFAULT_MODEL_KEY
     DEFAULT_DIM: int = MODEL_REGISTRY[DEFAULT_MODEL_KEY]["dim"]
-    # Legacy class-level attributes (Phase 1 test compatibility).
+    # Legacy class-level attributes (test compatibility).
     # New code should construct Embedder() and read .DIM from the instance.
     DEFAULT_MODEL: str = MODEL_REGISTRY[DEFAULT_MODEL_KEY]["hf"]
     DIM: int = DEFAULT_DIM

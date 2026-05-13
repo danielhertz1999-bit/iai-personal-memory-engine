@@ -1,4 +1,4 @@
-"""Phase 10.3 Plan 10.3-01 Task 1.4 -- SleepPipeline tests.
+"""Task 1.4 -- SleepPipeline tests.
 
 Covers:
 - 5-step ordering (SCHEMA_MINE -> ... -> COMPACT_RECORDS).

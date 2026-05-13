@@ -1,4 +1,4 @@
-"""Phase 10.1 Plan 10.1-01 Task 1.4 -- lifecycle state machine tests.
+"""Task 1.4 -- lifecycle state machine tests.
 
 Coverage:
 - Property-style fuzz: arbitrary event sequences never reach an

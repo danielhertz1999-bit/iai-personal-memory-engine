@@ -1,4 +1,4 @@
-"""Phase 8 redesign regression-fence tests (post-redesign port).
+"""redesign regression-fence tests (post-redesign port).
 
 Two layers — synthetic fence (3 parametrized tests) ported to
 recall_for_benchmark; real-data smoke ported to debug_pipeline_loss.py

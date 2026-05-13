@@ -1,18 +1,18 @@
 """AAAK index generator + English-Only storage enforcement.
 
-Phase 1 constitutional rule:
+constitutional rule:
     Storage is raw verbatim English always. AAAK is a RETRIEVAL VIEW only.
 
-Phase 2 (superseded):
+(superseded):
     Storage was briefly amended to raw verbatim in the user's original language.
     Every MemoryRecord carries an ISO-639-1 `language` tag retained as a column
     on legacy rows from that era.
 
-Plan 05-08 (2026-04-19) restored the English-Only Brain (D-08 spirit):
+(2026-04-19) restored the English-Only Brain ( spirit):
     The surface (Claude) translates inbound text to English; storage holds the
     English form. The `language` column is retained for legacy compatibility;
     new records default to "en". Embedding default is bge-small-en-v1.5 (384d,
-    English) per Plan 05-08.
+    English) per .
 
 This module provides:
 
@@ -56,7 +56,7 @@ HIRAGANA_KATAKANA = re.compile(r"[\u3040-\u30FF]") # U+3040..U+30FF
 CJK = re.compile(r"[\u4E00-\u9FFF]")               # U+4E00..U+9FFF Unified Ideographs
 
 
-# ---------------------------------------------- tier -> wing alphabet (TOK-10)
+# ---------------------------------------------- tier -> wing alphabet
 _TIER_TO_WING = {
     "working": "W",
     "episodic": "E",
@@ -73,7 +73,7 @@ def _wing_from_tier(tier: str) -> str:
 def _room_from_community(record: "MemoryRecord") -> str:
     """First 8 chars of community UUID; "unknown" if community not yet assigned.
 
-    Plan 02 assigns community_id; Plan 03 L0/L1 pinned records may still have
+    assigns community_id; L0/L1 pinned records may still have
     community_id=None (they're pinned by UUID, not graph position).
     """
     if record.community_id is None:
@@ -105,7 +105,7 @@ def _tagline(tags: list[str]) -> str:
 
 
 def generate_aaak_index(record: "MemoryRecord") -> str:
-    """Build the AAAK index string for a record (D-08, TOK-10).
+    """Build the AAAK index string for a record (, ).
 
     Format: `W:<wing>/R:<room>/E:<entities>/T:<tags>`
 
@@ -211,7 +211,7 @@ def enforce_language_tagged(
 
 
 def enforce_english_raw(record: "MemoryRecord") -> None:
-    """Phase 1 shim -- preserves the original script-based guard.
+    """shim -- preserves the original script-based guard.
 
     semantics (retained byte-for-byte for backward compatibility):
     - `raw:<lang>` tag present on record -> accept (explicit raw capture)
@@ -240,6 +240,6 @@ def enforce_english_raw(record: "MemoryRecord") -> None:
 
     raise ValueError(
         "constitutional violation: literal_surface contains non-English "
-        "characters; storage must be English raw verbatim (D-08, TOK-10). "
+        "characters; storage must be English raw verbatim . "
         "Add 'raw:<lang>' tag to declare explicit raw capture."
     )

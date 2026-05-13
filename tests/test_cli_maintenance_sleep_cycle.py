@@ -1,4 +1,4 @@
-"""Phase 10.3 Plan 10.3-01 Task 1.5 -- CLI maintenance sleep-cycle tests.
+"""Task 1.5 -- CLI maintenance sleep-cycle tests.
 
 Eight cases:
   1. test_happy_path_runs_pipeline_and_prints_progress

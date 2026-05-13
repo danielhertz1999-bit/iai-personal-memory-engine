@@ -1,11 +1,11 @@
-"""Phase 10.2 -- persistent capture queue with atomic append + idempotent ingest.
+"""-- persistent capture queue with atomic append + idempotent ingest.
 
 The capture queue is the durable buffer that makes the L1 hibernation contract
 viable. Wrapper writes to ``~/.iai-mcp/pending/`` whenever the daemon socket
 is unreachable (Hibernation, mid-restart, crashed). On the next Wake transition
 the daemon drains the queue via ``ingest_pending(handler)`` -- the handler
 plugs into the existing ``iai_mcp.capture`` path so the verbatim contract
-(Phase 5/6) is preserved end-to-end.
+ is preserved end-to-end.
 
 Storage layout under ``~/.iai-mcp/pending/``::
 

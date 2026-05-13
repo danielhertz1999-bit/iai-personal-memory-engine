@@ -1,4 +1,4 @@
-"""Phase 5 RED-state test scaffold. Tasks 2-5 turn these GREEN.
+"""RED-state test scaffold. Tasks 2-5 turn these GREEN.
 
 Covers / D5-06: 15th profile knob `wake_depth` (enum minimal|standard|deep,
 default=minimal, sealed) registered in KNOB_REGISTRY, set via profile_get_set.
@@ -15,10 +15,10 @@ from iai_mcp.profile import (
 
 
 def test_registry_has_15_knobs():
-    """Plan 07.12-02: 11 sealed entries (10 AUTIST + wake_depth MCP-12).
+    """: 11 sealed entries (10 AUTIST + wake_depth MCP-12).
 
     Test/file name kept for git history stability — was '15' post-MCP-12
-   , now 11 after Plan 07.12-02 removed AUTIST-02/08/11/12.
+   , now 11 after removed AUTIST-02/08/11/12.
     """
     assert len(PROFILE_KNOBS) == 11
 

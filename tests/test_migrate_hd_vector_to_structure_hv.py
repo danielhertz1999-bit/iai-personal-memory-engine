@@ -1,4 +1,4 @@
-"""Plan 03-01 CONN-05 RED: LanceDB column rename migration v3 -> v4.
+""" RED: LanceDB column rename migration v3 -> v4.
 
 Verifies migrate_hd_vector_to_structure_hv_v3_to_v4(store):
 - Finds rows that still carry the legacy `hd_vector_json` (pa.string()) column

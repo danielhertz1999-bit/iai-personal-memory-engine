@@ -67,7 +67,7 @@ def test_profile_get_returns_live_knobs(tmp_path):
     assert result["live"]["task_support"] == "cued_recognition"      # AUTIST-07
     assert result["live"]["scene_construction_scaffold"] is True     # AUTIST-14
     assert result["live"]["wake_depth"] == "minimal"                 # MCP-12
-    # Plan 07.12-02: 10 autistic-kernel + wake_depth = 11 live (AUTIST-02/08/11/12 removed).
+    # : 10 autistic-kernel + wake_depth = 11 live (AUTIST-02/08/11/12 removed).
     assert len(result["live"]) == 11
     assert len(result["deferred"]) == 0
 
@@ -105,8 +105,8 @@ def test_profile_set_live_knob_succeeds(tmp_path):
     store = MemoryStore(path=tmp_path)
     # Reset default before test to avoid test ordering issues
     LIVE_KNOBS["literal_preservation"] = "strong"
-    # Plan 03 introduced schema validation (enum:strong|medium|loose).
-    # Plan 01 accepted any value; now we use a valid enum entry.
+    # introduced schema validation (enum:strong|medium|loose).
+    # accepted any value; now we use a valid enum entry.
     result = dispatch(store, "profile_set", {"knob": "literal_preservation", "value": "loose"})
     assert result["status"] == "ok"
     assert LIVE_KNOBS["literal_preservation"] == "loose"
@@ -115,7 +115,7 @@ def test_profile_set_live_knob_succeeds(tmp_path):
 
 
 def test_memory_consolidate_real(tmp_path):
-    """Plan 02-02 memory_consolidate now runs real heavy consolidation.
+    """memory_consolidate now runs real heavy consolidation.
 
     The stub returned {"status": "queued", "phase": "placeholder"};
     replaces that with actual sleep-cycle output:

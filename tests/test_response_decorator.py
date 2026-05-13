@@ -1,8 +1,8 @@
-"""Tests for the apply_profile decorator (TOK-13 / D5-04).
+"""Tests for the apply_profile decorator ( / D5-04).
 
 Covers server-side apply_profile decorator that transforms the response dict
 per the 11 profile knobs — per-knob silent-fail, knob names never cross the
-MCP wire. Plan 07.12-02 removed tests for the deleted orphan helpers
+MCP wire. removed tests for the deleted orphan helpers
 _apply_verbosity_level and _apply_surface_language (see comments below for
 the post-removal contract location).
 """
@@ -12,10 +12,10 @@ import pytest
 
 
 def test_apply_profile_is_noop_on_default_state():
-    """Default profile state → only the Plan 07.12-03 _knobs_applied telemetry
+    """Default profile state → only the _knobs_applied telemetry
     block is added; no other surprising field additions to response.
 
-    Phase 07.12-03 (CONTEXT D-04): apply_profile now emits a
+    -03 (CONTEXT ): apply_profile now emits a
     response['_knobs_applied'] audit-trail block on every call. This is the
     one and only top-level field apply_profile is allowed to add. Pre-07.12-03
     the contract was "no additions"; post-07.12-03 the contract is "exactly
@@ -33,12 +33,12 @@ def test_apply_profile_is_noop_on_default_state():
     added = set(out.keys()) - before_keys
     assert added == {"_knobs_applied"}, (
         f"apply_profile added unexpected keys on default state: {added}; "
-        f"expected exactly {{'_knobs_applied'}} per Plan 07.12-03"
+        f"expected exactly {{'_knobs_applied'}} per "
     )
     assert isinstance(out["_knobs_applied"], dict), out["_knobs_applied"]
 
 
-# Plan 07.12-02 removed test_verbosity_level_drops_fields — the
+# removed test_verbosity_level_drops_fields — the
 # _apply_verbosity_level orphan helper read a non-sealed-knob field
 # (`verbosity_level` is NOT in PROFILE_KNOBS) and was deleted alongside the
 # 4 dead-knob helpers. See tests/test_profile_no_dead_knobs.py for the
@@ -67,7 +67,7 @@ def test_formality_relaxation_applied_to_surface_text():
     assert "hits" in resp and len(resp["hits"]) == 1
 
 
-# Plan 07.12-02 removed test_surface_language_transform_noop_on_english — the
+# removed test_surface_language_transform_noop_on_english — the
 # _apply_surface_language orphan helper read a non-sealed-knob field
 # (`surface_language` is NOT in PROFILE_KNOBS) and was deleted alongside the
 # 4 dead-knob helpers. See tests/test_profile_no_dead_knobs.py for the
@@ -118,7 +118,7 @@ def test_pre_existing_keys_untouched_on_exception():
 
     # Override an internal helper if present — we only require apply_profile
     # to swallow any helper's exception.
-    # Plan 07.12-02: switched probe target from the deleted _apply_verbosity_level
+    # : switched probe target from the deleted _apply_verbosity_level
     # orphan to _apply_dunn_quadrant (a still-live helper).
     original = None
     helper_name = "_apply_dunn_quadrant"

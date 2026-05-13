@@ -94,7 +94,7 @@ def test_events_module_docstring_lists_schema_reinforced():
     doc = events_mod.__doc__ or ""
     assert "schema_reinforced" in doc, (
         "events.py module docstring missing `schema_reinforced` taxonomy entry "
-        "(Plan 06-01 D-10). Add a additions block after the "
+        ". Add a additions block after the "
         "section listing the new event kind, payload schema, and source_ids note."
     )
 

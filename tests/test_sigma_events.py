@@ -1,4 +1,4 @@
-"""Plan 03-02 CONN-07 RED: S4 sigma event-emission tests.
+""" RED: S4 sigma event-emission tests.
 
 Constitutional contract:
 - Developmental (N<500, sigma<1) -> kind=sigma_observation phase=developmental

@@ -1,4 +1,4 @@
-"""Plan 07.14-03 [Wave2-Option-C] regression test for doctor row (i).
+"""[Wave2-Option-C] regression test for doctor row (i).
 
 PASS: <=500 manifests. WARN: 501..2000. FAIL: >2000.
 
@@ -127,14 +127,14 @@ def test_pass_when_dir_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
 # ----------------------------------------------------------------------
 # run_diagnosis wire-in: row (i) is present and PASS on a clean store.
 # Tests use name-based lookup rather than positional indexing so future
-# row additions (Phase 10.4 added m + n) do not regress this check.
+# row additions (added m + n) do not regress this check.
 # ----------------------------------------------------------------------
 
 
 def test_run_diagnosis_includes_lance_versions_row(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Plan 07.14-03 wire-in: run_diagnosis() includes row (i) lance versions."""
+    """wire-in: run_diagnosis includes row (i) lance versions."""
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
     from iai_mcp.doctor import run_diagnosis
 

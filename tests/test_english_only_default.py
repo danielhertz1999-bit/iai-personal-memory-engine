@@ -1,9 +1,9 @@
-"""Plan 05-08 — revert the Phase-2 deviation and restore the
+"""— revert the Phase-2 deviation and restore the
 PROJECT.md original embedder default: ``bge-small-en-v1.5`` (384d
 English-only). bge-m3 (1024d multilingual) remains opt-in via the
 ``IAI_MCP_EMBED_MODEL`` env var or the ``model_key`` kwarg on Embedder.
 
-Phase 9.1 (2026-04-29): MODEL_REGISTRY grew by ONE additive entry
+(2026-04-29): MODEL_REGISTRY grew by ONE additive entry
 for ``all-MiniLM-L6-v2`` (legacy alternative embedder; bench-only ablation).
 DEFAULT_MODEL_KEY remains ``bge-small-en-v1.5``; production callers
 unaffected. The "registry retains all original entries" contract here is
@@ -71,7 +71,7 @@ def test_model_registry_retains_original_three_entries():
     canonical dims — is non-negotiable."""
     from iai_mcp.embed import MODEL_REGISTRY
 
-    # Original 3 entries must be present and byte-identical to Plan 05-08.
+    # Original 3 entries must be present and byte-identical to .
     assert "bge-m3" in MODEL_REGISTRY
     assert "multilingual-e5-small" in MODEL_REGISTRY
     assert "bge-small-en-v1.5" in MODEL_REGISTRY

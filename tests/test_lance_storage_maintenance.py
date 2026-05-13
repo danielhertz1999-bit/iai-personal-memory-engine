@@ -1,4 +1,4 @@
-"""Phase 7.3 R1..R4: Lance storage periodic-maintenance test suite.
+"""R1..R4: Lance storage periodic-maintenance test suite.
 
 Forensic context (2026-04-27): production records.lance had grown to
 10,841 versions / 3.66 GB for only 7,130 rows over 9 days. Offline
@@ -287,7 +287,7 @@ def test_startup_wire_emits_one_lance_storage_optimized_event(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-# Plan 10.6-01 Task 1.8: REMOVED `_MCPActiveSocketStub` /
+# REMOVED `_MCPActiveSocketStub` /
 # `_IdleSocketStub` fixtures and the three MCP-aware tests
 # (test_periodic_skip_on_mcp_active, test_env_override_interval_drives_
 # periodic_cadence, test_periodic_runs_after_socket_flips_idle).

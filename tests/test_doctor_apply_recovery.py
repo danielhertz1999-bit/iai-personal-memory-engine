@@ -1,4 +1,4 @@
-"""Plan 07-05 Wave 5 R9/A11 acceptance — `iai-mcp doctor --apply --yes`
+"""Wave 5 R9/A11 acceptance — `iai-mcp doctor --apply --yes`
 recovers from `kill -9 <daemon_pid>`.
 
 Flow:

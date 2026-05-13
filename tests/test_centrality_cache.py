@@ -1,4 +1,4 @@
-"""Plan 05-13 RED scaffold — cached centrality on graph nodes.
+"""RED scaffold — cached centrality on graph nodes.
 
 ``build_runtime_graph`` must compute betweenness centrality ONCE and
 attach it as the ``centrality`` NetworkX node attribute so the rank

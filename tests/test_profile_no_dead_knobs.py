@@ -1,4 +1,4 @@
-"""Phase 07.12-02: assert dead knobs and orphan helpers are removed.
+"""-02: assert dead knobs and orphan helpers are removed.
 
 Closes / / / (RE-ASSERTED per CONTEXT D-08).
 The four knobs were declared in profile.PROFILE_KNOBS but never read in
@@ -9,11 +9,11 @@ labelled tags) or promoting a passive design invariant (double_empathy)
 to a runtime knob.
 
 Two orphan helpers (_apply_verbosity_level, _apply_surface_language) read
-profile fields that are NOT in the KnobSpec registry. Plan 07.12-02 deletes
+profile fields that are NOT in the KnobSpec registry. deletes
 both helpers and removes them from the dispatch tuple — they were Phase-5
 legacy noise burning ~5 µs/call.
 
-After Phase 07.12-02:
+After -02:
 - registry holds 11 knobs (10 AUTIST + 1 wake_depth)
 - profile_set on each removed knob returns the unknown-knob error
 - apply_profile dispatch tuple no longer references either orphan helper
@@ -28,7 +28,7 @@ from iai_mcp.profile import PROFILE_KNOBS, default_state, profile_set
 def test_registry_has_11_knobs() -> None:
     """CONTEXT + Acceptance Gate 4: registry shrinks 15 → 11."""
     assert len(PROFILE_KNOBS) == 11, (
-        f"Expected 11 knobs (10 AUTIST + wake_depth) post Phase 07.12-02, "
+        f"Expected 11 knobs (10 AUTIST + wake_depth) post -02, "
         f"got {len(PROFILE_KNOBS)}: {sorted(PROFILE_KNOBS.keys())}"
     )
     autist_specs = [
@@ -56,7 +56,7 @@ def test_profile_set_rejects_event_vs_time_cue() -> None:
 
     No event-vs-time anchor taxonomy exists in the schema; no
     `_apply_event_vs_time_cue` helper exists in response_decorator.py
-    (the prior Phase 02-05 closure claim that this knob was 'live' was
+    (the prior -05 closure claim that this knob was 'live' was
     wrong — see CONTEXT.md §Origin revised 2026-04-30). Documented as
     a deferred future capability in CLAUDE.md.
     """
@@ -87,7 +87,7 @@ def test_profile_set_rejects_double_empathy() -> None:
 
 
 def test_orphan_helpers_absent_from_dispatch_tuple() -> None:
-    """Plan 07.12-02 deletes _apply_verbosity_level and _apply_surface_language.
+    """deletes _apply_verbosity_level and _apply_surface_language.
 
     These two helpers read non-sealed-knob fields (`verbosity_level`,
     `surface_language`) — they're Phase-5 legacy that burned CPU silently
@@ -100,10 +100,10 @@ def test_orphan_helpers_absent_from_dispatch_tuple() -> None:
     # Definition-level check: the orphan helpers must NOT exist as attrs
     # of the response_decorator module.
     assert not hasattr(response_decorator, "_apply_verbosity_level"), (
-        "_apply_verbosity_level should be deleted — Phase 07.12-02 orphan"
+        "_apply_verbosity_level should be deleted — -02 orphan"
     )
     assert not hasattr(response_decorator, "_apply_surface_language"), (
-        "_apply_surface_language should be deleted — Phase 07.12-02 orphan"
+        "_apply_surface_language should be deleted — -02 orphan"
     )
     # Source-level check: the dispatch loop in apply_profile must not
     # reference either name.

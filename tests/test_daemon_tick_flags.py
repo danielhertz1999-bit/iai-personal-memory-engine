@@ -1,4 +1,4 @@
-"""Tests for _tick_body honoring socket control flags (Plan 04-gap-1).
+"""Tests for _tick_body honoring socket control flags.
 
 The dispatcher (tests/test_daemon_dispatcher.py) proves the flags are
 SET correctly on the daemon state. These tests prove the scheduler

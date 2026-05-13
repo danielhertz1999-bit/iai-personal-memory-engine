@@ -1,6 +1,6 @@
-"""Tests for identity-tier write gate hardening (OPS-07, + D-31).
+"""Tests for identity-tier write gate hardening (, + ).
 
-Plan 02-05 extends Plan 02-02's check_identity_anchor_on_write with:
+extends 's check_identity_anchor_on_write with:
 
 1. **Shield pre-check (HARD_BLOCK tier):** identity-tier records
    (s5_trust_score >= 0.9) are routed through the shield first; any signal

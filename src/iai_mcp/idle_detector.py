@@ -1,4 +1,4 @@
-"""Phase 10.4 L6 — hardware-aware idle detector for the wake/sleep cycle.
+"""L6 — hardware-aware idle detector for the wake/sleep cycle.
 
 Combines three hardware-grounded signals into a single ``sleep_eligible``
 predicate the daemon's state machine consumes when deciding whether to

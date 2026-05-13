@@ -30,7 +30,7 @@ DAEMON_MODULES: tuple[str, ...] = (
     "quiet_window.py",
     "daemon_state.py",
     "concurrency.py",
-    "hippea_cascade.py",  # TOK-14 / D5-05
+    "hippea_cascade.py", # / D5-05
 )
 
 
@@ -43,7 +43,7 @@ def _existing_daemon_files() -> list[Path]:
 # ---------------------------------------------------------------------------
 
 def test_no_api_key_in_daemon():
-    """C3 (DAEMON-07 / D-14): zero paid-API cost. ANTHROPIC_API_KEY must not
+    """C3 ( / ): zero paid-API cost. ANTHROPIC_API_KEY must not
     appear in ANY daemon-side module. Insight module uses `claude -p`
     subprocess with the user's subscription instead."""
     offenders: list[str] = []
@@ -117,12 +117,12 @@ def test_no_hardcoded_clock_time_in_quiet_window():
 
 
 # ---------------------------------------------------------------------------
-# Plan 07.12-02 seal: PROFILE_KNOBS has exactly 11 entries
+# seal: PROFILE_KNOBS has exactly 11 entries
 # (10 autistic-kernel + 1 operator wake_depth MCP-12; AUTIST-02/08/11/12 removed)
 # ---------------------------------------------------------------------------
 
 def test_profile_knobs_still_sealed():
-    """11-knob registry is sealed (Phase 07.12-02 post AUTIST-02/08/11/12 removal).
+    """11-knob registry is sealed (-02 post AUTIST-02/08/11/12 removal).
     Daemon must not add new knobs. Transient state (hebbian-rate boost during
     developmental sigma, etc.) belongs in events or .daemon-state.json,
     never in PROFILE_KNOBS."""
@@ -133,27 +133,27 @@ def test_profile_knobs_still_sealed():
 
 
 # ---------------------------------------------------------------------------
-# TOK-13 / D5-04: profile knob names must NEVER appear in the
+# / D5-04: profile knob names must NEVER appear in the
 # session-start payload at any wake_depth. Knobs are applied server-side via
 # response_decorator.apply_profile; their names must not cross the MCP wire.
 # ---------------------------------------------------------------------------
 
 
 def test_no_profile_knob_in_session_start_payload(tmp_path):
-    """TOK-13: knob names must not leak into the NEW pointer fields at
+    """: knob names must not leak into the NEW pointer fields at
     wake_depth=minimal (<=30 raw tok design budget).
 
     The legacy L0 identity kernel (`_seed_l0_identity`) historically recites
     a handful of autistic-kernel defaults inline in the literal_surface
     ('literal_preservation=strong, masking_off=true, ...'). That predates
-    TOK-13 and lives inside the user's identity record itself, not a
+     and lives inside the user's identity record itself, not a
     decorator output — so it's scoped into the standard/deep l0 segment and
     explicitly exempt from this grep guard.
 
     The invariant this guard DEFENDS is: the lazy minimal payload
     (identity_pointer / brain_handle / topic_cluster_hint) MUST NOT contain
     knob names. Knobs are applied server-side by response_decorator
-    (Plan 05-03 D5-04); knob names must never reach the MCP wire.
+    (D5-04); knob names must never reach the MCP wire.
     """
     from iai_mcp import profile
     from iai_mcp.community import CommunityAssignment
@@ -185,7 +185,7 @@ def test_no_profile_knob_in_session_start_payload(tmp_path):
             # payload field `wake_depth` is a meta-attribute, not inline
             # knob text in the lazy pointers.
             assert knob_name not in lazy_text, (
-                f"TOK-13 violation: knob name '{knob_name}' found in "
+                f" violation: knob name '{knob_name}' found in "
                 f"lazy session-start payload at wake_depth={mode} "
                 f"(identity_pointer/brain_handle/topic_cluster_hint)"
             )
@@ -219,15 +219,15 @@ def test_no_cache_control_in_session_assembler():
 
 
 # ---------------------------------------------------------------------------
-# C3 + TOK-13: response_decorator must be pure-local. No Anthropic
+# C3 + : response_decorator must be pure-local. No Anthropic
 # SDK import, no ANTHROPIC_API_KEY read, no paid-API coupling.
 # ---------------------------------------------------------------------------
 
 
 def test_no_api_key_in_response_decorator():
-    """C3 + TOK-13: response_decorator.py stays local-only."""
+    """C3 + : response_decorator.py stays local-only."""
     f = SRC / "response_decorator.py"
-    assert f.exists(), "response_decorator.py missing after Plan 05-03"
+    assert f.exists, "response_decorator.py missing after "
     text = f.read_text()
     lower = text.lower()
     assert "anthropic" not in lower, (
@@ -267,7 +267,7 @@ def test_identity_audit_has_no_lock_import():
 
 
 # ---------------------------------------------------------------------------
-# TOK-14: HIPPEA cascade module guards
+# : HIPPEA cascade module guards
 # ---------------------------------------------------------------------------
 
 def test_no_api_key_in_hippea_cascade():

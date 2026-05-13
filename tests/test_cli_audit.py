@@ -1,4 +1,4 @@
-"""Tests for iai-mcp audit CLI (OPS-07 Plan 02-05).
+"""Tests for iai-mcp audit CLI .
 
 `iai-mcp audit [--since WEEKS] [--severity SEV]` renders an identity-event
 audit log, TZ-aware timestamps, and REDACTED shield match counts (D-30

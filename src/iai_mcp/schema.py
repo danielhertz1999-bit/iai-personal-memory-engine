@@ -1,6 +1,6 @@
-"""Schema induction (LEARN-03, D-18, D-21) -- Task 3.
+"""Schema induction (LEARN-03, , ) -- Task 3.
 
-D-18 (scheduling): dual-path schema surfacing.
+ (scheduling): dual-path schema surfacing.
 - Primary: batch induction inside the heavy sleep cycle. Tier-1 Haiku
   extraction when `should_call_llm` permits, Tier-0 cooccurrence + TF-IDF
   fallback otherwise.
@@ -8,7 +8,7 @@ D-18 (scheduling): dual-path schema surfacing.
   `pipeline_recall` when score distribution entropy > 0.8 bits AND the
   cohesive community has >= 2 shared tags.
 
-D-21 (thresholds, autism-aware):
+ (thresholds, autism-aware):
 - Auto-induct when co_occurrence >= 5 AND confidence >= 0.85.
 - User-approval flag at co_occurrence in [3, 5) AND confidence in [0.65, 0.85).
 - Below: discard.
@@ -69,7 +69,7 @@ class SchemaCandidate:
 def _tag_cooccurrence(records: Iterable) -> dict:
     """Bucket records by tag-pair frequency. Returns {frozenset(pair): [record_ids]}.
 
-    Phase 07.7-04 D-26-A: accepts either ``list[MemoryRecord]`` (back-compat;
+    -04 -A: accepts either ``list[MemoryRecord]`` (back-compat;
     used by external callers passing dataclass instances) or an iterable of
     projected ``dict`` rows from ``store.iter_record_columns(["id", "tags_json"])``.
 
@@ -92,7 +92,7 @@ def _tag_cooccurrence(records: Iterable) -> dict:
             raw_tags = r.tags or []
             rid = r.id
         else:
-            # Dict-row path (D-26-A migrated production path). Defensive parse:
+            # Dict-row path (-A migrated production path). Defensive parse:
             # malformed tags_json contributes zero pairs but does not raise.
             tags_raw = r.get("tags_json") or "[]"
             try:
@@ -121,13 +121,13 @@ def _tag_cooccurrence(records: Iterable) -> dict:
 
 
 def induce_schemas_tier0(store: MemoryStore) -> list[SchemaCandidate]:
-    """D-18 Tier-0 path: tag cooccurrence + TF-IDF; no LLM.
+    """ Tier-0 path: tag cooccurrence + TF-IDF; no LLM.
 
     Returns a list of SchemaCandidate. Each candidate passes the gate:
     - status="auto"               -> count >= 5 AND confidence >= 0.85
     - status="pending_user_approval" -> count in [3,5) AND confidence in [0.65, 0.85)
 
-    Phase 07.7-04 D-26-A: streams via ``store.iter_record_columns(
+    -04 -A: streams via ``store.iter_record_columns(
     ["id", "tags_json"], batch_size=1024)`` instead of ``store.all_records()``.
     Encrypted columns (literal_surface, provenance_json,
     profile_modulation_gain_json) are NEVER read on this path; the W5 cipher
@@ -138,7 +138,7 @@ def induce_schemas_tier0(store: MemoryStore) -> list[SchemaCandidate]:
 
     Single-pass record-count tally: count_total is incremented inside the
     iterator loop and the ``< CLUSTER_MIN_SIZE`` floor is checked afterwards.
-    Mirrors the pattern in ``sleep._tier0_schema_surfacing`` (Plan 07.7-03 W3).
+    Mirrors the pattern in ``sleep._tier0_schema_surfacing`` (W3).
     """
     rows = list(store.iter_record_columns(["id", "tags_json"], batch_size=1024))
     if len(rows) < 3:
@@ -181,7 +181,7 @@ def induce_schemas_tier1(
     rate: RateLimitLedger,
     llm_enabled: bool = True,
 ) -> list[SchemaCandidate]:
-    """D-18 Tier-1 path: Haiku extraction gated by D-GUARD ladder.
+    """ Tier-1 path: Haiku extraction gated by D-GUARD ladder.
 
     When should_call_llm returns False (any ladder step), emit an
     llm_health event and delegate to `induce_schemas_tier0`.
@@ -190,7 +190,7 @@ def induce_schemas_tier1(
     actual anthropic.batches.create call. This function's contract is: on
     allow, call budget.record_spend and emit llm_health; then fall back to
     tier0 (because real Batch output is a deliverable). The
-    effective_tier in the event is "tier0" regardless until Plan 02-04.
+    effective_tier in the event is "tier0" regardless until .
     """
     has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
     ok, reason = should_call_llm(
@@ -211,7 +211,7 @@ def induce_schemas_tier1(
         )
         return induce_schemas_tier0(store)
 
-    # Tier-1 eligible -- scaffold only (Plan 02-04 wires real Batch API).
+    # Tier-1 eligible -- scaffold only (wires real Batch API).
     try:
         import anthropic  # noqa: F401 -- lazy import, raise-only if missing
         budget.record_spend(0.002, kind="schema_induction")
@@ -221,7 +221,7 @@ def induce_schemas_tier1(
             data={
                 "component": "schema_induction",
                 "tier": "haiku",
-                "note": "Plan 02-04 wires real Batch API; 02-03 scaffolds only",
+                "note": "wires real Batch API; 02-03 scaffolds only",
             },
             severity="info",
         )
@@ -258,7 +258,7 @@ def _majority_language(evidence_ids: list[UUID], store: MemoryStore) -> str:
         - Fallback 'en' when evidence is empty or all records are missing.
 
     Tie-break policy: when two languages are tied, the one whose first
-    occurrence appears EARLIEST in evidence_ids wins. Matches Phase 1
+    occurrence appears EARLIEST in evidence_ids wins. Matches
     default 'en' when no signal is available (least-surprise).
     """
     langs: list[str] = []
@@ -306,7 +306,7 @@ def persist_schema(
         f"Schema: {candidate.pattern} (confidence={candidate.confidence:.2f})"
     )
 
-    # R1 (D-09 + D-10): pattern dedup. Search for an existing
+    # R1 ( + ): pattern dedup. Search for an existing
     # schema record carrying the tag `pattern:{candidate.pattern}` in the
     # semantic tier. If found, reinforce schema_instance_of edges from new
     # evidence onto the existing keeper, emit `schema_reinforced`, and
@@ -316,14 +316,14 @@ def persist_schema(
     # row for the same pattern (live store accumulated 7+ duplicates per
     # pattern with degree-bonus shouldering verbatim records out of hits[]).
     pattern_tag = f"pattern:{candidate.pattern}"
-    # Phase 07.7-04 D-26-B: keeper scan migrated from store.all_records() to
+    # -04 -B: keeper scan migrated from store.all_records to
     # store.iter_record_columns(["id", "tier", "tags_json"], batch_size=1024).
     # Projection skips encrypted columns (literal_surface, provenance_json,
     # profile_modulation_gain_json) entirely — the W5 cipher cache is
     # short-circuited on this path. Early-exit (`break`) semantics preserved.
     # The matching row's id arrives as a string from LanceDB; we convert to
     # UUID at the boundary so downstream code sees the same type contract as
-    # the pre-D-26 ``existing_keeper.id`` access pattern.
+    # the pre- ``existing_keeper.id`` access pattern.
     existing_keeper_id: UUID | None = None
     try:
         for row in store.iter_record_columns(
@@ -483,14 +483,14 @@ def provisional_schemas_for_recall(
     entropy_bits: float,
     records_cache: "dict | None" = None,
 ) -> list[dict]:
-    """D-18 secondary path: surface provisional schema hints on high-entropy recalls.
+    """ secondary path: surface provisional schema hints on high-entropy recalls.
 
     Returns a list of hint dicts compatible with RecallResponse.hints, one per
     cohesive tag appearing in >= 2 of the top hits.
 
     perf: batched all_records() fetch replaces N+1 store.get()
     calls. A single to_pandas() call is still O(total_records) but constant
-    per recall, not per-hit. This was a major D-SPEED bottleneck at N=50.
+    per recall, not per-hit. This was a major bottleneck at N=50.
 
     perf (Rule 1 auto-fix): accept optional `records_cache` so
     pipeline_recall can pass its already-built cache through -- avoids a

@@ -1,4 +1,4 @@
-"""Plan 05-10 — AsyncWriteQueue unit tests (OPS-16, M-03).
+"""— AsyncWriteQueue unit tests (, M-03).
 
 Coalesce window + batched flush against a LanceDB-shaped async table.
 Tests use a MockAsyncTable that records each ``add(batch)`` call so we

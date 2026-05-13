@@ -1,6 +1,6 @@
-"""Phase 10.6 Plan 10.6-01 Task 1.8 -- rewritten contract tests.
+"""Task 1.8 -- rewritten contract tests.
 
-Old contract (Phase 07.8 + bug-fix 2026-05-01):
+Old contract (+ bug-fix 2026-05-01):
     Every non-RSS, non-user shutdown path returned exit 75. The
     `user_requested_shutdown` sentinel + `_resolve_shutdown_exit_code`
     helper differentiated explicit `iai-mcp daemon stop` (exit 0,
@@ -170,7 +170,7 @@ def test_e_cmd_daemon_stop_writes_sentinel_before_launchctl(
     """Cross-process invariant from 541c874 PRESERVED:
     `iai-mcp daemon stop` writes user_requested_shutdown=True to
     .daemon-state.json BEFORE sending SIGTERM. The daemon's later
-    `_clear_user_shutdown_sentinel` then cleans up. Phase 10.6
+    `_clear_user_shutdown_sentinel` then cleans up.
     no longer branches the exit code on the sentinel, but the
     write-before-SIGTERM ordering is still part of the wakeup-
     safe shutdown protocol (a hung CLI write must not delay the

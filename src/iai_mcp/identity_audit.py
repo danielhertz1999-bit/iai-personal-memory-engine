@@ -6,13 +6,13 @@ this loop does NOT acquire the fcntl exclusive lock. That is the C6 invariant:
 the daemon continues to observe its own identity even when heavy consolidation
 is paused.
 
-Phase 7.3 addition (D7.3-11): the same loop iteration also runs Lance
+addition : the same loop iteration also runs Lance
 storage maintenance (`optimize_lance_storage`) on a configurable cadence
 (default 1h via `LANCE_OPTIMIZE_INTERVAL_SEC`). The optimize body is gated
 by a `time.monotonic()` cooldown against the configured interval; the
 cooldown gate is silent when blocked (no event flooding).
 
-Phase 10.6 Plan 10.6-01 Task 1.4: REMOVED the `_should_yield_to_mcp(socket)`
+REMOVED the `_should_yield_to_mcp(socket)`
 HUMAN-FIRST gate. The lifecycle state machine + sleep_pipeline supersede
 this design — periodic optimize runs unconditionally once the cooldown
 passes; SLEEP-state coexistence is provided by the lifecycle predicate
@@ -32,7 +32,7 @@ Exception handling: each of the underlying calls is wrapped in its own
 try/except. Failures are emitted as `identity_audit_error` events with a
 `stage` discriminator ("s5" | "sigma") and the loop continues to the next
 tick. The Lance optimize step uses a separate try/except path because its
-helper already swallows per-table failures into the report dict (D7.3-09);
+helper already swallows per-table failures into the report dict ;
 the outer guard there only protects against event-write failure. The
 daemon must never die from an audit OR maintenance failure.
 """
@@ -50,15 +50,15 @@ from iai_mcp.sigma import compute_and_emit
 # 1-hour cadence -- same granularity as sigma snapshot + S5 audit in S4 pass.
 AUDIT_INTERVAL_SEC: int = 60 * 60
 
-# R2 / D7.3-14: timestamp of the most recent successful periodic
+# R2: timestamp of the most recent successful periodic
 # Lance optimize. Module-level mutable; the loop body declares
 # `global _last_optimize_completed_at` to write. Ephemeral by design --
 # daemon restart resets to 0.0 so the first periodic poll runs immediately
 # (the startup wire-in in daemon.main() already handled the boot-time bloat
 # collapse, so this just establishes the periodic cadence baseline).
 #
-# Mirrors Phase 7.2's _last_cascade_completed_at pattern in daemon.py
-# exactly (D7.2-03/D7.2-05): time.monotonic() not datetime.now() so the
+# Mirrors 's _last_cascade_completed_at pattern in daemon.py
+# exactly (/): time.monotonic not datetime.now so the
 # cooldown is immune to clock skew + system suspend/resume.
 _last_optimize_completed_at: float = 0.0
 
@@ -82,7 +82,7 @@ async def continuous_audit(
     `AUDIT_INTERVAL_SEC` at call time. This lets tests monkeypatch the
     constant before calling the function.
 
-    Plan 10.6-01 Task 1.4: REMOVED the `socket` kwarg + the
+    REMOVED the `socket` kwarg + the
     `_should_yield_to_mcp(socket)` gate inside the periodic Lance
     optimize branch. SLEEP-state coexistence is now provided by the
     lifecycle state machine instead of an in-loop yield probe.
@@ -95,7 +95,7 @@ async def continuous_audit(
     """
     # R2: explicit `global` so the assignment in the periodic body
     # updates module-level state, not a local binding. Mirrors the Pitfall 3
-    # discipline from Phase 7.2's _hippea_cascade_loop.
+    # discipline from 's _hippea_cascade_loop.
     global _last_optimize_completed_at
 
     while not shutdown.is_set():
@@ -134,9 +134,9 @@ async def continuous_audit(
             except Exception:
                 pass
 
-        # Stage 3 (Phase 7.3 R2/R3): gated periodic Lance storage optimize.
-        # Plan 10.6-01 Task 1.4 simplified: single gate
-        # (interval cooldown). The D7.3-11 MCP-active yield
+        # Stage 3 (R2/R3): gated periodic Lance storage optimize.
+        # Task 1.4 simplified: single gate
+        # (interval cooldown). The MCP-active yield
         # gate via `_should_yield_to_mcp(socket)` was removed; the
         # lifecycle state machine handles SLEEP-state coexistence
         # outside this loop.
@@ -149,7 +149,7 @@ async def continuous_audit(
             retention_sec_now = _maintenance.LANCE_OPTIMIZE_RETENTION_SEC
             elapsed_since_last = time.monotonic() - _last_optimize_completed_at
             if elapsed_since_last < interval_sec_now:
-                # D7.3-19: silent skip -- no event. The cooldown gates
+                # : silent skip -- no event. The cooldown gates
                 # work, it does not consume a ledger slot.
                 pass
             else:
@@ -178,7 +178,7 @@ async def continuous_audit(
                     except Exception:
                         pass
                 finally:
-                    # D7.3-14: stamp completion timestamp regardless of
+                    # : stamp completion timestamp regardless of
                     # success/exception so a failed optimize still gates
                     # the next run by LANCE_OPTIMIZE_INTERVAL_SEC.
                     _last_optimize_completed_at = time.monotonic()

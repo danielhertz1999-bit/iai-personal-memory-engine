@@ -1,4 +1,4 @@
-"""Tests for core._inject_overnight_digest (DAEMON-11), updated for
+"""Tests for core._inject_overnight_digest , updated for
 the deterministic contract.
 
 Covers 5 behaviours:

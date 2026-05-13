@@ -1,6 +1,6 @@
-"""OPS-11 regression guard: small-N RAM bench stays under threshold.
+""" regression guard: small-N RAM bench stays under threshold.
 
-Plan 05-05 (D5-08) — CI-runnable guard for bench/memory_footprint.py. The
+(D5-08) — CI-runnable guard for bench/memory_footprint.py. The
 large-N target (RSS <= 300 MB at N=10k warm on 16+ GB machine) runs
 ad-hoc from the published bench report; this test exercises the small-N path
 (N=100-500 with a 64d embedding) so CI catches harness drift without

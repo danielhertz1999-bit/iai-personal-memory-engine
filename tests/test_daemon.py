@@ -403,7 +403,7 @@ def test_launchd_plist_valid_xml_with_required_keys():
 
     keepalive = data["KeepAlive"]
     assert isinstance(keepalive, dict)
-    # Plan 10.6-01 Task 1.7: KeepAlive policy is now
+    # KeepAlive policy is now
     # `Crashed=true` only. The legacy `SuccessfulExit=false` paired
     # with the 75/0 exit-code branching; with the new lifecycle
     # state machine exit code is uniformly 0 on graceful shutdown,

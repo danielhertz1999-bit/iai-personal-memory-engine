@@ -1,6 +1,6 @@
-"""Tests for enforce_language_tagged (Plan 02-01, constitutional).
+"""Tests for enforce_language_tagged (, constitutional).
 
-Phase 1's enforce_english_raw gated storage to English-only. amends to
+'s enforce_english_raw gated storage to English-only. amends to
 native-language storage: every record carries a language tag; the guard
 function only raises if the tag is missing or auto-detection is low confidence.
 
@@ -152,7 +152,7 @@ def test_enforce_english_raw_with_language_tag_still_phase1_semantics():
 
 
 def test_enforce_english_raw_still_blocks_untagged_cyrillic():
-    """Phase 1 behaviour preserved for untagged records (language="")."""
+    """behaviour preserved for untagged records (language="")."""
     from iai_mcp.aaak import enforce_english_raw
 
     r = _rec("привет мир", language="")

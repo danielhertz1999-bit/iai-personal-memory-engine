@@ -1,4 +1,4 @@
-"""Phase 7.1 R6 / D7.1-05 — doctor.py multi-binder detection + repair.
+"""— doctor.py multi-binder detection + repair.
 
 Test matrix (8 tests):
   A. _extract_binder_pids parses lsof -F pn output → set[int]
@@ -225,9 +225,9 @@ def test_check_g_two_binders_fails(short_socket_path):
     bind() calls succeed at the OS level. lsof reports both PIDs as
     holding the path; check_g detects the singleton-invariant violation.
 
-    This is exactly the failure mode Phase 7.1's launchd architecture
+    This is exactly the failure mode 's launchd architecture
     structurally prevents in production — the test bypasses launchd by
-    hand-binding sockets in worker processes. On post-Phase 7.1 production,
+    hand-binding sockets in worker processes. On post-production,
     this scenario can only occur if a user manually bypasses launchd.
     """
     from iai_mcp.doctor import _extract_binder_pids, check_g_no_dup_binders
@@ -314,7 +314,7 @@ def isolated_daemon_paths(tmp_path, monkeypatch):
     """HOME + socket + store + crypto env propagation for real-daemon tests.
 
     Mirrors test_doctor_apply_recovery.py:isolated_daemon_paths verbatim
-    (HIGH-4 LOCK precedent, Plan 07-04). Required because _kill_dup_binders
+    (HIGH-4 LOCK precedent, ). Required because _kill_dup_binders
     filters by 'iai_mcp.daemon' substring in psutil cmdline — only real
     iai_mcp.daemon subprocesses are killable, so multiprocessing workers
     cannot serve Tests G/H.
@@ -466,7 +466,7 @@ def _spawn_dup_daemons(
 
 @pytest.mark.skip(
     reason=(
-        "Phase 10.6 Plan 10.6-01 Task 1.5: single-machine "
+        "single-machine "
         "LifecycleLock prevents two daemons from both binding the same "
         "IAI_MCP_STORE. Daemon #2 raises LifecycleLockConflict and exits "
         "1 before bind. The dup-binder integration scenario is now "
@@ -545,7 +545,7 @@ def test_kill_dup_binders_keeps_oldest(isolated_daemon_paths):
 
 @pytest.mark.skip(
     reason=(
-        "Phase 10.6 Plan 10.6-01 Task 1.5: single-machine "
+        "single-machine "
         "LifecycleLock prevents two daemons from both binding the same "
         "IAI_MCP_STORE. Daemon #2 raises LifecycleLockConflict and exits "
         "1 before bind. End-to-end recovery from dup-binders cannot run "

@@ -111,7 +111,7 @@ class BudgetTracker:
         return self._host_disabled
 
     def weekly_buffer_exceeded(self) -> bool:
-        """D-16 ceiling: 7% weekly buffer fully consumed."""
+        """ ceiling: 7% weekly buffer fully consumed."""
         weekly_cap = int(WEEKLY_BUFFER_PCT * ESTIMATED_DAILY_TOKEN_CEILING * 7)
         return self._weekly_buffer_used_tokens >= weekly_cap
 

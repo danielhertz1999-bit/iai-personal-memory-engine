@@ -1,6 +1,6 @@
-"""Phase 07.2-04 R3 / A3 integration test — startup + per-tick TTL drain wired into daemon.
+"""-04 R3 / A3 integration test — startup + per-tick TTL drain wired into daemon.
 
-Strategy: Plan 04 Task 1 threads an explicit `now=datetime.now(timezone.utc)`
+Strategy: Task 1 threads an explicit `now=datetime.now(timezone.utc)`
 kwarg from BOTH wire-in call sites into `prune_first_turn_pending`. This
 means the helper is fully testable by passing a fixed `NOW` directly —
 no datetime monkeypatching dance.
@@ -51,7 +51,7 @@ def _make_mixed_state() -> dict:
 def test_prune_helper_drops_5_stale_keeps_5_fresh_with_fixed_now():
     """A3 acceptance (helper contract): with NOW fixed and 5 stale + 5 fresh
     entries, the helper returns 5 dropped IDs and a state holding only the
-    fresh entries. This is exactly the contract Plan 04's wire-in invokes
+    fresh entries. This is exactly the contract wire-in invokes
     at startup and per-tick.
     """
     from iai_mcp.daemon_state import (
@@ -60,7 +60,7 @@ def test_prune_helper_drops_5_stale_keeps_5_fresh_with_fixed_now():
     )
 
     state = _make_mixed_state()
-    # Plan 04 Task 1 calls this with the EXACT signature shown below at
+    # Task 1 calls this with the EXACT signature shown below at
     # both wire-in sites. The test mirrors the wire-in call shape so any
     # future signature drift breaks BOTH sides at once.
     new_state, dropped = prune_first_turn_pending(state, now=NOW)
@@ -74,7 +74,7 @@ def test_prune_helper_drops_5_stale_keeps_5_fresh_with_fixed_now():
     assert len(kept) == 5
     for k in kept:
         assert k.startswith("sess-fresh-"), f"unexpected key kept: {k}"
-    # Helper exposes the TTL constant Plan 04 wire-in uses for the event
+    # Helper exposes the TTL constant wire-in uses for the event
     # payload — sanity-check it has the documented value (1 h).
     assert FIRST_TURN_PENDING_TTL_SEC_DEFAULT == 3600.0
 
@@ -100,7 +100,7 @@ def test_prune_helper_no_drop_when_only_fresh_entries():
 def test_first_turn_pending_drain_helper_imported_in_daemon_main():
     """Smoke: daemon.main() can import the helper without error.
 
-    If Plan 04's import block is wrong (typo, wrong module, etc.), this
+    If import block is wrong (typo, wrong module, etc.), this
     fails fast.
     """
     from iai_mcp.daemon_state import (
@@ -116,7 +116,7 @@ def test_daemon_wire_in_passes_explicit_now_kwarg_at_both_sites():
     sites pass `now=datetime.now(timezone.utc)` explicitly.
 
     This is the wire-up half of A3 — without it, Task 2 only proves the
-    helper works, not that Task 1 wired it in correctly. Plan 04 Task 1's
+    helper works, not that Task 1 wired it in correctly. Task 1's
     contract is that BOTH call sites thread `now=` explicitly so the
     helper is testable without datetime mocking.
     """
@@ -132,7 +132,7 @@ def test_daemon_wire_in_passes_explicit_now_kwarg_at_both_sites():
     matches = pat.findall(text)
     assert len(matches) >= 2, (
         f"Expected >= 2 wire-in sites with explicit `now=datetime.now(timezone.utc)` "
-        f"kwarg in daemon.py; found {len(matches)}. Plan 04 Task 1 contract:"
+        f"kwarg in daemon.py; found {len(matches)}. Task 1 contract:"
         f" both startup-prune (in main()) and tick-prune (in _tick_body Step 0.5)"
         f" must thread `now=` explicitly."
     )
