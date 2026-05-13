@@ -334,7 +334,7 @@ def _count_pending_first_turn(store: MemoryStore) -> int:
         return 0
 
 
-def assemble_session_start(
+def _compose_session_start_payload(
     store: MemoryStore,
     assignment: CommunityAssignment,
     rich_club: list[UUID],
@@ -342,28 +342,16 @@ def assemble_session_start(
     session_id: str = "-",
     profile_state: dict | None = None,
 ) -> SessionStartPayload:
-    """Assemble the session-start cached prefix.
+    """Emit-free composition path for the session-start cached prefix.
 
-    Branches on the `wake_depth` profile knob:
+    Returns the same `SessionStartPayload` shape that `assemble_session_start`
+    produces, with identical wake_depth branching (minimal / standard / deep),
+    but does NOT emit the `session_started` event. Used by the daemon precache
+    writer so REM-loop cache writes do not pollute the events table with one
+    synthetic session-start per cycle.
 
-    - ``minimal`` (default): produce a ≤30 raw-tok pointer handle (identity,
-      brain session, topic cluster). Legacy l0/l1/l2/rich_club emitted empty
-      for back-compat with existing TS-wrapper callers.
-    - ``standard``: eager 1388-tok dump — l0/l1/l2/rich_club populated via
-      `_l0_segment`, `_l1_segment`, `_l2_segments`, `_rich_club_segment`. New
-      fields emitted empty.
-    - ``deep``: same shape as standard but rich_club budget lifted to 2000.
-      Populates both the legacy segments and the new pointers.
-
-    Emits ``kind='session_started'`` with a deterministic
-    ``session_state_hash`` over the cached prefix. Two consecutive sessions
-    whose cached prefix is identical produce the same hash -- exactly the
-    context-repeat signal measured by the context-repeat-rate metric.
-
-    Pitfall: at `wake_depth=minimal` the payload is ≤30 raw tok which is
-    BELOW the Sonnet 4.6 / Opus 4.7 cache minimum (2048 / 4096). DO NOT add
-    ``cache_control`` to the minimal branch prefix — it would be silently
-    ignored by the Anthropic API and waste a breakpoint slot.
+    The public entry point that downstream callers should keep using is
+    `assemble_session_start` — which wraps this helper and adds the emit.
     """
     from iai_mcp.profile import default_state
     state = profile_state if isinstance(profile_state, dict) else default_state()
@@ -458,6 +446,47 @@ def assemble_session_start(
             wake_depth=wake_depth,
         )
 
+    return payload
+
+
+def assemble_session_start(
+    store: MemoryStore,
+    assignment: CommunityAssignment,
+    rich_club: list[UUID],
+    *,
+    session_id: str = "-",
+    profile_state: dict | None = None,
+) -> SessionStartPayload:
+    """Assemble the session-start cached prefix.
+
+    Branches on the `wake_depth` profile knob:
+
+    - ``minimal`` (default): produce a ≤30 raw-tok pointer handle (identity,
+      brain session, topic cluster). Legacy l0/l1/l2/rich_club emitted empty
+      for back-compat with existing TS-wrapper callers.
+    - ``standard``: eager 1388-tok dump — l0/l1/l2/rich_club populated via
+      `_l0_segment`, `_l1_segment`, `_l2_segments`, `_rich_club_segment`. New
+      fields emitted empty.
+    - ``deep``: same shape as standard but rich_club budget lifted to 2000.
+      Populates both the legacy segments and the new pointers.
+
+    Emits ``kind='session_started'`` with a deterministic
+    ``session_state_hash`` over the cached prefix. Two consecutive sessions
+    whose cached prefix is identical produce the same hash -- exactly the
+    context-repeat signal measured by the context-repeat-rate metric.
+
+    Composition is delegated to `_compose_session_start_payload`; this
+    function adds the `session_started` event emit (one event per call,
+    carrying `session_state_hash` for trajectory).
+    """
+    payload = _compose_session_start_payload(
+        store,
+        assignment,
+        rich_club,
+        session_id=session_id,
+        profile_state=profile_state,
+    )
+
     # Emit kind='session_started' with session_state_hash for
     # context-repeat-rate tracking. Diagnostic-only: never block session
     # start on emit failure.
@@ -470,8 +499,8 @@ def assemble_session_start(
             data={
                 "session_id": session_id,
                 "session_state_hash": _session_state_hash(payload),
-                "total_cached_tokens": cached,
-                "wake_depth": wake_depth,
+                "total_cached_tokens": payload.total_cached_tokens,
+                "wake_depth": payload.wake_depth,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             },
             severity="info",

@@ -31,6 +31,7 @@ import json
 import os
 import signal
 import sys
+from pathlib import Path
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable
@@ -136,6 +137,70 @@ def _run_drowsy_drain(store, *, drain_fn, write_event_fn) -> None:
                 "deferred_drain_drowsy",
                 result,
                 severity="info",
+            )
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# SessionStart precache
+# ---------------------------------------------------------------------------
+
+# Cached recall payload written once per REM-loop completion so the
+# SessionStart hook reads a file instead of dispatching a JSON-RPC
+# call into core (which blocks on the exclusive store lock during
+# DREAMING). Path mirrors the hook's $HOME/.iai-mcp/.session-start-payload.cached.md.
+SESSION_START_CACHE_PATH = Path.home() / ".iai-mcp" / ".session-start-payload.cached.md"
+SESSION_START_CACHE_MAX_CHARS = 10000
+
+
+def _write_session_start_cache(store, *, cache_path: Path = SESSION_START_CACHE_PATH) -> None:
+    """Best-effort: write the session-start markdown payload to cache_path.
+
+    Atomic via tmp-file + fsync + os.replace. Any exception is swallowed
+    after a best-effort write_event(..., severity="warning"). This MUST
+    NOT propagate into the REM loop.
+
+    Uses `_compose_session_start_payload` (emit-free) so no
+    `session_started` event is written per REM cycle. The live
+    `core.dispatch` path continues to use `assemble_session_start` and
+    still emits one event per real session.
+    """
+    try:
+        from iai_mcp import retrieve
+        from iai_mcp.session import (
+            _compose_session_start_payload,
+            format_payload_as_markdown,
+        )
+
+        _graph, assignment, rc = retrieve.build_runtime_graph(store)
+        payload = _compose_session_start_payload(
+            store,
+            assignment,
+            rc,
+            session_id="precache",
+            profile_state={"wake_depth": "standard"},
+        )
+        rendered = format_payload_as_markdown(payload)
+        if not rendered:
+            return
+        if len(rendered) > SESSION_START_CACHE_MAX_CHARS:
+            rendered = rendered[:SESSION_START_CACHE_MAX_CHARS]
+
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(rendered)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, cache_path)
+    except Exception as exc:  # noqa: BLE001 -- cache write MUST NOT crash the REM loop
+        try:
+            write_event(
+                store,
+                "session_start_cache_write_failed",
+                {"error": str(exc)[:200]},
+                severity="warning",
             )
         except Exception:
             pass
@@ -552,6 +617,15 @@ async def _tick_body(
                 except Exception:
                     pass
                 break
+
+        # Write the recall payload once per REM-loop completion so the
+        # SessionStart hook can read a file instead of dispatching a
+        # JSON-RPC call into core (which would block on the exclusive
+        # store lock during DREAMING). Best-effort; never raises.
+        try:
+            await asyncio.to_thread(_write_session_start_cache, store)
+        except Exception:
+            pass
 
         transition(state, STATE_WAKE)
 

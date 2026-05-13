@@ -42,6 +42,36 @@ ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   echo "$ts session=$session_id source=$source_evt"
 } >> "$log" 2>/dev/null
 
+# Read the daemon-written cache when fresh (mtime within 24h) and non-empty.
+# Each branch writes a contract log marker. Falls through to the live CLI path
+# on any miss.
+cache_path="$HOME/.iai-mcp/.session-start-payload.cached.md"
+if [[ -s "$cache_path" ]]; then
+  # Cross-platform mtime: try GNU stat, then BSD stat.
+  cache_mtime=$(stat -c %Y "$cache_path" 2>/dev/null || stat -f %m "$cache_path" 2>/dev/null || echo 0)
+  if [[ $cache_mtime -eq 0 ]]; then
+    echo "$ts cache-error stat-failed" >> "$log" 2>/dev/null
+  else
+    now_epoch=$(date +%s)
+    age=$(( now_epoch - cache_mtime ))
+    if [[ $age -lt 86400 ]]; then
+      cache_out=$(head -c 10000 "$cache_path" 2>/dev/null || true)
+      if [[ -n "$cache_out" ]]; then
+        printf '%s' "$cache_out"
+        echo "$ts cache-hit fresh age=${age}s bytes=${#cache_out}" >> "$log" 2>/dev/null
+        exit 0
+      fi
+      echo "$ts cache-miss empty (file existed but read returned 0 bytes)" >> "$log" 2>/dev/null
+    else
+      echo "$ts cache-miss stale age=${age}s" >> "$log" 2>/dev/null
+    fi
+  fi
+elif [[ -e "$cache_path" ]]; then
+  echo "$ts cache-miss empty (zero-byte file)" >> "$log" 2>/dev/null
+else
+  echo "$ts cache-miss absent" >> "$log" 2>/dev/null
+fi
+
 # Locate the CLI. Prefer the cached path; otherwise scan known install dirs
 # and seed the cache for next run.
 cli_cache="$HOME/.iai-mcp/.cli-path"
