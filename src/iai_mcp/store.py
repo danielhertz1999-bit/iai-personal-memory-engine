@@ -49,7 +49,7 @@ from uuid import UUID
 
 import logging
 
-from iai_mcp.hippo import _REAL_IAI_ROOT, AccessMode, HippoDB
+from iai_mcp.hippo import _REAL_IAI_ROOT, AccessMode, HippoDB, HippoIntegrityError
 
 # Retained for backward compatibility: doctor.py imports this symbol to check
 # CPU AVX2 support. Always True on the Hippo backend (no AVX2 dependency).
@@ -1197,28 +1197,41 @@ class MemoryStore:
     def find_record_by_tag(self, tag: str) -> UUID | None:
         """Return the id of the first record carrying the exact tag, or None.
 
-        Scans only the plaintext ``tags_json`` column (no AES-GCM decrypt).
-        The probe is O(N) over the tag column but episodic captures are
-        low-rate ambient writes, so the cost is acceptable (far cheaper than
-        a per-insert provenance decrypt).
+        Uses a targeted SQL query with a LIKE substring pre-filter on the
+        plaintext ``tags_json`` column, then JSON-verifies the exact match in
+        Python. No Arrow materialization; no full-store scan. Runs under
+        ``HippoDB._conn_lock`` so the ``execute().fetchall()`` pair is
+        serialized against concurrent writers (shared connection, WAL mode,
+        ``check_same_thread=False``).
 
         Returns the record's UUID, or None when no match exists.
         Used by the idempotency-key probe at both dedup gates.
         """
-        # Embed the tag as a JSON string literal for the substring pre-filter
-        # (avoids JSON parse on every row).
+        # JSON-literal substring pre-filter: LIKE cannot contain wildcards in
+        # the user-supplied tag, but JSON.dumps escapes nothing that LIKE
+        # treats as special for normal tag strings — and the Python
+        # JSON-verify below catches any false positives regardless.
         tag_json_literal = json.dumps(tag)  # e.g. '"idem:abc123"'
-        for row in self.iter_record_columns(["id", "tags_json"]):
-            tags_raw = row.get("tags_json") or "[]"
-            # Quick substring pre-filter before full JSON parse.
-            if tag_json_literal not in tags_raw:
-                continue
+        sql = (
+            "SELECT id, tags_json FROM records"
+            " WHERE tags_json LIKE :pat"
+        )
+        params = {"pat": f"%{tag_json_literal}%"}
+        with self.db._conn_lock:
+            rows = self.db._conn.execute(sql, params).fetchall()
+        if rows is None:
+            raise HippoIntegrityError(
+                "find_record_by_tag: fetchall() returned None — connection may be"
+                " in an error state"
+            )
+        for row in rows:
+            tags_raw = row["tags_json"] if row["tags_json"] else "[]"
             try:
                 tags = json.loads(tags_raw)
             except (ValueError, TypeError):
                 continue
             if tag in tags:
-                raw_id = row.get("id")
+                raw_id = row["id"]
                 if raw_id is None:
                     continue
                 try:
