@@ -1,10 +1,10 @@
-"""W1+W2 — streaming + projection iterator on MemoryStore.
+"""Streaming + projection iterator on MemoryStore.
 
-RED phase: these tests fail until ``iter_records`` and ``iter_record_columns``
-are added to ``MemoryStore`` and ``_from_row`` is hardened to tolerate
-partial row dicts produced by column projection.
+Exercises ``iter_records`` and ``iter_record_columns`` on ``MemoryStore``,
+including ``_from_row`` tolerating partial row dicts produced by column
+projection.
 
-Covered contracts (CONTEXT.md D-05/D-06/D-07/D-09/D-10):
+Covered contracts:
 
   iter_records:
     1. yields all inserted records (set equality, order-independent)
@@ -25,9 +25,9 @@ Covered contracts (CONTEXT.md D-05/D-06/D-07/D-09/D-10):
   _from_row hardening:
    12. partial row dict (only required-by-__post_init__ columns) does not
        KeyError; missing columns fall back to dataclass defaults
-   13. all_records() behaviour is byte-equivalent (D-08 additive guarantee)
+   13. all_records() behaviour is byte-equivalent (additive guarantee)
 
-plan-checker B-1 lesson: every test uses a real ``MemoryRecord``
+Every test uses a real ``MemoryRecord``
 dataclass via ``_make()`` — never a plain dict against attribute-access code.
 """
 from __future__ import annotations
@@ -71,7 +71,7 @@ def _make(
     pinned: bool = False,
     language: str = "en",
 ) -> MemoryRecord:
-    """Real-dataclass fixture (NEVER a plain dict — plan-checker B-1)."""
+    """Real-dataclass fixture (NEVER a plain dict)."""
     return MemoryRecord(
         id=uuid4(),
         tier=tier,
@@ -97,8 +97,8 @@ def _make(
 
 @pytest.fixture
 def store(tmp_path: Path) -> MemoryStore:
-    """Fresh MemoryStore in tmp_path/lancedb (one per test, no cross-test bleed)."""
-    return MemoryStore(path=tmp_path / "lancedb")
+    """Fresh MemoryStore in tmp_path/hippo (one per test, no cross-test bleed)."""
+    return MemoryStore(path=tmp_path / "hippo")
 
 
 # --------------------------------------------------------------------------- iter_records
@@ -201,7 +201,7 @@ def test_iter_records_with_where_filter(store):
 def test_iter_record_columns_returns_raw_dicts(store):
     """returns raw dicts whose keys equal exactly the requested column subset.
     Critically: literal_surface is NOT in the dict — proof that the encrypted
-    column was never read from disk (zero AES-GCM cost, D-12)."""
+    column was never read from disk (zero AES-GCM cost)."""
     for i in range(3):
         store.insert(_make(text=f"row-{i}", tags=[f"t{i}"]))
 
@@ -289,7 +289,7 @@ def test_from_row_partial_row_dict_does_not_crash(store):
 
 
 def test_iter_records_does_not_modify_existing_all_records_behaviour(store):
-    """D-08 additive guarantee: all_records() is byte-equivalent before/after
+    """additive guarantee: all_records() is byte-equivalent before/after
     the new methods exist on the same store."""
     inserted = []
     for i in range(5):

@@ -1,0 +1,6 @@
+/target/
+Cargo.lock.bak
+
+# maturin develop output — compiled .so lands inside the crate's
+# pyproject-declared module directory and must not be committed.
+iai_mcp_native/iai_mcp_native/*.so

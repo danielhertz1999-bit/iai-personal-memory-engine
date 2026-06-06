@@ -1,37 +1,34 @@
-"""Tests for iai_mcp.graph ( dual-library wrapper, 2-hop spread)."""
+"""Tests for iai_mcp.graph (adjacency-dict backend, 2-hop spread)."""
 from __future__ import annotations
 
 from uuid import uuid4
 
-import pytest
-
-from iai_mcp.graph import IGRAPH_THRESHOLD, MemoryGraph, _HAS_IGRAPH
+from iai_mcp.graph import MemoryGraph
 
 
-def test_small_graph_uses_networkx() -> None:
+def test_small_graph_constructs() -> None:
     g = MemoryGraph()
     for _ in range(10):
         g.add_node(uuid4(), community_id=None, embedding=[0.0] * 384)
-    assert g.backend == "networkx"
+    assert g.node_count() == 10
 
 
-@pytest.mark.skipif(not _HAS_IGRAPH, reason="igraph optional on some boxes")
-def test_large_graph_switches_to_igraph() -> None:
+def test_large_graph_constructs() -> None:
     g = MemoryGraph()
-    for _ in range(IGRAPH_THRESHOLD + 1):
+    for _ in range(501):
         g.add_node(uuid4(), community_id=None, embedding=[0.0] * 384)
-    assert g.backend == "igraph"
+    assert g.node_count() == 501
 
 
-def test_backend_stays_networkx_just_below_threshold() -> None:
+def test_n_just_below_500_constructs() -> None:
     g = MemoryGraph()
-    for _ in range(IGRAPH_THRESHOLD - 1):
+    for _ in range(499):
         g.add_node(uuid4(), community_id=None, embedding=[0.0] * 384)
-    assert g.backend == "networkx"
+    assert g.node_count() == 499
 
 
 def test_two_hop_reaches_exactly_two_hops() -> None:
-    """: linear chain A-B-C-D seeded at A returns {B, C} -- D is 3 hops."""
+    """linear chain A-B-C-D seeded at A returns {B, C} -- D is 3 hops."""
     g = MemoryGraph()
     a, b, c, d = uuid4(), uuid4(), uuid4(), uuid4()
     for n in (a, b, c, d):
@@ -110,3 +107,56 @@ def test_rich_club_coefficient_on_star_graph() -> None:
     coef = g.rich_club_coefficient()
     assert isinstance(coef, float)
     assert coef >= 0.0
+
+
+def test_edge_attr_symmetric() -> None:
+    """add_edge stores a SHARED dict between _adj[u][v] and _adj[v][u].
+
+    Verifies the symmetry invariant: writing the weight in one direction
+    propagates atomically to the other. Without this, Hebbian-strength
+    updates would silently asymmetrize over long-running sessions.
+    """
+    g = MemoryGraph()
+    u, v = uuid4(), uuid4()
+    g.add_node(u, None, [0.0] * 384)
+    g.add_node(v, None, [0.0] * 384)
+    g.add_edge(u, v, weight=0.5)
+    assert g._adj[str(u)][str(v)] is g._adj[str(v)][str(u)]
+    g._adj[str(u)][str(v)]["weight"] = 9.9
+    assert g._adj[str(v)][str(u)]["weight"] == 9.9
+
+
+def test_iter_edges_once_only() -> None:
+    """iter_edges_with_weight emits each undirected edge exactly once.
+
+    Adjacency-list storage double-emits each (u, v) pair (once from u's
+    neighbor list, once from v's). The canonical-pair ``u <= v`` filter
+    inside iter_edges_with_weight collapses the two visits into one
+    so consumers see the same once-only semantic a hash-mapped graph
+    would emit.
+    """
+    g = MemoryGraph()
+    u, v, w = uuid4(), uuid4(), uuid4()
+    for n in (u, v, w):
+        g.add_node(n, None, [0.0] * 384)
+    g.add_edge(u, v)
+    g.add_edge(v, w)
+    g.add_edge(u, w)
+    edges = list(g.iter_edges_with_weight())
+    assert len(edges) == 3
+
+
+def test_self_loop_preserved_in_storage() -> None:
+    """Self-loops are stored once in _adj, emitted once by the iterator,
+    and stripped from CSR.
+    """
+    g = MemoryGraph()
+    u = uuid4()
+    g.add_node(u, None, [0.0] * 384)
+    g.add_edge(u, u, weight=0.5)
+    assert str(u) in g._adj[str(u)]
+    edges = list(g.iter_edges_with_weight())
+    assert sum(1 for src, dst, _ in edges if src == dst == u) == 1
+    _indptr, indices, _data = g.to_csr_arrays()
+    # Self-loop stripped at CSR construction.
+    assert len(indices) == 0

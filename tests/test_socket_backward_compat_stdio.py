@@ -1,14 +1,13 @@
-"""Wave 2 R6 acceptance: stdio path unchanged + parity with socket path.
+"""Acceptance: stdio path unchanged + parity with the socket path.
 
-`python -m iai_mcp.core` is the legacy stdio JSON-RPC entry point used by every
-pre-Phase-7 wrapper instance and by ~50 existing tests. R6 mandates zero
-behaviour change to that path. D7-08 satisfies it by construction (both
-transports import the same core.dispatch); these tests verify that for at
-least 5 representative methods the stdio response shape matches the socket
-response shape.
+`python -m iai_mcp.core` is the legacy stdio JSON-RPC entry point used by older
+wrapper instances and by many existing tests; zero behaviour change to that
+path is required. Both transports import the same core.dispatch, so these
+tests verify that for at least 5 representative methods the stdio response
+shape matches the socket response shape.
 
 The parity tests use independent stores (different IAI_MCP_STORE roots) -- they
-assert SHAPE parity, not data parity. Data parity is covered by Wave 6
+assert SHAPE parity, not data parity. Data parity is covered by separate
 integration tests.
 """
 from __future__ import annotations
@@ -29,7 +28,7 @@ REPO = Path(__file__).resolve().parent.parent
 
 
 def _spawn_stdio_core() -> subprocess.Popen:
-    """R6: spawn `python -m iai_mcp.core` directly (stdio path); send JSON-RPC over stdin."""
+    """Spawn `python -m iai_mcp.core` directly (stdio path); send JSON-RPC over stdin."""
     env = os.environ.copy()
     tmpdir = tempfile.mkdtemp(prefix="iai-mcp-stdio-test-")
     env["IAI_MCP_STORE"] = tmpdir
@@ -51,7 +50,7 @@ def _stdio_call(proc: subprocess.Popen, method: str, params: dict, req_id: int =
     proc.stdin.flush()
     assert proc.stdout is not None
     # core.main() writes JSON-only on stdout per response; no log lines mixed in
-    # (the timezone announcement goes to stderr per src/iai_mcp/core.py:1240).
+    # (the timezone announcement goes to stderr).
     line = proc.stdout.readline()
     if not line:
         raise RuntimeError("stdio core closed stdout before replying")
@@ -68,7 +67,7 @@ def _terminate(proc: subprocess.Popen) -> None:
 
 
 def test_stdio_core_still_handles_session_start_payload():
-    """R6: pre-Phase-7 stdio entry point unchanged; smoke `session_start_payload`."""
+    """Legacy stdio entry point unchanged; smoke `session_start_payload`."""
     proc = _spawn_stdio_core()
     try:
         resp = _stdio_call(proc, "session_start_payload", {})
@@ -90,7 +89,7 @@ def test_stdio_core_still_handles_session_start_payload():
     ("schema_list", {}),
 ])
 def test_stdio_and_socket_response_shapes_match(method, params, short_socket_paths):
-    """R6 parity: same method via stdio and via socket returns the same top-level keys."""
+    """Parity: same method via stdio and via socket returns the same top-level keys."""
     from iai_mcp.store import MemoryStore
     from .test_socket_server_dispatch import _send_jsonrpc, _with_socket_server
 

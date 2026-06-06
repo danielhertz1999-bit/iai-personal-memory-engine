@@ -1,15 +1,15 @@
-"""-- activity-learned quiet-window scheduler .
+"""Activity-learned quiet-window scheduler.
 
 Learn the user's quiet window from their own `session_started` event history.
 48 buckets of 30-min granularity over a 7-day rolling window. Find the longest
 contiguous span where bucket activity < threshold. Min 3h, max 8h. Bootstrap
 when <7 days of data: trigger on 2h MCP idle. Re-learn every 24h.
 
-Constitutional guard:
-- learned from events, NOT clock-based.
-- global-product mandate -- no Western 9-5 assumption, no baked-in
-  local-time default. Respects nocturnal / shift / time-zone-mobile users.
-- C3: no LLM code, no paid-API env var reference in this module.
+Guards:
+- Learned from events, NOT clock-based.
+- No Western 9-5 assumption, no baked-in local-time default. Respects
+  nocturnal / shift / time-zone-mobile users.
+- No LLM code, no paid-API env var reference in this module.
 """
 from __future__ import annotations
 
@@ -65,13 +65,13 @@ def learn_quiet_window(
         if not isinstance(ts, datetime):
             try:
                 ts = ts.to_pydatetime()
-            except Exception:
+            except (AttributeError, TypeError, ValueError):
                 continue
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=timezone.utc)
         try:
             ts_local = ts.astimezone(tz)
-        except Exception:
+        except (TypeError, ValueError, OverflowError):
             # DST edge: astimezone is robust on stdlib, but guard anyway.
             continue
         bucket = (ts_local.hour * 60 + ts_local.minute) // BUCKET_MINUTES
@@ -119,7 +119,7 @@ def learn_quiet_window(
 
 
 def should_relearn(last_learned_at: Optional[datetime], now: datetime) -> bool:
-    """Re-learn cadence: 24h since last learn ( 24h adaptation)."""
+    """Re-learn cadence: 24h since last learn (24h adaptation)."""
     if last_learned_at is None:
         return True
     if last_learned_at.tzinfo is None:

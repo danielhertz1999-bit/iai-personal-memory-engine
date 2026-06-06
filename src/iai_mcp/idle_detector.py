@@ -1,4 +1,4 @@
-"""L6 — hardware-aware idle detector for the wake/sleep cycle.
+"""Hardware-aware idle detector for the wake/sleep cycle.
 
 Combines three hardware-grounded signals into a single ``sleep_eligible``
 predicate the daemon's state machine consumes when deciding whether to
@@ -12,22 +12,19 @@ transition into a sleep cycle:
    ``Display is turned off`` within the last ``window_min`` minutes.
 
 ``sleep_eligible`` is the **disjunction** of the three: any one signal is
-sufficient — there is no wall-clock fallback, only hardware-grounded
-evidence of inactivity.
+sufficient. There is no wall-clock fallback, only hardware-grounded evidence
+of inactivity.
 
-Hard constraints (carried from CONTEXT 10.4):
-- ALL subprocess calls use array form ``[bin, arg, ...]`` with
+Constraints:
+- ALL subprocess calls use array form ``[bin, arg,...]`` with
   ``shell=False`` and a finite ``timeout``. NEVER ``shell=True``. NEVER
   f-string interpolation into command strings.
 - Idle CPU near zero — this module is invoked on lifecycle TICK (every 30 s),
   not faster. ``pmset -g log`` can be slow (≈1 s) so we tail the last 200
   lines of output rather than re-parsing the entire log.
 - macOS-only: ``ioreg`` and ``pmset`` are macOS binaries. On non-macOS the
-  detector returns ``None`` / ``False`` gracefully — cross-platform support
-  is deferred.
+  detector returns ``None`` / ``False`` gracefully.
 - No new third-party dependencies — stdlib only.
-
-Validates: WAKE-09.
 """
 from __future__ import annotations
 

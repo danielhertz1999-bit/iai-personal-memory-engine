@@ -9,7 +9,7 @@ from tests.test_store import _make
 
 
 def test_reinforce_creates_pairwise_edges(tmp_path):
-    """C(3,2) = 3 pairwise edges on three-way co-retrieval."""
+    """MEM-04: C(3,2) = 3 pairwise edges on three-way co-retrieval."""
     store = MemoryStore(path=tmp_path)
     recs = [_make() for _ in range(3)]
     for r in recs:
@@ -20,7 +20,7 @@ def test_reinforce_creates_pairwise_edges(tmp_path):
 
 
 def test_reinforce_twice_doubles_weight(tmp_path):
-    """calling reinforce twice on same ids stacks the delta (0.1 + 0.1 = 0.2)."""
+    """MEM-04: calling reinforce twice on same ids stacks the delta (0.1 + 0.1 = 0.2)."""
     store = MemoryStore(path=tmp_path)
     recs = [_make() for _ in range(2)]
     for r in recs:
@@ -33,8 +33,15 @@ def test_reinforce_twice_doubles_weight(tmp_path):
     assert abs(r2["new_weights"][key] - 0.2) < 1e-5
 
 
-def test_l0_identity_seeded(tmp_path):
-    """D-14 + pinned L0 record exists with immutability flags."""
+def test_l0_identity_seeded(tmp_path, monkeypatch):
+    """Pinned L0 record exists with immutability flags and a configured identity."""
+    import json
+
+    # Seed a generic identity config; the seed reader resolves IAI_MCP_STORE,
+    # so point it at the same dir the store is constructed at.
+    monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
+    (tmp_path / "config.json").write_text(json.dumps(
+        {"identity": {"name": "alice", "languages": "en", "role": "developer"}}))
     store = MemoryStore(path=tmp_path)
     _seed_l0_identity(store)
     l0 = store.get(L0_ID)
@@ -44,7 +51,7 @@ def test_l0_identity_seeded(tmp_path):
     assert l0.never_merge is True
     assert l0.detail_level == 5
     assert l0.tier == "semantic"
-    assert "IAI-MCP" in l0.literal_surface
+    assert "alice" in l0.literal_surface
 
 
 def test_l0_seed_is_idempotent(tmp_path):
@@ -67,7 +74,7 @@ def test_profile_get_returns_live_knobs(tmp_path):
     assert result["live"]["task_support"] == "cued_recognition"      # AUTIST-07
     assert result["live"]["scene_construction_scaffold"] is True     # AUTIST-14
     assert result["live"]["wake_depth"] == "minimal"                 # MCP-12
-    # : 10 autistic-kernel + wake_depth = 11 live (AUTIST-02/08/11/12 removed).
+    # 10 autistic-kernel + wake_depth = 11 live (AUTIST-02/08/11/12 removed).
     assert len(result["live"]) == 11
     assert len(result["deferred"]) == 0
 
@@ -88,7 +95,7 @@ def test_profile_get_camouflaging_now_live_after_autist13_flip(tmp_path):
     store = MemoryStore(path=tmp_path)
     result = dispatch(store, "profile_get", {"knob": "camouflaging_relaxation"})
     assert result["knob"] == "camouflaging_relaxation"
-    assert result["value"] == 0.0  # D-AUTIST13 default
+    assert result["value"] == 0.0  # AUTIST-13 default
 
 
 def test_profile_set_camouflaging_relaxation_now_succeeds(tmp_path):
@@ -101,12 +108,11 @@ def test_profile_set_camouflaging_relaxation_now_succeeds(tmp_path):
 
 
 def test_profile_set_live_knob_succeeds(tmp_path):
-    """live knob accepts valid enum values ("loose" is in the schema)."""
+    """Live knob accepts valid enum values ("loose" is in the schema)."""
     store = MemoryStore(path=tmp_path)
     # Reset default before test to avoid test ordering issues
     LIVE_KNOBS["literal_preservation"] = "strong"
-    # introduced schema validation (enum:strong|medium|loose).
-    # accepted any value; now we use a valid enum entry.
+    # Schema validation accepts enum:strong|medium|loose; we use a valid entry.
     result = dispatch(store, "profile_set", {"knob": "literal_preservation", "value": "loose"})
     assert result["status"] == "ok"
     assert LIVE_KNOBS["literal_preservation"] == "loose"
@@ -115,10 +121,10 @@ def test_profile_set_live_knob_succeeds(tmp_path):
 
 
 def test_memory_consolidate_real(tmp_path):
-    """memory_consolidate now runs real heavy consolidation.
+    """memory_consolidate runs real heavy consolidation.
 
-    The stub returned {"status": "queued", "phase": "placeholder"};
-    replaces that with actual sleep-cycle output:
+    An earlier stub returned {"status": "queued", "phase": "placeholder"};
+    it now returns actual sleep-cycle output:
     {"mode": "heavy", "tier": "tier0"|"tier1", "summaries_created": int,
      "decay_result": {...}, "schema_candidates": [...]}.
     """

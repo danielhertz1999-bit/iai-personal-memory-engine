@@ -1,4 +1,6 @@
-"""Tests for derived valid_from / valid_to on MemoryHit.
+"""Plan U2 (): tests for derived valid_from / valid_to on MemoryHit.
+
+Reviewer suggestion per REDDIT_FEEDBACK_POSSIBLE_UPDATES.md section U2.
 
 Covers 10 behaviors:
     1. valid_from is set from record.created_at on every hit.
@@ -10,15 +12,15 @@ Covers 10 behaviors:
        not hidden — audit trail preserved.
     7. Downweight triggers a re-rank: fresh lower-cosine record can outrank
        a stale high-cosine record (load-bearing for budget-pack contract).
-    8. Episodic record schema is byte-identical before and after — no Lance
-       migration, write-once invariant preserved.
-    9. The JSON wire (core.dispatch("memory_recall", ...)) carries the two
+    8. Episodic record schema is byte-identical before and after — no
+       store-level migration, write-once invariant preserved.
+    9. The JSON wire (core.dispatch("memory_recall",...)) carries the two
        new keys on every entry in hits[] AND anti_hits[].
    10. The hit's reason field carries " · stale" suffix when downweighted.
 
-Constitutional anchors:
-- Episodic record is WRITE-ONCE. valid_from / valid_to are derived at recall
-  time, NOT stored on MemoryRecord.
+Anchors:
+- Episodic record is WRITE-ONCE (the project convention "Architectural Invariants"). valid_from /
+  valid_to are derived at recall time, NOT stored on MemoryRecord.
 - Decision on reviewer's open question: valid_to is STRICTLY DERIVED from the
   contradicts-edge graph; no MCP surface allows override. User intent flows
   through memory_contradict → new record + edge → derived valid_to.
@@ -124,10 +126,10 @@ def _add_contradicts_edge_raw(
 
 @pytest.fixture
 def fresh_store(tmp_path):
-    """Fresh LanceDB-backed MemoryStore per test (canonical pattern from
+    """Fresh Hippo-backed MemoryStore per test (canonical pattern from
     test_recall_cue_router.py:_seed_populated_store)."""
     from iai_mcp.store import MemoryStore
-    return MemoryStore(path=tmp_path / "lancedb")
+    return MemoryStore(path=tmp_path / "hippo")
 
 
 # ============================================================ Behavior tests
@@ -161,7 +163,7 @@ def test_valid_from_set_from_created_at(fresh_store, monkeypatch):
 
     # Pull RecallResponse directly so we can read the dataclass field.
     from iai_mcp import retrieve
-    from iai_mcp.embed import embedder_for_store  # noqa: F401  — patched above
+    from iai_mcp.embed import embedder_for_store  # noqa: F401 — patched above
     from iai_mcp.pipeline import recall_for_response
 
     graph, assignment, rc = retrieve.build_runtime_graph(fresh_store)
@@ -478,19 +480,23 @@ def test_downweight_reranks_order(fresh_store, monkeypatch):
     t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
     t1 = t0 + timedelta(days=30)
 
-    # Stale record: literal_surface embedding == cue → cosine 1.0.
+    # Stale record: literal_surface text different from cue so FTS/Jaccard
+    # text-match multipliers don't kick in (test isolates temporal downweight
+    # behavior from literal-text scoring). Embedding pinned to cue_vec so
+    # vector cosine = 1.0 — that drives the initial ranking, downweight then
+    # needs to overcome only the embedding similarity, not stacked text boosts.
     rec_stale = _make_record(
-        literal_surface=cue_text,  # cue is fixed-vectored so embedding == cue_vec
+        literal_surface="stale answer surface text",
         embedding=cue_vec,
         created_at=t0,
     )
     rec_stale.aaak_index = generate_aaak_index(rec_stale)
     fresh_store.insert(rec_stale)
 
-    # Fresh record: lower cosine to cue.  Build a perturbed vector with cos < 1.0.
+    # Fresh record: lower cosine to cue. Build a perturbed vector with cos < 1.0.
     fresh_vec = list(cue_vec)
     # Flip first few coords to drop cosine below stale's 1.0 but keep it
-    # high enough to survive into top-k.  cos drop ≈ 0.05–0.15 typically.
+    # high enough to survive into top-k. cos drop ≈ 0.05–0.15 typically.
     for i in range(8):
         fresh_vec[i] = -fresh_vec[i]
     # Renormalize.
@@ -532,7 +538,7 @@ def test_downweight_reranks_order(fresh_store, monkeypatch):
 
 
 def test_episodic_schema_byte_identical(fresh_store, monkeypatch):
-    """Behavior 8: Lance `records` table schema is byte-identical before and
+    """Behavior 8: the `records` table schema is byte-identical before and
     after running the U2 path. Write-once invariant preserved.
     """
     from iai_mcp import embed as _embed_mod

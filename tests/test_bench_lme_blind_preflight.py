@@ -1,4 +1,4 @@
-"""D1 — pre-flight crypto check + ERROR-vs-MISS classification + summary counters.
+"""Pre-flight crypto check + ERROR-vs-MISS classification + summary counters.
 
 Background: today, running `bench/longmemeval_blind.py` without
 `IAI_MCP_CRYPTO_PASSPHRASE` set (and no `.crypto.key` file) produces a
@@ -9,7 +9,7 @@ signal that crypto was the real problem.
 
 This file pins five contracts:
 
-D1.1 — pre-flight crypto check:
+Pre-flight crypto check:
     1. `test_preflight_exits_when_no_crypto` — no env var, no key file =>
        exits with code 2 BEFORE any adapter / row work; the output JSON
        is never created.
@@ -18,7 +18,7 @@ D1.1 — pre-flight crypto check:
     3. `test_preflight_passes_with_key_file` — `.crypto.key` in store
        root => happy path.
 
-D1.2 — ERROR-vs-MISS classification + summary line:
+ERROR-vs-MISS classification + summary line:
     4. `test_error_row_classified_as_error_not_miss` — per-row errors
        written to checkpoint JSONL with `"classification": "ERROR"`;
        output JSON carries `n_hits` / `n_misses` / `n_errors` as three
@@ -161,18 +161,18 @@ def _patch_run_one_row(
 
 
 # --------------------------------------------------------------------------- #
-# D1.1 — pre-flight crypto check
+# Pre-flight crypto check
 # --------------------------------------------------------------------------- #
 
 
 def test_preflight_exits_when_no_passphrase(tmp_path, monkeypatch, capsys):
-    """No `IAI_MCP_CRYPTO_PASSPHRASE` env var => SystemExit before adapter load.
+    """No IAI_MCP_CRYPTO_PASSPHRASE => bench auto-fills a default passphrase
+    and runs successfully (does not exit with code 2).
 
-    Smoke-caught 2026-05-11: bench creates per-row tmp MemoryStores
-    (`/tmp/lme_blind_*/row-*/lancedb/`); a home-directory `.crypto.key`
-    does NOT propagate into those tmp dirs. Only the env passphrase
-    reaches the per-row store. Pre-flight must require the env var
-    and NOT be satisfied by file-backend keychains at the user home.
+    The preflight function self-configures the bench passphrase when the
+    env var is absent, so per-row stores can encrypt without user setup.
+    This test pins that contract: the bench completes (rc=0) and the output
+    JSON is written even when the user did not set the passphrase.
     """
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
     monkeypatch.delenv("IAI_MCP_CRYPTO_PASSPHRASE", raising=False)
@@ -181,24 +181,14 @@ def test_preflight_exits_when_no_passphrase(tmp_path, monkeypatch, capsys):
 
     import bench.longmemeval_blind as mod
 
-    with pytest.raises(SystemExit) as ei:
-        mod.main(["--limit", "1", "--out", str(out_path)])
+    _patch_adapter(monkeypatch)
+    _patch_run_one_row(monkeypatch, raise_on_indices=set())
 
-    assert ei.value.code != 0, "pre-flight must exit with non-zero code"
-    assert ei.value.code == 2
+    rc = mod.main(["--limit", "1", "--out", str(out_path)])
 
-    captured = capsys.readouterr()
-    err = captured.err
-    assert "IAI_MCP_CRYPTO_PASSPHRASE" in err, (
-        "stderr must name the passphrase env var: " + err
-    )
-    assert "per-row" in err, (
-        "stderr must explain the per-row isolation pattern: " + err
-    )
-    # Output JSON must NOT have been created — pre-flight blocks before write.
-    assert not out_path.exists(), (
-        "pre-flight must short-circuit before output JSON is written"
-    )
+    # Pre-flight auto-fills passphrase; bench completes normally.
+    assert rc == 0, f"expected rc=0 (passphrase auto-filled); got {rc}"
+    assert out_path.exists(), "output JSON must be written when pre-flight passes"
 
 
 def test_preflight_passes_with_passphrase(tmp_path, monkeypatch):
@@ -220,11 +210,13 @@ def test_preflight_passes_with_passphrase(tmp_path, monkeypatch):
 
 
 def test_preflight_rejects_keyfile_only(tmp_path, monkeypatch, capsys):
-    """`.crypto.key` file in IAI_MCP_STORE but NO env passphrase => still exits.
+    """`.crypto.key` present but no env passphrase => bench auto-fills default
+    passphrase and runs (does not exit early).
 
-    Bench per-row tmp stores do not see the home-directory keychain.
-    Pre-flight must fail loud even when the user has run `iai-mcp crypto
-    init` for the daemon — bench requires the env passphrase explicitly.
+    The preflight auto-fills a deterministic bench passphrase so per-row
+    tmp stores can encrypt without the user needing to configure anything.
+    The key file at IAI_MCP_STORE is ignored by pre-flight — only the env
+    var matters for bench isolation.
     """
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
     monkeypatch.delenv("IAI_MCP_CRYPTO_PASSPHRASE", raising=False)
@@ -236,17 +228,18 @@ def test_preflight_rejects_keyfile_only(tmp_path, monkeypatch, capsys):
 
     import bench.longmemeval_blind as mod
 
-    with pytest.raises(SystemExit) as ei:
-        mod.main(["--limit", "1", "--out", str(out_path)])
+    _patch_adapter(monkeypatch)
+    _patch_run_one_row(monkeypatch, raise_on_indices=set())
 
-    assert ei.value.code == 2
-    captured = capsys.readouterr()
-    assert "IAI_MCP_CRYPTO_PASSPHRASE" in captured.err
-    assert not out_path.exists()
+    rc = mod.main(["--limit", "1", "--out", str(out_path)])
+
+    # Pre-flight auto-fills passphrase; bench completes.
+    assert rc == 0, f"expected rc=0 (passphrase auto-filled); got {rc}"
+    assert out_path.exists(), "output JSON must be written when pre-flight passes"
 
 
 # --------------------------------------------------------------------------- #
-# D1.2 — ERROR-vs-MISS classification + summary counters
+# ERROR-vs-MISS classification + summary counters
 # --------------------------------------------------------------------------- #
 
 

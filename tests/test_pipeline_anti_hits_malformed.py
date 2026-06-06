@@ -47,7 +47,7 @@ def _isolated_keyring(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.fixture
 def store(tmp_path: Path) -> MemoryStore:
-    return MemoryStore(path=tmp_path / "lancedb")
+    return MemoryStore(path=tmp_path / "hippo")
 
 
 def _make_record(rid: UUID, surface: str = "topic") -> MemoryRecord:
@@ -83,7 +83,7 @@ def _add_edge_row(
     edge_type: str = "contradicts",
     weight: float = 1.0,
 ) -> None:
-    """Direct LanceDB insert for the edges table — used to inject rows
+    """Direct store insert for the edges table — used to inject rows
     that the high-level store APIs would normally validate away."""
     tbl = store.db.open_table("edges")
     tbl.add([{
@@ -109,7 +109,7 @@ def _make_hit(rid: UUID, surface: str = "primary topic") -> MemoryHit:
 
 
 def test_malformed_dst_does_not_crash_and_valid_anti_surfaces(store, caplog):
-    """W4 / a contradicts edge with dst='not-a-uuid' is filtered
+    """W4 /: a contradicts edge with dst='not-a-uuid' is filtered
     + logged; the valid contradicts edge still surfaces as an anti-hit."""
     rid_hit = uuid4()
     rid_anti = uuid4()
@@ -149,7 +149,7 @@ def test_malformed_dst_does_not_crash_and_valid_anti_surfaces(store, caplog):
 
 
 def test_malformed_src_filtered_at_upstream_step(store, caplog):
-    """W4 / a contradicts edge with src='not-a-uuid' is also
+    """W4 /: a contradicts edge with src='not-a-uuid' is also
     filtered at the upstream pre-walk step. ``linked`` set never
     sees the bad value and the inner UUID(lid) call is never reached."""
     rid_hit = uuid4()

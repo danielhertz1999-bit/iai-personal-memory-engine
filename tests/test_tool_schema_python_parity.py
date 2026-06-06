@@ -6,8 +6,8 @@ entry fail this test loudly with file:line + missing keys.
 Pattern analog: tests/test_constitutional_guards.py (file walk + regex/
 AST -> offenders list -> assert empty).
 
-ground truth: the per-method audit table in
-internal architecture spec (section "Authoritative
+ ground truth: the per-method audit table in
+ (section "Authoritative
 `params.get/[]` audit per dispatch method").
 """
 from __future__ import annotations
@@ -54,8 +54,8 @@ PROFILE_DISPATCH_BRANCHES: dict[str, list[str]] = {
 #
 # Documented for clarity only:
 # - profile_get_set.operation: wrapper splits get/set client-side via
-#   invokeTool switch (mcp-wrapper/src/tools.ts:299-310); never reaches
-#   bridge.call as a key.
+# invokeTool switch (mcp-wrapper/src/tools.ts:299-310); never reaches
+# bridge.call as a key.
 
 
 # ---------------------------------------------------------------------------
@@ -65,17 +65,17 @@ PROFILE_DISPATCH_BRANCHES: dict[str, list[str]] = {
 def _extract_python_keys(module_ast: ast.Module, dispatch_method: str) -> set[str]:
     """Walk the dispatch function's if-chain. Find every body whose guard is
     `method == "<dispatch_method>"`. Within that body collect every
-    `params["..."]` Subscript access and every `params.get("...", ...)`
+    `params["..."]` Subscript access and every `params.get("...",...)`
     Call. Return the union of literal-string keys.
 
     Notes:
       - We collect BOTH `params["..."]` (REQUIRED accesses) and
-        `params.get("...", ...)` (OPTIONAL accesses); the parity check
+        `params.get("...",...)` (OPTIONAL accesses); the parity check
         treats the union as "every key the dispatch may consume".
       - Non-literal keys (e.g. dynamic `params[some_var]`) are skipped;
         if a dispatch branch ever does that, the parity test cannot
         enforce contract on the dynamic name and a manual review is
-        required (none today; verified 2026-04-30).
+        required (none at present).
     """
     keys: set[str] = set()
     dispatch_fn = next(
@@ -116,7 +116,7 @@ def _extract_python_keys(module_ast: ast.Module, dispatch_method: str) -> set[st
                     slc = n.slice
                     if isinstance(slc, ast.Constant) and isinstance(slc.value, str):
                         keys.add(slc.value)
-                # params.get("key", ...)
+                # params.get("key",...)
                 if (
                     isinstance(n, ast.Call)
                     and isinstance(n.func, ast.Attribute)
@@ -136,9 +136,9 @@ def _extract_python_keys(module_ast: ast.Module, dispatch_method: str) -> set[st
 # ---------------------------------------------------------------------------
 
 # Robust per-tool block regex. Handles BOTH:
-#   (a) memory_consolidate-style single-line empty:
-#         memory_consolidate: { ..., inputSchema: { type: "object", properties: {} }, },
-#   (b) multi-line full schema with required[] and nested properties.
+# (a) memory_consolidate-style single-line empty:
+# memory_consolidate: {..., inputSchema: { type: "object", properties: {} }, },
+# (b) multi-line full schema with required[] and nested properties.
 #
 # Strategy: locate the tool name at column-2 (toolSchemas top-level), then
 # brace-balance forward to find the matching closing brace of the tool
@@ -205,7 +205,7 @@ def _find_block(text: str, key: str, search_from: int, search_to: int) -> tuple[
     return open_idx, close_idx
 
 
-# Property names inside `properties: { ... }` are the top-level keys
+# Property names inside `properties: {... }` are the top-level keys
 # (one nesting level deep). We extract them by brace-balancing each
 # top-level entry.
 _PROP_KEY_LINE = re.compile(
@@ -215,7 +215,7 @@ _PROP_KEY_LINE = re.compile(
 
 
 def _extract_property_keys(properties_block: str) -> set[str]:
-    """Given the *contents* of a `properties: { ... }` block (without the
+    """Given the *contents* of a `properties: {... }` block (without the
     outer braces), return the set of top-level property keys.
 
     Walks the block character-by-character at depth 0, locating each
@@ -268,7 +268,7 @@ def _extract_ts_keys(ts_text: str, tool_name: str) -> set[str]:
             continue
         tool_open = m.end() - 1
         tool_close = _balance_braces(ts_text, tool_open)
-        # Find inputSchema: { ... } within the tool block.
+        # Find inputSchema: {... } within the tool block.
         is_open, is_close = _find_block(
             ts_text, "inputSchema", tool_open + 1, tool_close,
         )
@@ -276,7 +276,7 @@ def _extract_ts_keys(ts_text: str, tool_name: str) -> set[str]:
             raise AssertionError(
                 f"tool {tool_name!r}: inputSchema block not found"
             )
-        # Find properties: { ... } within inputSchema.
+        # Find properties: {... } within inputSchema.
         props_open, props_close = _find_block(
             ts_text, "properties", is_open + 1, is_close,
         )
@@ -314,10 +314,11 @@ def test_ts_extractor_handles_empty_properties() -> None:
     """Sanity: _extract_ts_keys returns an empty set for a tool whose
     inputSchema has `properties: {}` (single-line or multi-line).
 
-    Pre-Plan-07.13-03: memory_consolidate had `properties: {}` (empty).
-    Post-Plan-07.13-03: memory_consolidate has `properties: { session_id: {...} }`.
-    Either way, the extractor must not crash; pre-fix it returns empty,
-    post-fix it returns {"session_id"}. We assert it returns a set; the
+    memory_consolidate may have either `properties: {}` (empty) or
+    `properties: { session_id: {...} }`.
+    Either way, the extractor must not crash; with empty properties it
+    returns empty, otherwise it returns {"session_id"}. We assert it
+    returns a set; the
     parity test enforces the post-fix content.
     """
     # topology has empty properties in both pre- and post-fix states.

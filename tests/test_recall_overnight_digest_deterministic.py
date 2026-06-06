@@ -1,10 +1,10 @@
-"""Pin the deterministic ``overnight_digest`` contract.
+"""Plan: pin the deterministic ``overnight_digest`` contract.
 
 The ``overnight_digest`` key is ALWAYS present in ``memory_recall`` responses.
 Value is the rich payload when daemon has a pending digest within the 18h
 once-per-window gate; otherwise it is a zeroed structured default. Replaces
-the legacy absence-as-signal contract that made stdio vs socket top-level
-keys non-deterministic across two adjacent dispatch calls.
+the legacy absence-as-signal contract that made stdio vs socket
+top-level keys non-deterministic across two adjacent dispatch calls.
 
 The 3 cases below cover:
 1. Fresh-spawn / no REM cycle run -> key present, all fields zeroed.
@@ -63,7 +63,7 @@ def isolated_state(tmp_path, monkeypatch):
 
 
 def test_fresh_spawn_no_rem_yields_zeroed_default(isolated_state):
-    """Deterministic-contract case1: no pending_digest, no last_digest_shown_at ->
+    """Plan case 1: no pending_digest, no last_digest_shown_at ->
     overnight_digest key MUST be present and equal the zeroed default
     field-for-field (not absent, not None, not {})."""
     from iai_mcp.core import _inject_overnight_digest
@@ -88,7 +88,7 @@ def test_fresh_spawn_no_rem_yields_zeroed_default(isolated_state):
 
 
 def test_rem_cycle_pending_yields_populated_digest(isolated_state):
-    """Deterministic-contract case2: pending_digest present and last shown >18h ago
+    """Plan case 2: pending_digest present and last shown >18h ago
     -> the rich payload surfaces (the once-per-window delivery semantic is
     preserved)."""
     from iai_mcp.core import _inject_overnight_digest
@@ -127,7 +127,7 @@ def test_rem_cycle_pending_yields_populated_digest(isolated_state):
 
 
 def test_stdio_and_socket_recall_top_level_keys_identical(short_socket_paths, tmp_path):
-    """Deterministic-contract case3: a tighter, assertive subset of the parity test
+    """Plan case 3: a tighter, assertive subset of the parity test
     in test_socket_backward_compat_stdio.py -- the ``overnight_digest`` key
     MUST appear in both transports' results for ``memory_recall`` regardless
     of REM-cycle timing, and the top-level result key sets MUST be identical.

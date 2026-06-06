@@ -1,54 +1,94 @@
 [project]
 name = "iai-mcp"
-version = "0.4.2"
-description = "MCP server providing persistent verbatim memory and ambient capture for MCP-over-stdio hosts (developed against Claude Code)"
+version = "1.0.0"
+description = "MCP server giving Claude persistent autistic-style memory + learning"
 requires-python = ">=3.11,<3.13"
 dependencies = [
-  "lancedb>=0.11.0",
-  "pyarrow>=16.0.0",
-  "sentence-transformers>=3.0.0",
+  "pyarrow>=16.0.0,<20.0",  # kept as direct dep — used by hippo.py Arrow IPC path. Ruled out as a replacement target in an earlier cost-benefit pass: Arrow C++ is already the optimized SIMD columnar engine.
   "numpy>=1.26.0,<2.3.0",
-  "pydantic>=2.7.0",
-  "torch-hd>=5.7.0",    # imports as `torchhd`; PyPI name has a dash
-  "structlog>=24.0.0",
-  "networkx>=3.3",
-  "python-igraph>=0.11",
-  "leidenalg>=0.10",
-  "anthropic>=0.40.0",  # count_tokens API for bench harness
-  "tiktoken>=0.7.0",    # offline tokeniser fallback for bench/tokens.py when no API key
-  "langdetect>=1.0.9",  # ISO-639-1 language auto-detect (pure Python, no-cloud)
+  # networkx evicted from main deps. The σ assembly and the
+  # graph-algorithm consumer surface route through the native Rust
+  # ``iai_mcp_native.graph`` namespace + the pure-Python rich-club
+  # helper. The legacy MemoryGraph storage backend lazy-imports
+  # networkx inside ``__init__``; it remains an internal
+  # implementation detail and is pinned exactly to ``networkx==3.3``
+  # in ``[project.optional-dependencies.dev]`` to double-duty as the
+  # σ-baseline oracle and the MemoryGraph test backend.
+  "scipy>=1.13.0",      # CSR build glue for the σ assembly helpers.
+  "pandas>=2.0,<3.0",   # hippo store DataFrame read/write path (core runtime, not optional).
+  "numba>=0.59",        # Numba JIT for custom MIT Leiden kernels. BSD-2 license, MIT-compatible. Ruled out as a replacement target: numba already JITs to LLVM machine code.
+  # `python-igraph` and `leidenalg` were REMOVED in full. They cannot be
+  # installed via this package (not even as an optional extra). The sole
+  # community-detection backend is now MOSAIC (`src/iai_mcp/mosaic.py`,
+  # pure-MIT). See the CHANGELOG and the README MOSAIC section.
+  # anthropic SDK removed: subscription-billed `claude -p`
+  # subprocess replaces api.anthropic.com direct calls. Bench harness uses
+  # the tiktoken cl100k proxy for token counting where needed.
+  "tiktoken>=0.7.0",    # offline tokeniser fallback for bench/tokens.py + 3 tests
   "cryptography>=42.0.0",  # AES-256-GCM at rest (pyca/cryptography, audited primitive)
   "keyring>=24.0.0",       # OS keychain (macOS / Linux Secret Service / Windows Credential Manager)
-  "cachetools>=5.3.0",     # TTLCache for activation-cascade LRU
-  "psutil>=5.9.0",         # daemon CPU watchdog + doctor checks
+  "cachetools>=5.3.0",     # TTLCache for HIPPEA activation-cascade LRU warmer
+  "hnswlib>=0.8.0,<1.0",  # ANN cosine index for Hippo backend
+  "psutil>=5.9.0",         # self-process CPU sampling for daemon CPU watchdog. Already used 4x in doctor.py via transitive resolution; this declaration makes a clean `pip install -e .` reach psutil without [compress] extra.
+  "setproctitle==1.3.7",   # daemon process title (cosmetic, fail-soft)
+  # Removed in this milestone after the post-Phase-46 dep audit (2026-05-25):
+  #   - torch-hd: superseded by in-tree `iai_mcp.lilli` (BSC/FHRR/sparse VSA tiers)
+  #   - pydantic: declared but zero imports anywhere in `src/`
+  #   - structlog: declared but zero references anywhere (stdlib `logging` is the actual logger)
+  #   - langdetect: dropped 2026-05-28; the English-Only Brain invariant makes
+  #     language guessing on stored text unnecessary (the surface translates
+  #     inbound on the way in). All call sites now write language='en' directly.
 ]
 
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0",
   "pytest-cov>=5.0",
-  "pytest-rerunfailures>=14.0",  # auto-retry test-pollution flakes (daemon/bridge tests)
   "ruff>=0.5.0",
+  # networkx is the σ-baseline oracle in tests/fixtures/sigma_baseline.json
+  # (the locked SHA-pinned fixture was generated via networkx 3.3); it also
+  # backs MemoryGraph's lazy-imported internal storage. Exact pin so the
+  # baseline reproducibility check stays stable.
+  "networkx==3.3",
+  # Differential property-based harness for the σ baseline oracle.
+  "hypothesis-networkx>=0.3",
+  # sklearn.metrics oracle for the mosaic LFR gauntlet (was previously a
+  # transitive dep of the old embedder stack; now declared directly).
+  "scikit-learn>=1.3",
 ]
-# Optional: LLMLingua-2 compression for community summaries (~2.3 GB model).
-# Without this extra, compression falls back to passthrough.
+# LLMLingua-2 compression on L2 community summaries.
+# Opt-in because the xlm-roberta-large model weights are ~2.3 GB; without
+# this extra the compress_llmlingua2 path transparently falls back to
+# passthrough (logged as llm_health warning, no functional break).
 compress = ["llmlingua>=0.2.2", "accelerate>=1.0.0"]
+# One-time migration from legacy LanceDB store to Hippo (SQLite + hnswlib).
+# Install with: pip install iai-mcp[migration]
+# Then run: python scripts/migrate_lance_to_hippo.py
+migration = ["lancedb>=0.11.0,<1.0"]
 
 [project.scripts]
 iai-mcp-core = "iai_mcp.core:main"
 iai-mcp = "iai_mcp.cli:main"
+iai = "iai_mcp.iai_cli:main"
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=68", "setuptools-rust>=1.10"]
+build-backend = "setuptools.build_meta"
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/iai_mcp"]
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[[tool.setuptools-rust.ext-modules]]
+target = "iai_mcp_native"
+path = "rust/iai_mcp_native/Cargo.toml"
+binding = "PyO3"
+features = ["extension-module"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-# A handful of daemon/bridge tests are sensitive to test-pollution from earlier
-# tests in the same suite (open file descriptors, async loop state) and pass
-# cleanly when run in isolation. Retry up to twice before reporting failure.
-addopts = "--reruns 2 --reruns-delay 1"
+markers = [
+  "slow: opt-in via --runslow (subprocess-heavy bench-shim resolution tests)",
+  "perf: opt-in via --perf (wall-clock latency benches, out of the default correctness gate)",
+  "live: opt-in via --live (real daemon-subprocess E2E gate, out of the default correctness gate)",
+]

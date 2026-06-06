@@ -1,11 +1,10 @@
-"""R5 prep regression fence — psutil MUST be declared in
+"""Regression fence — psutil MUST be declared in
 pyproject.toml [project.dependencies], not just transitively reachable.
 
-Background: CONTEXT.md D7.2-17 claimed psutil was "already a project dep"
-but it was only transitive via accelerate in the [compress] extra. A
-clean `pip install -e .` produced a venv WITHOUT psutil and
-_cpu_watchdog_loop would `import psutil` and fail. added the
-explicit declaration. This test prevents accidental removal.
+Background: psutil was once only transitive via accelerate in the [compress]
+extra, so a clean `pip install -e.` produced a venv WITHOUT psutil and the
+_cpu_watchdog_loop would `import psutil` and fail. The explicit declaration
+fixed it; this test prevents accidental removal.
 """
 from __future__ import annotations
 
@@ -30,7 +29,7 @@ def test_psutil_declared_in_project_dependencies() -> None:
     project_block = text[project_marker:section_end]
     # Permissive match: any psutil line with a version floor.
     assert "psutil" in project_block, (
-        "psutil missing from [project] block. R5 prep added "
+        "psutil missing from [project] block. Plan 07.2-01 R5 prep added "
         "this declaration so a clean `pip install -e .` reaches psutil "
         "without the [compress] extra. Restore the line."
     )
@@ -39,6 +38,6 @@ def test_psutil_declared_in_project_dependencies() -> None:
     match = re.search(r'"\s*psutil\s*>=\s*\d+', project_block)
     assert match, (
         'Expected `"psutil>=X.Y.Z"` style declaration in [project] '
-        "dependencies. chose >=5.9.0 to match the "
+        "dependencies. Plan 07.2-01 chose >=5.9.0 to match the "
         "accelerate transitive-floor and stay broad."
     )

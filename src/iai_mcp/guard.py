@@ -1,15 +1,15 @@
-"""D-GUARD: graceful-degradation ladder before any LLM call.
+"""Graceful-degradation ladder before any LLM call.
 
 Every LLM-dependent operation must pass through `should_call_llm`
-BEFORE making an API call. The 7-step ladder (D-GUARD):
+BEFORE making an API call. The 7-step ladder:
 
 1. sleep.llm_enabled=true? else Tier 0
 2. API key present? else Tier 0
 3. BudgetLedger daily cap OK? else Tier 0
 4. BudgetLedger monthly cap OK? else Tier 0
 5. RateLimitLedger: last 429 > 15 min ago? else Tier 0 this cycle
-6. API call with retry(max=2, exp backoff) + timeout(60s)  -- caller's job
-7. On 429/400/401/5xx -> record in ledger, Tier 0 this cycle  -- caller's job
+6. API call with retry(max=2, exp backoff) + timeout(60s) -- caller's job
+7. On 429/400/401/5xx -> record in ledger, Tier 0 this cycle -- caller's job
 
 Write & read paths (memory_recall/reinforce/contradict, profile_get/set,
 session_start) NEVER block on LLM failure. LLM failures only reduce the QUALITY
@@ -18,7 +18,7 @@ of semantic consolidation, schema induction, and identity refinement.
 Budget defaults: daily_usd_cap=$0.10, monthly_usd_cap=$3.00,
 cooldown=15min, on_cap_hit=fallback_to_local.
 
-BudgetLedger + RateLimitLedger persist in LanceDB tables (budget_ledger,
+BudgetLedger + RateLimitLedger persist in store tables (budget_ledger,
 ratelimit_ledger) created by MemoryStore._ensure_tables.
 """
 from __future__ import annotations
@@ -28,14 +28,14 @@ from datetime import datetime, timedelta, timezone
 from iai_mcp.store import BUDGET_TABLE, RATELIMIT_TABLE, MemoryStore
 
 
-# D-GUARD defaults
+# Degradation-ladder defaults
 BUDGET_DAILY_USD_DEFAULT = 0.10
 BUDGET_MONTHLY_USD_DEFAULT = 3.00
 RATELIMIT_COOLDOWN_MIN = 15
 
 
 class BudgetLedger:
-    """LanceDB-backed daily + monthly USD spend tracker (D-GUARD).
+    """SQLite-backed daily + monthly USD spend tracker.
 
     Caps default to $0.10/day and $3.00/month. Both are advisory (no OS-level
     enforcement); caller inspects can_spend() before invoking an LLM API.
@@ -115,7 +115,7 @@ class BudgetLedger:
 
 
 class RateLimitLedger:
-    """LanceDB-backed 429 history with 15-min cooldown (D-GUARD)."""
+    """SQLite-backed 429 history with 15-min cooldown."""
 
     def __init__(
         self,
@@ -132,11 +132,18 @@ class RateLimitLedger:
         if df.empty:
             return False
         latest = df["ts"].max()
-        # Pandas timestamp -> python datetime; may be naive on some backends.
+        # Coerce ISO TEXT / Timestamp / naive datetime -> tz-aware UTC datetime.
         try:
             py = latest.to_pydatetime()
         except AttributeError:
             py = latest
+        if isinstance(py, str):
+            try:
+                py = datetime.fromisoformat(py.replace("Z", "+00:00"))
+            except (TypeError, ValueError):
+                return False
+        if not isinstance(py, datetime):
+            return False
         if py.tzinfo is None:
             py = py.replace(tzinfo=timezone.utc)
         return (datetime.now(timezone.utc) - py) < self.cooldown
@@ -162,14 +169,13 @@ def should_call_llm(
     has_api_key: bool,
     estimated_usd: float = 0.001,
 ) -> tuple[bool, str]:
-    """D-GUARD 7-step ladder.
+    """7-step degradation ladder.
 
     Returns (ok, reason). reason is "ok" on success or a short diagnostic
     describing which ladder step blocked the call.
 
-    Ordering is constitutional: downstream plans rely on this exact
-    precedence. Changing the order without updating test_should_call_llm_ordering_*
-    tests is a spec violation.
+    Step ordering is fixed: changing the order without updating
+    test_should_call_llm_ordering_* tests is a spec violation.
     """
     # Step 1: sleep.llm_enabled toggle.
     if not llm_enabled:

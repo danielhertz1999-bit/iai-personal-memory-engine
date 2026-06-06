@@ -1,11 +1,11 @@
-"""Tests for the PromptInjectionShield (, , ) -- core detection.
+"""Tests for the PromptInjectionShield -- core detection.
 
-D-31 three-tier deployment:
+ three-tier deployment:
 - HARD_BLOCK -> L0 identity + S5 invariant writes (reject on detection)
 - FLAG_FOR_REVIEW -> profile updates (flag + warn)
 - LOG_ONLY -> content records (log only, allow)
 
-D-02a global-product multilingual mandate: signal words cover at least 7
+ global-product multilingual mandate: signal words cover at least 7
 languages (en + ru + ja + ar + de + fr + es + zh).
 
 This file exercises the core `evaluate_injection_risk` function plus the
@@ -21,7 +21,7 @@ import pytest
 
 
 def test_shield_tier_enum_has_three_levels():
-    """ShieldTier exposes exactly three levels per D-31."""
+    """ShieldTier exposes exactly three levels per."""
     from iai_mcp.shield import ShieldTier
 
     # Sanity: members exist and are distinct.
@@ -263,11 +263,11 @@ def test_evaluate_injection_risk_multilingual_allow_no_signal():
 
 
 def test_evaluate_injection_risk_seven_plus_languages_supported():
-    """Constitutional mandate: 7+ languages with signal word lists."""
+    """Mandate: 7+ languages with signal word lists."""
     from iai_mcp.shield import SHIELD_LANGUAGES_SUPPORTED
 
     assert len(SHIELD_LANGUAGES_SUPPORTED) >= 7
-    # Explicit required set per global-product mandate D-02a:
+    # Explicit required set per global-product mandate:
     for lang in ("en", "ru", "ja", "ar", "de", "fr", "es", "zh"):
         assert lang in SHIELD_LANGUAGES_SUPPORTED, f"{lang} must be supported"
 

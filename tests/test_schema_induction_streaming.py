@@ -1,51 +1,49 @@
-"""-C — schema.py induce_schemas_tier0 + persist_schema migrate
+"""schema.py induce_schemas_tier0 + persist_schema migrate
 to ``store.iter_record_columns(...)`` projection.
 
-CONTEXT.md amendment (added 2026-04-29 mid-execution): the original
-W4 scope (sleep.py invariant + comment marker) is REPLACED-AND-EXTENDED by
-migrating two `all_records()` callers in `schema.py` so that the W4 ≤1
+Two `all_records()` callers in `schema.py` are migrated so that the ≤1
 all_records() invariant on `run_heavy_consolidation` becomes achievable.
 
-Pre-D-26 architecture:
+Pre-migration architecture:
 
     run_heavy_consolidation
-      ├── all_records() at sleep.py:513      (records_by_id — kept by W4)
+      ├── all_records() in sleep.py (records_by_id — kept)
       ├── _tier0_schema_surfacing (projection-only)
       └── induce_schemas_tier1
             └── induce_schemas_tier0
-                  ├── all_records() at schema.py:89        ← D-26-A target
+                  ├── all_records() in schema.py ← target A
                   └── (downstream) persist_schema
-                        └── all_records() at schema.py:267 ← D-26-B target
+                        └── all_records() in schema.py ← target B
 
 Total: 3 all_records() calls per heavy invocation (when auto-status candidates
 fire).
 
-Post-D-26 architecture:
+Post-migration architecture:
 
     run_heavy_consolidation
-      ├── all_records() at sleep.py:513      (records_by_id — kept by W4)
+      ├── all_records() in sleep.py (records_by_id — kept)
       ├── _tier0_schema_surfacing (projection-only)
       └── induce_schemas_tier1
             └── induce_schemas_tier0
-                  ├── iter_record_columns(["id", "tags_json"]) ← D-26-A
+                  ├── iter_record_columns(["id", "tags_json"]) ← A
                   └── persist_schema
                         └── iter_record_columns(["id", "tier", "tags_json"])
-                              ← D-26-B (early-exit via break on first match)
+                              ← B (early-exit via break on first match)
 
-Total: 1 all_records() call per heavy invocation. W4 invariant becomes
-achievable; the W4 invariant test in tests/test_sleep_consolidation_streaming.py
+Total: 1 all_records() call per heavy invocation. The invariant becomes
+achievable; the invariant test in tests/test_sleep_consolidation_streaming.py
 asserts ``count_all.call_count <= 1``.
 
-Covered contracts (D-26-C):
+Covered contracts:
 
-  D-26-A — induce_schemas_tier0 migration:
+  A — induce_schemas_tier0 migration:
     1. Calls iter_record_columns, NOT all_records (spy via monkeypatch)
-    2. _decrypt_for_record fires zero times (proof of zero-AES-GCM W3-style)
-    3. SchemaCandidate output is byte-identical to pre-W4-ext implementation
+    2. _decrypt_for_record fires zero times (proof of zero-AES-GCM)
+    3. SchemaCandidate output is byte-identical to the prior implementation
        on a deterministic synthetic store (same patterns, same evidence_count,
        same confidence, same status)
 
-  D-26-B — persist_schema migration:
+  B — persist_schema migration:
     4. Calls iter_record_columns, NOT all_records (spy via monkeypatch)
     5. Early-exit via break on first matching pattern row works (the keeper
        scan must NOT iterate every record after a hit)
@@ -57,7 +55,7 @@ Covered contracts (D-26-C):
     8. The pattern_tag check is preserved byte-for-byte: tier == "semantic"
        AND f"pattern:{candidate.pattern}" in tags
 
-plan-checker B-1 lesson: every test uses a real ``MemoryRecord``
+ Note: every test uses a real ``MemoryRecord``
 dataclass via ``_rec()`` — never a plain dict against attribute-access code.
 """
 from __future__ import annotations
@@ -130,7 +128,7 @@ def _rec(
     detail_level: int = 2,
     language: str = "en",
 ) -> MemoryRecord:
-    """Real-dataclass fixture (NEVER a plain dict — plan-checker B-1)."""
+    """Real-dataclass fixture (NEVER a plain dict — attribute-access code requires dataclass)."""
     now = datetime.now(timezone.utc)
     return MemoryRecord(
         id=uuid4(),
@@ -157,26 +155,26 @@ def _rec(
 
 @pytest.fixture
 def store(tmp_path: Path) -> MemoryStore:
-    """Fresh MemoryStore in tmp_path/lancedb (one per test, no cross-test bleed)."""
-    return MemoryStore(path=tmp_path / "lancedb")
+    """Fresh MemoryStore in tmp_path/hippo (one per test, no cross-test bleed)."""
+    return MemoryStore(path=tmp_path / "hippo")
 
 
-# --------------------------------------------------------------------------- D-26-A: induce_schemas_tier0
+# --------------------------------------------------------------------------- A: induce_schemas_tier0
 
 
 def test_induce_schemas_tier0_uses_iter_record_columns_not_all_records(
     store: MemoryStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """D-26-A architecture flip: rewritten function uses
-    ``iter_record_columns(["id", "tags_json"], ...)`` and never calls
+    """Architecture flip: rewritten function uses
+    ``iter_record_columns(["id", "tags_json"],...)`` and never calls
     ``all_records()``.
 
-    Pre-D-26-A (current main): ``induce_schemas_tier0`` calls
-    ``store.all_records()`` at schema.py:89 — spy on ``all_records`` fires
+    Before: ``induce_schemas_tier0`` calls
+    ``store.all_records()`` in schema.py — spy on ``all_records`` fires
     once and spy on ``iter_record_columns`` fires zero times → assertion
     fails RED.
 
-    Post-D-26-A: spy on ``iter_record_columns`` fires once and spy on
+    After: spy on ``iter_record_columns`` fires once and spy on
     ``all_records`` fires zero times → assertion passes GREEN.
     """
     # 5 records with the same tag pair (above CLUSTER_MIN_SIZE=3).
@@ -191,33 +189,33 @@ def test_induce_schemas_tier0_uses_iter_record_columns_not_all_records(
     induce_schemas_tier0(store)
 
     assert spy_all.call_count == 0, (
-        f"induce_schemas_tier0 must NOT call store.all_records() post-D-26-A; "
+        f"induce_schemas_tier0 must NOT call store.all_records(); "
         f"got {spy_all.call_count} call(s)"
     )
     assert spy_iter.call_count >= 1, (
         f"induce_schemas_tier0 must call store.iter_record_columns() at least "
-        f"once post-D-26-A; got {spy_iter.call_count} call(s)"
+        f"once; got {spy_iter.call_count} call(s)"
     )
 
 
 def test_induce_schemas_tier0_zero_decrypt_calls(
     store: MemoryStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """D-26-A zero-decrypt contract: ``_decrypt_for_record`` fires zero times
+    """Zero-decrypt contract: ``_decrypt_for_record`` fires zero times
     during the migrated path.
 
     Projection is ``["id", "tags_json"]`` — neither column is encrypted
-    (``id`` is plain string UUID; ``tags_json`` is plain JSON string per
-    store.py:273). Therefore the W5 cipher cache is short-circuited entirely
-    on this path, mirroring the W3 ``_tier0_schema_surfacing`` win.
+    (``id`` is plain string UUID; ``tags_json`` is plain JSON string in
+    store.py). Therefore the cipher cache is short-circuited entirely
+    on this path, mirroring the ``_tier0_schema_surfacing`` win.
 
-    Pre-D-26-A (current main): ``store.all_records()`` round-trips every row
+    Before: ``store.all_records()`` round-trips every row
     through ``_from_row``, which calls ``_decrypt_for_record`` on each of
     literal_surface + provenance_json + profile_modulation_gain_json
     (encrypted columns). For a 5-record store: up to 15 calls. Assertion
     ``call_count == 0`` fails RED.
 
-    Post-D-26-A: zero calls — assertion passes GREEN.
+    After: zero calls — assertion passes GREEN.
     """
     for i in range(5):
         store.insert(_rec(text=f"r{i}", tags=["meeting", "notes"]))
@@ -229,18 +227,18 @@ def test_induce_schemas_tier0_zero_decrypt_calls(
 
     assert decrypt_spy.call_count == 0, (
         f"induce_schemas_tier0 must NOT trigger ANY _decrypt_for_record "
-        f"calls post-D-26-A; got {decrypt_spy.call_count} call(s)"
+        f"calls; got {decrypt_spy.call_count} call(s)"
     )
 
 
 def test_induce_schemas_tier0_byte_identical_to_pre_d26_implementation(
     store: MemoryStore,
 ) -> None:
-    """D-26-C contract: rewritten function produces identical SchemaCandidate
-    output to the pre-D-26-A implementation on a deterministic synthetic
+    """Contract: rewritten function produces identical SchemaCandidate
+    output to the prior implementation on a deterministic synthetic
     store.
 
-    Compute the expected output inline using the pre-D-26-A algorithm
+    Compute the expected output inline using the prior algorithm
     (``store.all_records()`` + ``_tag_cooccurrence``) and assert
     order-independent equality (sort by pattern) against the migrated
     function's output.
@@ -283,7 +281,7 @@ def test_induce_schemas_tier0_byte_identical_to_pre_d26_implementation(
     for i in range(4):
         store.insert(_rec(text=f"low-{i}", tags=["report", "deadline"]))
 
-    # Compute expected via the pre-D-26-A algorithm inline. We re-implement
+    # Compute expected via the prior algorithm inline. We re-implement
     # the contract directly so the test does not depend on the prior
     # implementation surviving the migration unchanged.
     from iai_mcp.schema import (
@@ -292,8 +290,8 @@ def test_induce_schemas_tier0_byte_identical_to_pre_d26_implementation(
         MAX_EVIDENCE_PER_SCHEMA,
         USER_APPROVAL_CONFIDENCE,
         USER_APPROVAL_COOCCURRENCE,
-        _tag_cooccurrence,
     )
+    from iai_mcp.lilli.cycle.schema import _tag_cooccurrence
 
     expected_records = store.all_records()
     pair_counts = _tag_cooccurrence(expected_records)
@@ -348,8 +346,8 @@ def test_induce_schemas_tier0_byte_identical_to_pre_d26_implementation(
 def test_induce_schemas_tier0_evidence_ids_are_uuids(
     store: MemoryStore,
 ) -> None:
-    """D-26-A boundary contract: ``iter_record_columns`` returns ``id`` as a
-    string (per tests/test_store_iter_records.py:250) but
+    """Boundary contract: ``iter_record_columns`` returns ``id`` as a
+    string (per tests/test_store_iter_records.py) but
     ``SchemaCandidate.evidence_ids`` is typed ``list[UUID]``. The migration
     must convert at the boundary; without conversion, downstream code (e.g.
     ``store.boost_edges([(ev_id, schema_id) for ev_id in evidence_ids])``)
@@ -376,27 +374,27 @@ def test_induce_schemas_tier0_evidence_ids_are_uuids(
         assert set(c.evidence_ids).issubset(set(inserted))
 
 
-# --------------------------------------------------------------------------- D-26-B: persist_schema
+# --------------------------------------------------------------------------- persist_schema
 
 
 def test_persist_schema_uses_iter_record_columns_not_all_records_for_keeper_scan(
     store: MemoryStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """D-26-B architecture flip: the keeper-pattern scan in persist_schema
-    uses ``iter_record_columns(["id", "tier", "tags_json"], ...)``, NOT
+    """Architecture flip: the keeper-pattern scan in persist_schema
+    uses ``iter_record_columns(["id", "tier", "tags_json"],...)``, NOT
     ``store.all_records()``.
 
     Fixture: empty store (no existing keeper); we are exercising the
     no-keeper-found branch, which still must execute the scan.
 
-    Pre-D-26-B (current main): ``persist_schema`` calls ``store.all_records()``
-    at schema.py:267 — spy on ``all_records`` fires once. Assertion fails RED.
+    Before: ``persist_schema`` calls ``store.all_records()``
+    in schema.py — spy on ``all_records`` fires once. Assertion fails RED.
 
-    Post-D-26-B: spy on ``iter_record_columns`` fires (with at minimum
+    After: spy on ``iter_record_columns`` fires (with at minimum
     ``["id", "tier", "tags_json"]`` projection); spy on ``all_records``
     fires zero times.
 
-    Note: the fallback insert path at schema.py:371 calls ``store.insert(...)``
+    Note: the fallback insert path in schema.py calls ``store.insert(...)``
     which internally uses ``boost_edges``/``merge_insert`` and may touch other
     tables — but it does NOT call ``store.all_records()`` (verified by reading
     store.py). So the spy on ``all_records`` cleanly captures only the
@@ -422,20 +420,20 @@ def test_persist_schema_uses_iter_record_columns_not_all_records_for_keeper_scan
     persist_schema(store, cand)
 
     assert spy_all.call_count == 0, (
-        f"persist_schema must NOT call store.all_records() post-D-26-B; "
+        f"persist_schema must NOT call store.all_records(); "
         f"got {spy_all.call_count} call(s)"
     )
     assert spy_iter.call_count >= 1, (
         f"persist_schema must call store.iter_record_columns() at least once "
-        f"post-D-26-B (keeper scan); got {spy_iter.call_count} call(s)"
+        f"(keeper scan); got {spy_iter.call_count} call(s)"
     )
 
 
 def test_persist_schema_early_exit_on_first_match(
     store: MemoryStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """D-26-B: the keeper scan must break on the FIRST matching pattern row,
-    matching the existing schema.py:268-272 ``break`` semantics.
+    """The keeper scan must break on the FIRST matching pattern row,
+    matching the existing schema.py ``break`` semantics.
 
     Fixture: 50 schema-tier records, ALL carrying the keeper pattern tag.
     The migrated code must stop iterating after the first match — proven by
@@ -490,7 +488,7 @@ def test_persist_schema_early_exit_on_first_match(
 
     # Early-exit invariant: substantially fewer than 50 rows iterated. Without
     # a `break` after first match, the wrap counter would see all 50 records.
-    # Allow up to 2× CLUSTER_MIN_SIZE to absorb LanceDB batch boundaries —
+    # Allow up to 2× CLUSTER_MIN_SIZE to absorb store batch boundaries —
     # iter_record_columns yields per row but the scanner reads in batches of
     # 1024, so the in-process generator stops cleanly on `break` from the
     # consuming code.
@@ -504,7 +502,7 @@ def test_persist_schema_early_exit_on_first_match(
 def test_persist_schema_returns_correct_id_when_keeper_is_mid_stream(
     store: MemoryStore,
 ) -> None:
-    """D-26-B: when the keeper is the Nth row of the scan (not the first),
+    """When the keeper is the Nth row of the scan (not the first),
     the returned UUID must match the keeper's id, not a string from
     row["id"] or a different match-but-not-the-first-one row.
 
@@ -569,7 +567,7 @@ def test_persist_schema_returns_correct_id_when_keeper_is_mid_stream(
 def test_persist_schema_falls_through_to_insert_when_no_keeper(
     store: MemoryStore,
 ) -> None:
-    """D-26-B byte-identical contract: when no existing schema carries the
+    """Byte-identical contract: when no existing schema carries the
     pattern tag, persist_schema falls through to the original insert path
     (line 371 ``store.insert(schema_rec)``) and returns a NEW UUID — not
     one of the existing-but-non-matching record ids.

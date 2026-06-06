@@ -41,7 +41,7 @@ def test_recall_appends_provenance_twice(tmp_path):
 
 
 def test_contradict_creates_linked_record_without_rewrite(tmp_path):
-    """ edge-based: original preserved, new record linked."""
+    """edge-based: original preserved, new record linked."""
     store = MemoryStore(path=tmp_path)
     r = _make(text="Original fact")
     store.insert(r)
@@ -55,7 +55,7 @@ def test_contradict_creates_linked_record_without_rewrite(tmp_path):
     assert result["edge_type"] == "contradicts"
     assert result["original_id"] == str(r.id)
 
-    # original remains unchanged (full rewrite is ).
+    #: original remains unchanged (full rewrite is).
     assert store.get(r.id).literal_surface == original_text
 
     # New record contains the contradicting fact.
@@ -66,7 +66,7 @@ def test_contradict_creates_linked_record_without_rewrite(tmp_path):
 
 
 def test_contradict_unknown_record_raises(tmp_path):
-    """Tampering resistance (T-01-01): unknown UUID -> ValueError (RPC error -32000)."""
+    """Tampering resistance: unknown UUID -> ValueError (RPC error -32000)."""
     import pytest
     store = MemoryStore(path=tmp_path)
     phantom_id = "11111111-2222-3333-4444-555555555555"
@@ -128,7 +128,7 @@ def test_contradict_new_record_has_aaak_index_stamped(tmp_path):
     assert new_rec.aaak_index.startswith("W:")
 
 
-# -------------------------------------- append_provenance_batch
+# --------------------------------------: append_provenance_batch
 
 
 def test_append_provenance_batch_basic(tmp_path):
@@ -222,7 +222,14 @@ def test_append_provenance_batch_equivalence_with_single(tmp_path):
 
 
 def test_append_provenance_batch_scan_count(tmp_path, monkeypatch):
-    """N+1 collapse: 5 single calls -> 5 to_pandas scans; 1 batch call -> 1 scan."""
+    """N+1 collapse: 5 single calls -> 5 to_pandas scans; 1 batch call -> 1 scan.
+
+    Counts terminal ``to_pandas()`` calls against the records table, no matter
+    whether they're issued on the table directly (``tbl.to_pandas()`` — used by
+    the batch slow path) or on a builder returned by ``tbl.search()`` (used by
+    ``append_provenance`` after the filter-pushdown change). Wrapping only
+    ``tbl.to_pandas`` would miss the single path entirely and report 0 scans.
+    """
     from iai_mcp.store import MemoryStore as _MS, RECORDS_TABLE
 
     store = MemoryStore(path=tmp_path)
@@ -230,20 +237,43 @@ def test_append_provenance_batch_scan_count(tmp_path, monkeypatch):
     for r in recs:
         store.insert(r)
 
-    # Monkey-counter on the *records table*'s to_pandas by shimming open_table.
+    # Count both ``tbl.to_pandas()`` (batch slow path) and ``tbl.search().*.to_pandas()``
+    # (single path -- the HippoQuery builder). The terminal is what matters for
+    # the N+1 contract; the construction path is implementation detail.
     counter = [0]
     original_open_table = store.db.open_table
+
+    def _wrap_to_pandas(obj):
+        if not hasattr(obj, "to_pandas"):
+            return obj
+        original = obj.to_pandas
+
+        def _counting_to_pandas(*a, **k):
+            counter[0] += 1
+            return original(*a, **k)
+
+        try:
+            obj.to_pandas = _counting_to_pandas  # type: ignore[assignment]
+        except (AttributeError, TypeError):
+            # Some builder classes are __slots__-bound; fall back silently.
+            pass
+        return obj
 
     def _counting_open_table(name, *args, **kwargs):
         tbl = original_open_table(name, *args, **kwargs)
         if name == RECORDS_TABLE:
-            original_to_pandas = tbl.to_pandas
+            _wrap_to_pandas(tbl)
+            if hasattr(tbl, "search"):
+                original_search = tbl.search
 
-            def _counting_to_pandas(*a, **k):
-                counter[0] += 1
-                return original_to_pandas(*a, **k)
+                def _wrapped_search(*sa, **skw):
+                    q = original_search(*sa, **skw)
+                    return _wrap_to_pandas(q)
 
-            tbl.to_pandas = _counting_to_pandas  # type: ignore[assignment]
+                try:
+                    tbl.search = _wrapped_search  # type: ignore[assignment]
+                except (AttributeError, TypeError):
+                    pass
         return tbl
 
     store.db.open_table = _counting_open_table  # type: ignore[assignment]

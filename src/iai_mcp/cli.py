@@ -2,9 +2,8 @@
 
 Commands:
 - `iai-mcp health`           -- print the most recent llm_health event in user-local TZ
-- `iai-mcp migrate`          -- schema migration (v1->v2, v2->v3 encryption,
-                                v3->v4 TEM factorization; --from / --to)
-- `iai-mcp trajectory`       -- aggregate M1..M6 trajectory events
+- `iai-mcp migrate`          -- schema migration (chosen by --from / --to)
+- `iai-mcp trajectory`       -- aggregate trajectory events
 - `iai-mcp audit`            -- identity + shield audit log
 - `iai-mcp crypto status`           -- file-backend key status
 - `iai-mcp crypto rotate`           -- rotate AES-256-GCM key
@@ -12,27 +11,28 @@ Commands:
 - `iai-mcp crypto init`             -- fresh-install: generate a new key file
 - `iai-mcp crypto recover-with-prior-key` -- re-encrypt records after wrong-key rotation (32-byte prior key file)
 - `iai-mcp crypto redact-undecryptable` -- replace surfaces that fail decrypt with a redacted marker
-- `iai-mcp daemon install`   -- silent install with first-run consent
+- `iai-mcp daemon install`   -- silent install + first-run consent
 - `iai-mcp daemon uninstall` -- clean uninstall (plist/unit + 3 state files)
 - `iai-mcp daemon start|stop|status|logs|force-rem|pause|resume|configure`
 
 All timestamps render in the user's IANA timezone via
 `iai_mcp.tz.load_user_tz() + to_local()`. Storage remains UTC.
 
-Audit privacy: shield match patterns are REDACTED to the MATCH COUNT in CLI
-output (info-disclosure mitigation). Full payload remains in the events table
-for forensics.
+Audit privacy: shield match patterns are REDACTED to the MATCH COUNT
+in CLI output (info-disclosure mitigation). Full payload remains
+in the events table for forensics.
 
-Daemon install constraints:
-- ZERO API costs. The paid-API env-var token is forbidden in daemon-side
-  modules; this CLI delegates LLM-aware operations to the daemon process
-  which uses `claude -p` subprocess (subscription only).
+Guards (daemon group):
+- ZERO API costs. The paid-API env-var token is forbidden in
+  daemon-side modules; this CLI delegates LLM-aware operations to the
+  daemon process which uses `claude -p` subprocess (subscription only).
 - `daemon uninstall` MUST remove plist/unit AND ~/.iai-mcp/.lock,
-  ~/.iai-mcp/.daemon.sock, ~/.iai-mcp/.daemon-state.json.
-- Pitfall (launchd PATH): install renders the plist with absolute
+  ~/.iai-mcp/.daemon.sock, ~/.iai-mcp/.daemon-state.json -- verified by
+  tests/shell/test_launchd_install.sh and tests/test_cli_daemon.py.
+- launchd PATH: install renders the plist with absolute
   `sys.executable` substituted -- launchd has no PATH, relative `python3`
   would resolve to /usr/bin/python3 even if user installed in /opt/python.
-- Pitfall (systemd linger): install probes `loginctl show-user --property=Linger`
+- systemd linger: install probes `loginctl show-user --property=Linger`
   on Linux; if Linger=no, runs `loginctl enable-linger $USER` and re-verifies.
   PAM-variant systems may silently refuse, hence the post-enable check + WARN.
 - Subprocess invocation: argv-list form ALWAYS, never shell=True. launchctl /
@@ -41,8 +41,8 @@ Daemon install constraints:
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
+import logging
 import os
 import platform
 import subprocess
@@ -50,11 +50,11 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Top-level `iai-mcp doctor` handler (alongside `iai-mcp schema-cleanup`
-# rather than nested under `iai-mcp daemon`). doctor.py imports the
-# daemon-state path constants lazily inside its check functions, so this
-# top-level import is acyclic.
-from iai_mcp.doctor import cmd_doctor
+logger = logging.getLogger(__name__)
+
+# cmd_doctor is imported lazily in the argparse setup to avoid paying
+# asyncio + doctor.py import cost on every CLI invocation. Only the
+# `iai-mcp doctor` subcommand needs it.
 
 # ---------------------------------------------------------------------------
 # Daemon CLI group constants
@@ -67,8 +67,8 @@ LOCK_PATH: Path = Path.home() / ".iai-mcp" / ".lock"
 SOCKET_PATH: Path = Path.home() / ".iai-mcp" / ".daemon.sock"
 STATE_PATH: Path = Path.home() / ".iai-mcp" / ".daemon-state.json"
 
-# Deploy artefact targets (we install copies into the user's per-user
-# system-level dirs).
+# Deploy artefact targets (installed as copies into the user's
+# per-user system-level dirs).
 LAUNCHD_TARGET: Path = Path.home() / "Library" / "LaunchAgents" / "com.iai-mcp.daemon.plist"
 SYSTEMD_TARGET: Path = Path.home() / ".config" / "systemd" / "user" / "iai-mcp-daemon.service"
 
@@ -84,15 +84,14 @@ SERVICE_NAME: str = "iai-mcp-daemon.service"
 # opt-out command. Aborts unless user types lowercase 'y' (strict).
 CONSENT_BANNER: str = """\
 ==============================================================================
-IAI-MCP Sleep Daemon -- First Install Consent
+iai Sleep Daemon -- First Install Consent
 ==============================================================================
 
 The sleep daemon runs in the background between Claude Code sessions to
 perform neural consolidation (REM cycles, schema induction, drift detection).
 
 Resource cost:
-  - RAM: ~400 MB (bge-small-en-v1.5 embedding model kept warm to avoid cold-start;
-    rises to ~2 GB if the opt-in bge-m3 model is selected via IAI_MCP_EMBED_MODEL)
+  - RAM: ~400 MB (bge-small-en-v1.5 embedding model kept warm to avoid cold-start)
   - CPU: brief bursts during REM cycles inside your learned quiet window
   - Disk: ~50MB/week in event logs + schema candidates
 
@@ -108,7 +107,7 @@ Continue? [y/N]: """
 
 
 # ---------------------------------------------------------------------------
-# Daemon install helpers
+# Helpers
 # ---------------------------------------------------------------------------
 
 def _is_macos() -> bool:
@@ -139,7 +138,7 @@ def _ensure_crypto_key_present():
 
 
 def _render_launchd_plist() -> str:
-    """Pitfall 5: substitute the literal `/usr/local/bin/python3` placeholder
+    """Substitute the literal `/usr/local/bin/python3` placeholder
     AND `{USERNAME}` token in the template with sys.executable + actual user.
     """
     text = LAUNCHD_TEMPLATE.read_text()
@@ -150,8 +149,8 @@ def _render_launchd_plist() -> str:
 
 
 def _render_systemd_unit() -> str:
-    """Pitfall 5 (systemd variant): substitute `/usr/bin/python3` template
-    placeholder with the actual sys.executable so systemd resolves the right
+    """Substitute the `/usr/bin/python3` template placeholder (systemd variant)
+    with the actual sys.executable so systemd resolves the right
     interpreter even when the user's venv lives outside /usr.
     """
     text = SYSTEMD_TEMPLATE.read_text()
@@ -161,11 +160,11 @@ def _render_systemd_unit() -> str:
 
 def _try_short_timeout_connect(timeout_ms: int = 250) -> bool:
     """Probe daemon socket reachability with a hard timeout. Returns True if
-    connect succeeded. Used by ``capture-transcript --no-spawn`` to decide
-    between inline ingest vs JSONL defer — hook is best-effort and must
-    NEVER block session teardown waiting on a 5s cold-start.
+    connect succeeded. Used by ``capture-transcript --no-spawn`` to
+    decide between inline ingest vs JSONL defer — hook is best-effort and
+    must NEVER block session teardown waiting on a 5s cold-start.
 
-    Honors the ``IAI_DAEMON_SOCKET_PATH`` env override for test isolation.
+    Honors the ``IAI_DAEMON_SOCKET_PATH`` env override (test isolation).
     Closes the probe socket immediately — we never write a request, only
     check that connect(2) returns.
     """
@@ -182,13 +181,13 @@ def _try_short_timeout_connect(timeout_ms: int = 250) -> bool:
     finally:
         try:
             s.close()
-        except Exception:
+        except OSError:
             pass
 
 
 def _prompt_consent(stream_out=None) -> bool:
-    """Print the consent banner, read one line from stdin, return True only
-    if the response stripped + lowercased equals exactly 'y'.
+    """Print the consent banner, read one line from stdin, return True
+    only if the response stripped + lowercased equals exactly 'y'.
 
     Resolve sys.stderr at call time (NOT at module import) so pytest's capsys
     fixture can intercept the banner -- capsys swaps sys.stderr after our
@@ -230,7 +229,7 @@ def _record_consent_receipt() -> None:
 
 
 def _remove_state_files() -> None:
-    """C4 invariant: clean uninstall removes ALL daemon-created state files."""
+    """Clean uninstall removes ALL daemon-created state files."""
     for p in (LOCK_PATH, SOCKET_PATH, STATE_PATH):
         try:
             p.unlink()
@@ -254,6 +253,33 @@ def _truncate_for_claude_code_hook(text: str, cap: int = 10000) -> str:
     return text[:head_len] + _HOOK_TRUNCATION_TRAILER
 
 
+def _is_custom_store() -> bool:
+    """Return True when IAI_MCP_STORE is set to a path other than DEFAULT_STORAGE_PATH.
+
+    Used by _send_jsonrpc_request to decide whether the default-socket probe
+    should be skipped.  When a caller points IAI_MCP_STORE at a custom location
+    and has not set an explicit IAI_DAEMON_SOCKET_PATH, probing the default
+    daemon socket would return data from the daemon's store rather than the
+    caller's intended store — an information-disclosure / isolation bug.
+
+    Note: iai last / episodes_recent (iai_cli.py) has no direct-open fallback,
+    so under custom-store-no-socket it will print "(daemon unreachable)" and
+    return 1.  This is the accepted, intended consequence; adding a direct-open
+    fallback for episodes_recent is out of scope.
+    """
+    env_store = os.environ.get("IAI_MCP_STORE")
+    if not env_store:
+        return False
+    from iai_mcp.store import DEFAULT_STORAGE_PATH as _DEFAULT
+
+    try:
+        custom = Path(env_store).expanduser().resolve()
+        default = Path(_DEFAULT).expanduser().resolve()
+        return custom != default
+    except Exception:
+        return False
+
+
 def _send_jsonrpc_request(
     method: str,
     params: dict,
@@ -266,7 +292,17 @@ def _send_jsonrpc_request(
     Returns the response dict on success, None on connect refused, missing
     socket, timeout, malformed reply, or any other failure. Honors
     `IAI_DAEMON_SOCKET_PATH` env override.
+
+    Store isolation: when IAI_MCP_STORE points to a non-default location and
+    no IAI_DAEMON_SOCKET_PATH override is set, returns None immediately so
+    every caller falls through to its own direct-open MemoryStore() path —
+    which correctly reads the custom store.  Explicit IAI_DAEMON_SOCKET_PATH
+    always wins (override socket routes there even with a custom store).
     """
+    import asyncio  # lazy: only paid when an RPC call is actually issued
+    if not os.environ.get("IAI_DAEMON_SOCKET_PATH") and _is_custom_store():
+        return None
+
     sock_path = os.environ.get("IAI_DAEMON_SOCKET_PATH") or str(SOCKET_PATH)
 
     async def _runner() -> dict | None:
@@ -285,18 +321,20 @@ def _send_jsonrpc_request(
             if not line:
                 return None
             return json.loads(line.decode("utf-8"))
-        except Exception:
+        except (OSError, asyncio.TimeoutError, ValueError) as exc:
+            logger.debug("jsonrpc request failed: %s", exc)
             return None
         finally:
             try:
                 writer.close()
                 await writer.wait_closed()
-            except Exception:
+            except OSError:
                 pass
 
     try:
         return asyncio.run(_runner())
-    except Exception:
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.debug("jsonrpc asyncio.run failed: %s", exc)
         return None
 
 
@@ -326,7 +364,244 @@ def cmd_session_start(args: argparse.Namespace) -> int:
             return 0
         sys.stdout.write(_truncate_for_claude_code_hook(rendered, cap=10000))
         return 0
+    except Exception as exc:
+        logger.error("session-start failed: %s", exc)
+        return 0
+
+
+# ---------------------------------------------------------------------------
+# Helpers for freshness-on-return: watermark sidecar + read-only MAX gate
+# ---------------------------------------------------------------------------
+
+def get_other_sessions_live_size(session_id: str) -> int:
+    """Return the total byte-size of all other sessions' ``.live.jsonl`` files.
+
+    Scans ``~/.iai-mcp/.deferred-captures/`` for files whose name ends with
+    ``.live.jsonl`` and whose stem does NOT equal ``session_id``.  Uses only
+    ``os.stat`` — no file opens, no MemoryStore, no embedder.
+
+    Returns 0 when the directory is absent or no qualifying files exist.
+    Fail-safe: returns 0 on any error.
+    """
+    try:
+        deferred_dir = Path.home() / ".iai-mcp" / ".deferred-captures"
+        if not deferred_dir.exists():
+            return 0
+        own_name = f"{session_id}.live.jsonl"
+        total = 0
+        for entry in deferred_dir.iterdir():
+            if not entry.is_file():
+                continue
+            if not entry.name.endswith(".live.jsonl"):
+                continue
+            if entry.name == own_name:
+                continue
+            try:
+                total += entry.stat().st_size
+            except OSError:
+                pass
+        return total
     except Exception:
+        return 0
+
+
+def read_live_fingerprint(session_id: str) -> int | None:
+    """Return the stored live-fingerprint (total other-sessions size) for ``session_id``.
+
+    Returns None if the sidecar does not exist yet (first prompt).
+    Fail-safe: returns None on any parse or IO error.
+    """
+    p = Path.home() / ".iai-mcp" / ".capture-state" / f"{session_id}.live-fingerprint"
+    try:
+        if not p.exists():
+            return None
+        raw = p.read_text().strip()
+        if not raw:
+            return None
+        return int(raw)
+    except (OSError, ValueError):
+        return None
+
+
+def write_live_fingerprint(session_id: str, total_size: int) -> None:
+    """Atomically write the live-fingerprint (total other-sessions size) for ``session_id``."""
+    d = Path.home() / ".iai-mcp" / ".capture-state"
+    d.mkdir(parents=True, exist_ok=True)
+    tmp = d / f"{session_id}.live-fingerprint.tmp"
+    tmp.write_text(str(total_size))
+    os.replace(tmp, d / f"{session_id}.live-fingerprint")
+
+
+def get_max_created_at() -> str | None:
+    """Return MAX(created_at) over non-tombstoned records, or None.
+
+    Opens the Hippo SQLite file in read-only mode using stdlib sqlite3.
+    WAL mode is active on the daemon side, so a concurrent read gets a
+    consistent snapshot without contending on daemon writes.
+
+    Does NOT import or construct a MemoryStore. Does NOT load the embedder.
+    Fail-safe: returns None on any error (missing DB, corrupt file, etc.).
+    """
+    import sqlite3 as _sqlite3
+
+    db_path = Path.home() / ".iai-mcp" / "hippo" / "brain.sqlite3"
+    if not db_path.exists():
+        return None
+    try:
+        conn = _sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            row = conn.execute(
+                "SELECT MAX(created_at) FROM records WHERE tombstoned_at IS NULL"
+            ).fetchone()
+            return row[0] if row and row[0] else None
+        finally:
+            conn.close()
+    except Exception:
+        return None
+
+
+def _utc_iso(ts: str) -> str:
+    """Normalize an ISO-8601 timestamp to UTC isoformat for lexicographic compare.
+
+    Handles both 'Z' suffix and '+00:00' / offset forms. Returns the
+    original string unchanged on any parse error so comparisons degrade
+    gracefully rather than raising.
+    """
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        return dt.isoformat()
+    except (TypeError, ValueError):
+        return ts
+
+
+def read_watermark(session_id: str) -> str | None:
+    """Return the stored ISO watermark for ``session_id``, or None if absent."""
+    p = Path.home() / ".iai-mcp" / ".capture-state" / f"{session_id}.watermark"
+    try:
+        if not p.exists():
+            return None
+        return p.read_text().strip() or None
+    except OSError:
+        return None
+
+
+def write_watermark(session_id: str, ts: str) -> None:
+    """Atomically write the UTC-normalized ISO watermark for ``session_id``."""
+    d = Path.home() / ".iai-mcp" / ".capture-state"
+    d.mkdir(parents=True, exist_ok=True)
+    tmp = d / f"{session_id}.watermark.tmp"
+    tmp.write_text(_utc_iso(ts))
+    os.replace(tmp, d / f"{session_id}.watermark")
+
+
+def cmd_session_refresh_if_stale(args: argparse.Namespace) -> int:
+    """Read-only freshness gate + conditional session_refresh_if_stale RPC.
+
+    Called by the UserPromptSubmit hook on each turn.  Does cheap local work
+    (watermark sidecar read, read-only SQLite MAX query, os.stat live-file
+    scan) and only sends an RPC to the daemon when genuinely new memory exists.
+
+    Exit 0 in all cases.  Emits additionalContext JSON to stdout only when
+    the daemon returns a non-empty rendered brief.  Never blocks the prompt
+    (daemon-down path is silent and fail-safe).
+
+    Two trigger signals
+    -------------------
+    Signal A — store advance: ``MAX(created_at)`` in Hippo SQLite advanced
+    past the per-session watermark.  Covers the normal case: another session
+    ended, daemon drained it, records landed in the store.
+
+    Signal B — live-file growth: the total byte-size of all OTHER sessions'
+    ``.live.jsonl`` files (``os.stat`` only, no file opens, no MemoryStore)
+    grew since the last look.  Covers the headline gap case: session B is
+    still open, its turns have NOT reached the store yet, so Signal A is
+    silent — but Signal B detects that B wrote new turns since A last checked.
+
+    The live-fingerprint baseline is stored in
+    ``~/.iai-mcp/.capture-state/{session_id}.live-fingerprint`` (a single
+    integer, the summed size of all qualifying files at last check).
+
+    Flow
+    ----
+    1. Read MAX(created_at) from Hippo SQLite (read-only, no MemoryStore).
+    2. Read the per-session watermark sidecar.
+    3. No watermark (first prompt of session): set both baselines (watermark
+       + live-fingerprint), do NOT trigger.
+    4. current_max > watermark  OR  live-size > fingerprint_baseline:
+       send session_refresh_if_stale RPC.
+    5. Otherwise: exit 0 (common path, zero IPC).
+    6. On a non-empty rendered result: emit additionalContext JSON and advance
+       BOTH the watermark and the live-fingerprint baseline.
+       Daemon-down leaves both sidecars unchanged.
+    """
+    try:
+        session_id: str = (getattr(args, "session_id", None) or "-")
+
+        current = get_max_created_at()
+        if current is None:
+            # Empty store or DB not found — nothing to do.
+            return 0
+
+        wm = read_watermark(session_id)
+        live_size = get_other_sessions_live_size(session_id)
+
+        if wm is None:
+            # First prompt of this session: set both baselines without triggering.
+            write_watermark(session_id, current)
+            write_live_fingerprint(session_id, live_size)
+            return 0
+
+        # Signal A: store advance.
+        store_advanced = _utc_iso(current) > _utc_iso(wm)
+
+        # Signal B: other-session live-file growth.
+        fp = read_live_fingerprint(session_id)
+        # If fingerprint sidecar is absent (session predates this feature):
+        # treat current live_size as the new baseline — no trigger on first look.
+        if fp is None:
+            write_live_fingerprint(session_id, live_size)
+            fp = live_size
+        live_grew = live_size > fp
+
+        if not store_advanced and not live_grew:
+            # Nothing new since last look — common path, no RPC.
+            return 0
+
+        # New memory exists (store or live): ask the daemon to drain + recompose.
+        resp = _send_jsonrpc_request(
+            "session_refresh_if_stale",
+            {"watermark": wm, "session_id": session_id},
+            connect_timeout=5.0,
+            read_timeout=30.0,
+        )
+        if resp is None:
+            # Daemon unreachable: silent fail-safe, leave sidecars unchanged.
+            return 0
+
+        result = resp.get("result") or {}
+        rendered: str = result.get("rendered") or ""
+        new_max: str = result.get("new_max_ts") or current
+
+        if rendered:
+            payload = {
+                "hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": rendered,
+                }
+            }
+            sys.stdout.write(json.dumps(payload, ensure_ascii=False))
+            write_watermark(session_id, new_max)
+            # Advance the live-fingerprint baseline so the same growth does
+            # not trigger a second redundant refresh on the next prompt.
+            write_live_fingerprint(session_id, live_size)
+
+        return 0
+    except Exception:
+        # Fail-safe: any unhandled exception exits 0 with no output.
         return 0
 
 
@@ -337,11 +612,13 @@ def _send_socket_request(req: dict, *, timeout: float = 30.0) -> dict | None:
     refused). Raises asyncio.TimeoutError if the daemon accepted the
     connection but never replied within `timeout` seconds.
     """
+    import asyncio  # lazy: only paid when a socket request is actually issued
 
     async def _runner() -> dict | None:
+        _sock = os.environ.get("IAI_DAEMON_SOCKET_PATH") or str(SOCKET_PATH)
         try:
             reader, writer = await asyncio.wait_for(
-                asyncio.open_unix_connection(str(SOCKET_PATH)),
+                asyncio.open_unix_connection(_sock),
                 timeout=5.0,
             )
         except (FileNotFoundError, ConnectionRefusedError):
@@ -359,7 +636,7 @@ def _send_socket_request(req: dict, *, timeout: float = 30.0) -> dict | None:
             try:
                 writer.close()
                 await writer.wait_closed()
-            except Exception:
+            except OSError:
                 pass
 
     return asyncio.run(_runner())
@@ -371,11 +648,11 @@ def _send_socket_request(req: dict, *, timeout: float = 30.0) -> dict | None:
 
 
 def cmd_daemon_install(args: argparse.Namespace) -> int:
-    """Render plist/unit, drop into per-user system path, enable via
-    launchctl bootstrap or systemctl --user enable --now.
+    """Render plist/unit, drop into per-user system path,
+    enable via launchctl bootstrap or systemctl --user enable --now.
 
     --dry-run prints the would-be path + rendered contents and exits.
-    --yes skips the first-run consent banner.
+    --yes skips the consent banner.
     """
     dry_run = bool(getattr(args, "dry_run", False))
     yes = bool(getattr(args, "yes", False))
@@ -434,7 +711,7 @@ def cmd_daemon_install(args: argparse.Namespace) -> int:
             check=False, capture_output=True,
         )
     else:
-        # Linux: probe loginctl Linger state (Pitfall 8). If not enabled, try
+        # Linux: probe loginctl Linger state. If not enabled, try
         # to enable; if still not enabled after that, warn loudly.
         user = os.environ.get("USER") or ""
         linger_probe = subprocess.run(
@@ -475,7 +752,7 @@ def cmd_daemon_uninstall(args: argparse.Namespace) -> int:
     if not yes:
         try:
             response = input(
-                "Uninstall IAI-MCP daemon? "
+                "Uninstall iai daemon? "
                 "(removes plist/unit + state files) [y/N]: "
             )
         except EOFError:
@@ -516,11 +793,33 @@ def cmd_daemon_uninstall(args: argparse.Namespace) -> int:
 
 
 def cmd_daemon_start(args: argparse.Namespace) -> int:
+    """Start the singleton iai-mcp daemon.
+
+    Symmetry contract with ``cmd_daemon_stop``: a clean stop boots the job
+    OUT of the supervisor (so the supervisor cannot respawn it). ``start``
+    must therefore re-register the job before kicking it, not merely
+    ``kickstart`` an already-loaded one. On macOS we mirror the install
+    bootstrap idiom (bootout-then-bootstrap is idempotent + tolerates an
+    already-loaded job) so a booted-out daemon comes back. On Linux a plain
+    ``systemctl --user start`` already (re)activates a stopped unit.
+    """
     uid = os.getuid()
     if _is_macos():
+        target = LAUNCHD_TARGET
+        # Idempotent re-register: bootout clears any already-loaded copy,
+        # bootstrap (re)registers the job, kickstart starts it now. Mirrors
+        # the install flow; all best-effort so a partial state self-heals.
+        subprocess.run(
+            ["launchctl", "bootout", f"gui/{uid}", str(target)],
+            check=False, capture_output=True,
+        )
+        subprocess.run(
+            ["launchctl", "bootstrap", f"gui/{uid}", str(target)],
+            check=False, capture_output=True,
+        )
         subprocess.run(
             ["launchctl", "kickstart", f"gui/{uid}/{DAEMON_LABEL}"],
-            check=False,
+            check=False, capture_output=True,
         )
     elif _is_linux():
         subprocess.run(
@@ -533,24 +832,78 @@ def cmd_daemon_start(args: argparse.Namespace) -> int:
     return 0
 
 
+# Bounded-wait escalation parameters for `daemon stop` (macOS). After
+# SIGTERM, the daemon's PID is polled up to STOP_TERM_TIMEOUT_S seconds at
+# STOP_POLL_INTERVAL_S granularity; if still alive at the deadline, an
+# uncatchable SIGKILL is issued. Both are env-tunable (tests set them tiny;
+# operators almost never need to). The defaults give a graceful daemon ample
+# time to flush and exit 0 before the hard kill.
+STOP_TERM_TIMEOUT_S: float = 3.0
+STOP_POLL_INTERVAL_S: float = 0.1
+
+
+def _stop_escalation_bound() -> float:
+    """Resolve the SIGTERM->SIGKILL deadline (env override -> default)."""
+    raw = os.environ.get("IAI_DAEMON_STOP_TIMEOUT_S")
+    if raw:
+        try:
+            val = float(raw)
+            if val >= 0:
+                return val
+        except ValueError:
+            pass
+    return STOP_TERM_TIMEOUT_S
+
+
+def _stop_poll_interval() -> float:
+    """Resolve the liveness poll granularity (env override -> default)."""
+    raw = os.environ.get("IAI_DAEMON_STOP_POLL_S")
+    if raw:
+        try:
+            val = float(raw)
+            if val > 0:
+                return val
+        except ValueError:
+            pass
+    return STOP_POLL_INTERVAL_S
+
+
 def cmd_daemon_stop(args: argparse.Namespace) -> int:
     """Stop the singleton iai-mcp daemon (user-initiated shutdown).
 
-    Sends SIGTERM to the daemon via launchctl (macOS) or systemctl --user
-    (Linux). The daemon exits 0 on graceful shutdown; the supervisor
-    respawns only on crash via the plist's `KeepAlive.Crashed=true`
-    contract. A user-initiated stop therefore takes the daemon down for
-    good — no respawn — until the user explicitly starts it again.
+    A wedged asyncio loop cannot service the in-loop signal handler
+    (``loop.add_signal_handler(SIGTERM, ...)``), so a stop that relies on
+    that handler can hang forever. This stop therefore does NOT depend on
+    the in-loop handler. On macOS it:
 
-    As informational telemetry only, we also write a
-    `user_requested_shutdown=True` sentinel to .daemon-state.json before
-    sending the signal. The daemon clears the sentinel on graceful
-    shutdown. The sentinel is NOT consumed for any control-flow decision —
-    it exists purely so post-mortem inspection of .daemon-state.json can
-    distinguish a user-stop from other shutdown paths. The sentinel write
-    is best-effort: a state-file failure must NOT block the SIGTERM (the
-    user explicitly wants the daemon down).
+      1. Writes a best-effort ``user_requested_shutdown`` sentinel (purely
+         informational; a state-file failure must NOT block the kill).
+      2. Reads the daemon PID from the lifecycle lockfile.
+      3. Disables supervisor respawn governance FIRST (``launchctl bootout``
+         removes the KeepAlive contract) so a later hard kill cannot be
+         undone by a crash-respawn of the daemon the user just stopped.
+      4. Self-issues ``SIGTERM`` to the daemon's own PID, polls liveness up
+         to a bounded deadline, and escalates to an uncatchable ``SIGKILL``
+         if the process is still alive at the deadline. The SIGKILL is the
+         guarantee: a wedged loop is terminated within the bound.
+
+    Every signal is gated by ``_is_pid_alive(pid)`` (PID-recycle-safe:
+    ``os.kill(pid, 0)`` + a ``psutil`` cmdline cross-check) so only the
+    confirmed daemon process is ever signalled — never a recycled PID. When
+    the lockfile is absent there is no PID to signal: we still remove the
+    KeepAlive governance (bootout) and return.
+
+    The sentinel is cleared by the daemon on a graceful shutdown; it is not
+    consumed for any control-flow decision — it only lets a post-mortem of
+    the state file distinguish a user-stop from other shutdown paths.
+
+    Linux (``systemctl --user stop``) is unchanged: systemd already escalates
+    to SIGKILL after ``TimeoutStopSec``, so it already terminates a wedged
+    loop within a bound.
     """
+    import signal as _signal
+    import time as _time
+
     # Best-effort sentinel write: we do NOT abort on failure.
     try:
         from iai_mcp.daemon_state import load_state, save_state
@@ -558,17 +911,51 @@ def cmd_daemon_stop(args: argparse.Namespace) -> int:
         state = load_state()
         state["user_requested_shutdown"] = True
         save_state(state)
-    except Exception:
-        # Persistence failure must not block the SIGTERM (user explicitly
+    except (OSError, ValueError, RuntimeError) as exc:
+        # Persistence failure must not block the kill (user explicitly
         # wants the daemon down). Worst case: one extra respawn cycle.
-        pass
+        logger.debug("sentinel write failed (non-blocking): %s", exc)
 
     uid = os.getuid()
     if _is_macos():
+        from iai_mcp.lifecycle_lock import LifecycleLock, _is_pid_alive
+
+        payload = LifecycleLock().read()
+        pid = payload["pid"] if payload else None
+
+        # Disable supervisor respawn governance FIRST so a later SIGKILL
+        # cannot trigger a crash-respawn of the daemon we are stopping.
         subprocess.run(
-            ["launchctl", "kill", "SIGTERM", f"gui/{uid}/{DAEMON_LABEL}"],
-            check=False,
+            ["launchctl", "bootout", f"gui/{uid}", str(LAUNCHD_TARGET)],
+            check=False, capture_output=True,
         )
+
+        if pid is None:
+            # No PID to signal; KeepAlive is already removed above.
+            return 0
+
+        # Cross-process escalation, independent of the in-loop handler.
+        if _is_pid_alive(pid):
+            try:
+                os.kill(pid, _signal.SIGTERM)
+            except (ProcessLookupError, PermissionError) as exc:
+                logger.debug("SIGTERM to daemon pid=%d failed: %s", pid, exc)
+                return 0
+
+            deadline = _time.monotonic() + _stop_escalation_bound()
+            interval = _stop_poll_interval()
+            while _time.monotonic() < deadline:
+                if not _is_pid_alive(pid):
+                    return 0  # clean exit within the bound; no SIGKILL
+                _time.sleep(interval)
+
+            # Still alive at the deadline -> uncatchable kill (the guarantee).
+            if _is_pid_alive(pid):
+                try:
+                    os.kill(pid, _signal.SIGKILL)
+                except (ProcessLookupError, PermissionError) as exc:
+                    logger.debug("SIGKILL to daemon pid=%d failed: %s", pid, exc)
+        return 0
     elif _is_linux():
         subprocess.run(
             ["systemctl", "--user", "stop", SERVICE_NAME],
@@ -580,14 +967,129 @@ def cmd_daemon_stop(args: argparse.Namespace) -> int:
     return 0
 
 
+def compute_session_start_tokens_p90(store: "MemoryStore") -> dict[str, int | None]:
+    """Return p90 of `total_cached_tokens` over the most recent 100 session_started events.
+
+    Reuses the existing emit in ``session.py`` — every call
+    to `assemble_session_start` already persists `data["total_cached_tokens"]`
+    on a `kind="session_started"` event, so no new event kind is needed.
+
+    Returns
+    -------
+    dict
+        ``{"p90": int | None, "n_samples": int}``. ``p90`` is ``None`` when
+        ``n_samples == 0`` (no crash on empty store). For under-filled windows
+        (``n_samples < 100``) ``p90`` is still computed and ``n_samples`` is
+        echoed so the caller can warn. Uses
+        ``statistics.quantiles(..., n=10, method="inclusive")[8]`` so a 100-
+        uniform input returns the input value exactly.
+    """
+    import statistics
+
+    from iai_mcp.events import query_events
+
+    events = query_events(store, kind="session_started", limit=100)
+    samples = [
+        int(e["data"]["total_cached_tokens"])
+        for e in events
+        if isinstance(e.get("data"), dict) and "total_cached_tokens" in e["data"]
+    ]
+    if not samples:
+        return {"p90": None, "n_samples": 0}
+    if len(samples) == 1:
+        return {"p90": samples[0], "n_samples": 1}
+    # n=10 splits into deciles; index 8 is the 90th percentile boundary.
+    # `inclusive` makes uniform inputs return the input value exactly.
+    q = statistics.quantiles(samples, n=10, method="inclusive")
+    p90 = int(round(q[8]))
+    return {"p90": p90, "n_samples": len(samples)}
+
+
+def _compute_p90_from_events(events: list[dict]) -> dict[str, int | None]:
+    """Compute session_start_tokens p90 from a pre-fetched event list.
+
+    Mirrors compute_session_start_tokens_p90 but accepts an event list
+    directly (used when events are sourced from the daemon socket rather
+    than a live MemoryStore).
+    """
+    import statistics
+
+    samples = [
+        int(e["data"]["total_cached_tokens"])
+        for e in events
+        if isinstance(e.get("data"), dict) and "total_cached_tokens" in e["data"]
+    ]
+    if not samples:
+        return {"p90": None, "n_samples": 0}
+    if len(samples) == 1:
+        return {"p90": samples[0], "n_samples": 1}
+    q = statistics.quantiles(samples, n=10, method="inclusive")
+    p90 = int(round(q[8]))
+    return {"p90": p90, "n_samples": len(samples)}
+
+
+def _render_daemon_stats(result: dict[str, int | None]) -> None:
+    """Print daemon_stats output given a p90 result dict."""
+    p90_str = str(result["p90"]) if result["p90"] is not None else "no-data"
+    print(f"session_start_tokens_p90: {p90_str}")
+    print(f"n_samples: {result['n_samples']}")
+    if 0 < (result["n_samples"] or 0) < 100:
+        print(f"note: rolling window under-filled (have {result['n_samples']}, need 100)")
+
+
+def cmd_daemon_stats(args: argparse.Namespace) -> int:
+    """Longitudinal metrics: session_start_tokens_p90 + n_samples.
+
+    Socket-first: queries the daemon via JSON-RPC events_query so the
+    running daemon's Hippo lock is not contended. Falls back to a direct
+    MemoryStore open when the daemon is down (socket absent or unreachable).
+    If the fallback also fails because the daemon still holds the lock
+    (e.g. mid-REM socket timeout), the error is caught and a clean message
+    is printed instead of crashing the operator terminal.
+
+    Output schema (stdout, one field per line):
+        session_start_tokens_p90: <int or "no-data">
+        n_samples: <int>          # 0..100; under 100 means window not yet full
+
+    Note: session_started must be present in EVENTS_QUERY_WHITELIST for the
+    socket path to succeed. If the live daemon predates that whitelist entry,
+    the socket returns an error dict and the fallback activates automatically.
+    """
+    # --- socket path (daemon up and holding the lock) ---
+    resp = _send_jsonrpc_request("events_query", {"kind": "session_started", "limit": 100})
+    if isinstance(resp, dict) and "result" in resp:
+        payload = resp["result"]
+        if isinstance(payload, dict) and "events" in payload:
+            result = _compute_p90_from_events(payload["events"])
+            _render_daemon_stats(result)
+            return 0
+
+    # --- direct-open fallback (daemon down / socket absent / whitelist miss) ---
+    from iai_mcp.hippo import HippoLockHeldError
+    from iai_mcp.store import MemoryStore
+
+    try:
+        store_dir = Path(os.environ.get("IAI_MCP_STORE", Path.home() / ".iai-mcp"))
+        store = MemoryStore(path=store_dir)
+        result = compute_session_start_tokens_p90(store)
+    except HippoLockHeldError:
+        print("daemon holds store lock; retry when daemon is idle")
+        return 0
+
+    _render_daemon_stats(result)
+    return 0
+
+
 def cmd_daemon_status(args: argparse.Namespace) -> int:
     """Socket round-trip + version-skew detection."""
+    import asyncio  # lazy: asyncio.TimeoutError needed for the except clause
     try:
         resp = _send_socket_request({"type": "status"}, timeout=10.0)
     except asyncio.TimeoutError:
         print("daemon not responding", file=sys.stderr)
         return 1
     except Exception as exc:  # noqa: BLE001 -- surface socket errors cleanly
+        logger.error("daemon status failed: %s", exc)
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
@@ -598,7 +1100,7 @@ def cmd_daemon_status(args: argparse.Namespace) -> int:
     # Version skew check: compare daemon's reported version with installed.
     try:
         from iai_mcp import __version__ as installed_version
-    except Exception:
+    except (ImportError, AttributeError):
         installed_version = "unknown"
     daemon_version = resp.get("version", "unknown")
     if (
@@ -641,12 +1143,17 @@ def cmd_daemon_logs(args: argparse.Namespace) -> int:
 
 def cmd_daemon_force_rem(args: argparse.Namespace) -> int:
     """Cooperative force: wait up to 15min for current cycle to finish."""
+    import asyncio  # lazy: asyncio.TimeoutError needed for the except clause
     try:
-        resp = _send_socket_request({"type": "force_rem"}, timeout=15 * 60)
+        resp = _send_socket_request(
+            {"type": "force_rem", "ts": datetime.now(timezone.utc).isoformat()},
+            timeout=15 * 60,
+        )
     except asyncio.TimeoutError:
         print("force_rem timed out after 15 minutes", file=sys.stderr)
         return 1
     except Exception as exc:  # noqa: BLE001
+        logger.error("force_rem failed: %s", exc)
         print(f"error: {exc}", file=sys.stderr)
         return 1
     if resp is None:
@@ -663,6 +1170,7 @@ def cmd_daemon_pause(args: argparse.Namespace) -> int:
             {"type": "pause", "seconds": seconds}, timeout=10.0,
         )
     except Exception as exc:  # noqa: BLE001
+        logger.error("pause failed: %s", exc)
         print(f"error: {exc}", file=sys.stderr)
         return 1
     if resp is None:
@@ -676,6 +1184,7 @@ def cmd_daemon_resume(args: argparse.Namespace) -> int:
     try:
         resp = _send_socket_request({"type": "resume"}, timeout=10.0)
     except Exception as exc:  # noqa: BLE001
+        logger.error("resume failed: %s", exc)
         print(f"error: {exc}", file=sys.stderr)
         return 1
     if resp is None:
@@ -734,22 +1243,100 @@ def cmd_daemon_configure(args: argparse.Namespace) -> int:
 
 
 def cmd_health(args: argparse.Namespace) -> int:
-    """Show the most recent llm_health event in the user's local timezone."""
-    from iai_mcp.events import query_events
-    from iai_mcp.store import MemoryStore
+    """Show the most recent llm_health event in the user's local timezone.
+
+    Socket-first: asks the daemon via JSON-RPC events_query so the running
+    daemon's Hippo lock is not contended. Falls back to a direct MemoryStore
+    open when the daemon is down (socket absent or unreachable). If the
+    fallback also fails because the daemon still holds the lock (e.g. mid-REM
+    socket timeout), the error is caught and a clean message is printed.
+    """
+    from datetime import datetime as _dt
+
     from iai_mcp.tz import load_user_tz, to_local
 
-    store = MemoryStore()
     tz = load_user_tz()
-    events = query_events(store, kind="llm_health", limit=1)
+
+    def _render_event(e: dict) -> None:
+        ts_raw = e.get("ts")
+        if isinstance(ts_raw, str):
+            ts_raw = _dt.fromisoformat(ts_raw.replace("Z", "+00:00"))
+        local = to_local(ts_raw, tz) if ts_raw is not None else None
+        severity = e.get("severity") or "?"
+        ts_str = local.isoformat() if local is not None else str(ts_raw)
+        print(f"llm_health: {severity} at {ts_str} ({tz.key})")
+        print(f"  data: {e.get('data', {})}")
+
+    # --- socket path (daemon up and holding the lock) ---
+    resp = _send_jsonrpc_request("events_query", {"kind": "llm_health", "limit": 1})
+    if isinstance(resp, dict) and "result" in resp:
+        payload = resp["result"]
+        if isinstance(payload, dict) and "events" in payload:
+            events = payload["events"]
+            if not events:
+                print("llm_health: no events recorded")
+                return 0
+            _render_event(events[0])
+            return 0
+
+    # --- direct-open fallback (daemon down / socket absent) ---
+    from iai_mcp.events import query_events
+    from iai_mcp.hippo import HippoLockHeldError
+    from iai_mcp.store import MemoryStore
+
+    try:
+        store = MemoryStore()
+        events = query_events(store, kind="llm_health", limit=1)
+    except HippoLockHeldError:
+        print("daemon holds store lock; retry when daemon is idle")
+        return 0
+
     if not events:
         print("llm_health: no events recorded")
         return 0
-    e = events[0]
-    local = to_local(e["ts"], tz)
-    severity = e.get("severity") or "?"
-    print(f"llm_health: {severity} at {local.isoformat()} ({tz.key})")
-    print(f"  data: {e['data']}")
+    _render_event(events[0])
+    return 0
+
+
+def cmd_build_native(args: argparse.Namespace) -> int:
+    """Compile iai_mcp_native via maturin develop --release.
+
+    Use after a Python-version upgrade or on a fresh clone where the
+    Rust extension is absent. Requires cargo and rustup on PATH.
+    """
+    import shutil
+
+    if shutil.which("cargo") is None:
+        print(
+            "cargo not found on PATH.\n"
+            "Install Rust: https://rustup.rs/",
+            file=sys.stderr,
+        )
+        return 1
+
+    native_dir = _PROJECT_ROOT / "rust" / "iai_mcp_native"
+    if not native_dir.exists():
+        print(
+            f"Rust source not found at {native_dir}.\n"
+            "Are you running from an installed wheel? "
+            "build-native requires the repo checkout.",
+            file=sys.stderr,
+        )
+        return 1
+
+    cmd = [
+        sys.executable, "-m", "maturin", "develop", "--release",
+        "--manifest-path", str(native_dir / "Cargo.toml"),
+    ]
+    result = subprocess.run(cmd, cwd=str(_PROJECT_ROOT))
+    if result.returncode != 0:
+        print(
+            "\nbuild-native failed (see cargo output above).\n"
+            "Common fix: rustup update",
+            file=sys.stderr,
+        )
+        return result.returncode
+    print("iai_mcp_native built successfully. Restart the daemon or MCP server.")
     return 0
 
 
@@ -764,12 +1351,12 @@ def cmd_capture_transcript(args: argparse.Namespace) -> int:
     ``~/.iai-mcp/.deferred-captures/<id>-<ts>.jsonl`` and exits 0 within
     2s — NEVER spawning the daemon, NEVER importing
     ``iai_mcp.capture.capture_transcript`` (which transitively loads
-    ``sentence_transformers`` / bge-small-en-v1.5 in a brand-new subprocess).
-    The daemon's WAKE drain loop consumes the deferred file later with the
-    daemon-process embedder that's already loaded.
+    the native Rust embedder in a brand-new subprocess).
+    The daemon's WAKE drain loop consumes the deferred file later with
+    the daemon-process embedder that's already loaded.
 
-    Default mode (without ``--no-spawn``) uses inline-ingest — user-explicit
-    ``iai-mcp capture-transcript`` invocations embed eagerly.
+    Default mode (without ``--no-spawn``) embeds eagerly — user-explicit
+    ``iai-mcp capture-transcript`` invocations behave as documented.
     """
     import json
     import sys as _sys
@@ -777,12 +1364,10 @@ def cmd_capture_transcript(args: argparse.Namespace) -> int:
     no_spawn = bool(getattr(args, "no_spawn", False))
 
     if no_spawn:
-        # Hook is best-effort. ALWAYS defer; the 250ms socket probe and the
-        # reachable-inline branch are gone. Even when the daemon is reachable
-        # we still write the JSONL file — the daemon's WAKE drain picks it up
-        # within seconds with its already-loaded embedder, which is dramatically
-        # cheaper than cold-loading bge-small-en-v1.5 in many short-lived
-        # Stop-hook subprocesses per day.
+        # Hook is best-effort. ALWAYS defer; the daemon's WAKE drain picks up
+        # the JSONL file within seconds with its already-loaded embedder, which
+        # is dramatically cheaper than cold-loading bge-small-en-v1.5 in
+        # short-lived Stop-hook subprocesses per day.
         from iai_mcp.capture import write_deferred_captures
 
         try:
@@ -796,13 +1381,14 @@ def cmd_capture_transcript(args: argparse.Namespace) -> int:
             return 0
         except Exception as e:
             # Fail-safe: hook MUST exit 0. Log to stderr, return 0.
+            logger.error("capture-transcript --no-spawn failed: %s", e)
             print(
                 f"capture-transcript --no-spawn: failed {type(e).__name__}: {e}",
                 file=_sys.stderr,
             )
             return 0
 
-    # Default path (no --no-spawn): inline ingest.
+    # Default path (no --no-spawn): inline-ingest behavior, unchanged.
     from iai_mcp.capture import capture_transcript
     from iai_mcp.store import MemoryStore
 
@@ -817,6 +1403,7 @@ def cmd_capture_transcript(args: argparse.Namespace) -> int:
         print(json.dumps(counts, ensure_ascii=False))
         return 0
     except Exception as e:
+        logger.error("capture-transcript inline failed: %s", e)
         print(f"capture-transcript: failed {type(e).__name__}: {e}", file=_sys.stderr)
         return 0
 
@@ -870,8 +1457,13 @@ def cmd_capture_turn_deferred(args: argparse.Namespace) -> int:
             parsed = _parse_transcript_line(line)
             if parsed is None:
                 continue
-            role, text = parsed
-            write_deferred_event(args.session_id, role, text, cwd=cwd)
+            role, text, src_uuid, src_ts = parsed
+            write_deferred_event(
+                args.session_id, role, text,
+                cwd=cwd,
+                ts=src_ts,
+                source_uuid=src_uuid,
+            )
             emitted += 1
 
         new_offset = prev_offset + consumed
@@ -880,6 +1472,7 @@ def cmd_capture_turn_deferred(args: argparse.Namespace) -> int:
         os.replace(tmp_path, offset_path)
         return 0
     except Exception as e:
+        logger.error("capture-turn-deferred failed: %s", e)
         print(
             f"capture-turn-deferred: failed {type(e).__name__}: {e}",
             file=_sys.stderr,
@@ -987,7 +1580,7 @@ def _patch_claude_desktop_config(action: str) -> str:
 
     try:
         data = _json.loads(cfg_path.read_text())
-    except Exception as e:
+    except (OSError, ValueError) as e:
         return f"Claude Desktop: {cfg_path} unreadable ({type(e).__name__}) — skipped"
 
     servers = data.setdefault("mcpServers", {})
@@ -1011,7 +1604,6 @@ def _patch_claude_desktop_config(action: str) -> str:
 _CAPTURE_HOOK_MARKER = "iai-mcp-session-capture.sh"
 _TURN_HOOK_MARKER = "iai-mcp-turn-capture.sh"
 _SESSION_RECALL_HOOK_MARKER = "iai-mcp-session-recall.sh"
-_UPDATE_CHECK_HOOK_MARKER = "iai-mcp-update-check.sh"
 
 
 def _session_recall_hook_paths() -> tuple[Path, Path, Path]:
@@ -1027,24 +1619,13 @@ def _session_recall_hook_paths() -> tuple[Path, Path, Path]:
     return src, dst, settings
 
 
-def _update_check_hook_paths() -> tuple[Path, Path]:
-    """Return (hook_src_in_repo, hook_dst_in_home) for the update-check hook."""
-    from pathlib import Path as _P
-    import iai_mcp
-    pkg_dir = _P(iai_mcp.__file__).resolve().parent
-    repo_root = pkg_dir.parent.parent
-    src = repo_root / "deploy" / "hooks" / "iai-mcp-update-check.sh"
-    dst = _P.home() / ".claude" / "hooks" / "iai-mcp-update-check.sh"
-    return src, dst
-
-
 def _load_settings(path):
     import json as _json
     if not path.exists():
         return {}
     try:
         return _json.loads(path.read_text())
-    except Exception:
+    except (OSError, ValueError):
         return {}
 
 
@@ -1130,31 +1711,6 @@ def cmd_capture_hooks_install(args: argparse.Namespace) -> int:
     else:
         print(f"WARN: recall hook template missing in repo: {src_recall}")
 
-    update_src, update_dst = _update_check_hook_paths()
-    if update_src.exists():
-        update_dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(update_src, update_dst)
-        update_dst.chmod(update_dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
-        print(f"installed: {update_dst}")
-
-        ss_list = data["hooks"].setdefault("SessionStart", [])
-        update_cmd = f"bash {update_dst}"
-        already_update = any(
-            any(_UPDATE_CHECK_HOOK_MARKER in (h.get("command") or "")
-                for h in (entry.get("hooks") or []))
-            for entry in ss_list
-        )
-        if already_update:
-            print("settings.json already has update-check hook — no change")
-        else:
-            ss_list.append({
-                "matcher": "startup",
-                "hooks": [{"type": "command", "command": update_cmd, "timeout": 5}],
-            })
-            print(f"patched: {settings} (SessionStart update-check registered)")
-    else:
-        print(f"WARN: update-check hook template missing in repo: {update_src}")
-
     settings.write_text(_json.dumps(data, indent=2))
 
     # Claude Desktop is a separate app with its own mcpServers config —
@@ -1169,20 +1725,31 @@ def cmd_capture_hooks_install(args: argparse.Namespace) -> int:
 
 
 def cmd_capture_hooks_uninstall(args: argparse.Namespace) -> int:
-    """Remove hook scripts and their settings.json entries (idempotent)."""
+    """Remove all three hook scripts and their settings.json entries
+    (idempotent)."""
     import json as _json
 
     _, dst, settings = _capture_hook_paths()
     _, turn_dst = _turn_hook_paths()
     _, dst_recall, _ = _session_recall_hook_paths()
-    _, update_dst = _update_check_hook_paths()
 
-    for path in (dst, turn_dst, dst_recall, update_dst):
-        if path.exists():
-            path.unlink()
-            print(f"removed: {path}")
-        else:
-            print(f"(not present) {path}")
+    if dst.exists():
+        dst.unlink()
+        print(f"removed: {dst}")
+    else:
+        print(f"(not present) {dst}")
+
+    if turn_dst.exists():
+        turn_dst.unlink()
+        print(f"removed: {turn_dst}")
+    else:
+        print(f"(not present) {turn_dst}")
+
+    if dst_recall.exists():
+        dst_recall.unlink()
+        print(f"removed: {dst_recall}")
+    else:
+        print(f"(not present) {dst_recall}")
 
     if settings.exists():
         data = _load_settings(settings)
@@ -1211,13 +1778,10 @@ def cmd_capture_hooks_uninstall(args: argparse.Namespace) -> int:
 
         data = _load_settings(settings)
         ss_list = data.get("hooks", {}).get("SessionStart", [])
-        ss_markers = (_SESSION_RECALL_HOOK_MARKER, _UPDATE_CHECK_HOOK_MARKER)
         kept_ss = [
             entry for entry in ss_list
-            if not any(
-                any(m in (h.get("command") or "") for m in ss_markers)
-                for h in (entry.get("hooks") or [])
-            )
+            if not any(_SESSION_RECALL_HOOK_MARKER in (h.get("command") or "")
+                       for h in (entry.get("hooks") or []))
         ]
         if len(kept_ss) != len(ss_list):
             if kept_ss:
@@ -1225,7 +1789,7 @@ def cmd_capture_hooks_uninstall(args: argparse.Namespace) -> int:
             else:
                 data["hooks"].pop("SessionStart", None)
             settings.write_text(_json.dumps(data, indent=2))
-            print(f"patched: {settings} (SessionStart entries removed)")
+            print(f"patched: {settings} (SessionStart entry removed)")
         else:
             print(f"(no SessionStart entry to remove) {settings}")
 
@@ -1237,12 +1801,12 @@ def cmd_capture_hooks_uninstall(args: argparse.Namespace) -> int:
 
 
 def cmd_capture_hooks_status(args: argparse.Namespace) -> int:
-    """Show whether hooks are installed and active on both surfaces."""
+    """Show whether all three hooks (Stop / UserPromptSubmit / SessionStart)
+    are installed and active on both surfaces."""
     import json as _json
     src, dst, settings = _capture_hook_paths()
     turn_src, turn_dst = _turn_hook_paths()
     src_recall, dst_recall, _ = _session_recall_hook_paths()
-    update_src, update_dst = _update_check_hook_paths()
 
     print(f"Stop template:        {src}  {'PRESENT' if src.exists() else 'MISSING'}")
     print(f"Stop installed:       {dst}  {'PRESENT' if dst.exists() else 'MISSING'}")
@@ -1250,8 +1814,6 @@ def cmd_capture_hooks_status(args: argparse.Namespace) -> int:
     print(f"Turn installed:       {turn_dst}  {'PRESENT' if turn_dst.exists() else 'MISSING'}")
     print(f"Recall template:      {src_recall}  {'PRESENT' if src_recall.exists() else 'MISSING'}")
     print(f"Recall installed:     {dst_recall}  {'PRESENT' if dst_recall.exists() else 'MISSING'}")
-    print(f"Update template:      {update_src}  {'PRESENT' if update_src.exists() else 'MISSING'}")
-    print(f"Update installed:     {update_dst}  {'PRESENT' if update_dst.exists() else 'MISSING'}")
 
     data = _load_settings(settings)
     stop_list = data.get("hooks", {}).get("Stop", [])
@@ -1272,15 +1834,9 @@ def cmd_capture_hooks_status(args: argparse.Namespace) -> int:
             for h in (entry.get("hooks") or []))
         for entry in ss_list
     )
-    update_wired = any(
-        any(_UPDATE_CHECK_HOOK_MARKER in (h.get("command") or "")
-            for h in (entry.get("hooks") or []))
-        for entry in ss_list
-    )
     print(f"Claude Code settings.json Stop:             {settings}  {'WIRED' if wired else 'NOT WIRED'}")
     print(f"Claude Code settings.json UserPromptSubmit: {settings}  {'WIRED' if turn_wired else 'NOT WIRED'}")
     print(f"Claude Code settings.json SessionStart:     {settings}  {'WIRED' if recall_wired else 'NOT WIRED'}")
-    print(f"Claude Code settings.json Update-check:     {settings}  {'WIRED' if update_wired else 'NOT WIRED'}")
 
     # Claude Desktop (separate config file, separate app).
     desktop_cfg = _claude_desktop_config_path()
@@ -1295,7 +1851,7 @@ def cmd_capture_hooks_status(args: argparse.Namespace) -> int:
             d = _json.loads(desktop_cfg.read_text())
             desktop_wired = "iai-mcp" in d.get("mcpServers", {})
             desktop_line = f"Claude Desktop: {desktop_cfg}  {'WIRED' if desktop_wired else 'NOT WIRED'}"
-        except Exception:
+        except (OSError, ValueError):
             desktop_line = f"Claude Desktop: {desktop_cfg} (unreadable)"
             desktop_wired = False
     print(desktop_line)
@@ -1328,14 +1884,16 @@ def cmd_migrate(args: argparse.Namespace) -> int:
     or a crash-safe-reembed action (--resume / --rollback).
 
     Supported:
-      --from=1 --to=2   v1 -> v2 schema migration
-      --from=2 --to=3   v2 -> v3 encryption-at-rest migration
-      --from=3 --to=4   v3 -> v4 TEM factorization
+      --from=1 --to=2   schema v1 -> v2
+      --from=2 --to=3   encryption-at-rest migration
+      --from=3 --to=4   TEM factorization
       --rollback        drop records_v_new and (if needed) restore records
-                        from records_old_<ts>. Exit codes: 0 success,
-                        1 user-correctable error, 2 unrecoverable.
+                        from records_old_<ts>. Routes to migrate._rollback.
+                        Exit codes: 0 success, 1 user-correctable error,
+                        2 unrecoverable.
       --resume          continue an interrupted reembed migration from
-                        migration_progress.json. Same exit-code contract.
+                        migration_progress.json. Routes to migrate._resume
+                        with the live store's embedder. Same exit-code contract.
 
     Anything else returns exit code 2 with a clear error message.
     """
@@ -1350,7 +1908,7 @@ def cmd_migrate(args: argparse.Namespace) -> int:
     if bool(getattr(args, "resume", False)):
         # Resume requires the same target embedder the original migration
         # used. The simplest contract: resume to the embedder configured in
-        # the running environment (IAI_MCP_EMBED_MODEL / IAI_MCP_EMBED_DIM).
+        # the running environment (IAI_MCP_EMBED_DIM).
         # The progress-file's saved_target_dim is cross-checked in
         # migrate._resume — a mismatch returns rc=1.
         from iai_mcp import migrate
@@ -1393,8 +1951,8 @@ def cmd_migrate(args: argparse.Namespace) -> int:
         return 0
 
     if from_v == 3 and to_v == 4:
-        # TEM factorization migration. Renames the legacy `hd_vector_json`
-        # (pa.string()) column to `structure_hv` (pa.binary()) and backfills
+        # TEM factorization migration: rename the legacy `hd_vector_json`
+        # (pa.string()) column to `structure_hv` (pa.binary()) and backfill
         # every row via tem.bind_structure().
         from iai_mcp.migrate import migrate_hd_vector_to_structure_hv_v3_to_v4
         result = migrate_hd_vector_to_structure_hv_v3_to_v4(
@@ -1429,9 +1987,9 @@ def cmd_crypto_status(args: argparse.Namespace) -> int:
       - uid + uid_matches_process flag
       - length_bytes + length_valid (== KEY_BYTES)
       - passphrase_fallback_set (whether IAI_MCP_CRYPTO_PASSPHRASE is set)
-      - hint when the file is missing
+      - hint when the file is missing (dual-remediation message)
 
-    Never prints the key bytes.
+    Never prints the key bytes (information-disclosure mitigation).
     """
     import json as _json
     import os as _os
@@ -1520,7 +2078,7 @@ def cmd_crypto_rotate(args: argparse.Namespace) -> int:
                 raw = decrypt_field(
                     raw, store._key(), associated_data=eid.encode("ascii")
                 )
-            except Exception:
+            except (OSError, ValueError, RuntimeError):
                 raw = "{}"
         decrypted_events.append({"id": eid, "data_json": raw})
 
@@ -1538,13 +2096,13 @@ def cmd_crypto_rotate(args: argparse.Namespace) -> int:
     for rec in decrypted_records:
         try:
             tbl.delete(f"id = '{_uuid_literal(rec.id)}'")
-        except Exception:
+        except (OSError, ValueError, RuntimeError):
             pass
         # store.insert() encrypts using the new cached key.
         try:
             store.insert(rec)
             record_count += 1
-        except Exception:
+        except (OSError, ValueError, RuntimeError):
             continue
 
     # Re-encrypt events data_json under the new key.
@@ -1558,7 +2116,7 @@ def cmd_crypto_rotate(args: argparse.Namespace) -> int:
                 values={"data_json": new_ct},
             )
             event_count += 1
-        except Exception:
+        except (OSError, ValueError, RuntimeError):
             continue
 
     print(
@@ -1589,8 +2147,8 @@ def cmd_crypto_rotate(args: argparse.Namespace) -> int:
             severity="info",
         )
         sync_crypto_key_watcher_to_disk(store)
-    except Exception:
-        pass
+    except (OSError, ValueError, RuntimeError) as exc:
+        logger.debug("crypto rotate audit event failed: %s", exc)
     return 0
 
 
@@ -1621,6 +2179,7 @@ def cmd_crypto_recover_prior_key(args: argparse.Namespace) -> int:
             store, prior, dry_run=bool(getattr(args, "dry_run", False)),
         )
     except Exception as exc:
+        logger.error("crypto recover-prior-key failed: %s", exc)
         print(str(exc), file=sys.stderr)
         return 1
     print(_json.dumps(out, indent=2, default=str))
@@ -1639,6 +2198,7 @@ def cmd_crypto_redact_undecryptable(args: argparse.Namespace) -> int:
     try:
         out = migrate_redact_undecryptable_records(store)
     except Exception as exc:
+        logger.error("crypto redact-undecryptable failed: %s", exc)
         print(str(exc), file=sys.stderr)
         return 1
     print(_json.dumps(out, indent=2, default=str))
@@ -1720,7 +2280,7 @@ def cmd_crypto_migrate_to_file(args: argparse.Namespace) -> int:
 
     try:
         source = _b64.urlsafe_b64decode(encoded.encode("ascii"))
-    except Exception as exc:
+    except (ValueError, TypeError) as exc:
         print(f"keyring entry is malformed: {exc}", file=sys.stderr)
         return 1
     if len(source) != KEY_BYTES:
@@ -1733,7 +2293,7 @@ def cmd_crypto_migrate_to_file(args: argparse.Namespace) -> int:
     # Write via the atomic helper.
     try:
         ck._try_file_set(source)
-    except Exception as exc:
+    except (OSError, ValueError, RuntimeError) as exc:
         print(f"failed to write key file: {exc}", file=sys.stderr)
         return 1
 
@@ -1791,8 +2351,8 @@ def cmd_crypto_init(args: argparse.Namespace) -> int:
     """Generate a fresh ``.crypto.key`` (fresh installs only).
 
     Refuses if the file already exists (any state, valid or malformed). The
-    ONLY code path in the project that creates a fresh key — the daemon
-    explicitly forbids silent key generation at startup.
+    ONLY code path in the project that creates a fresh key — daemon
+    refusal-to-start explicitly forbids silent key generation.
 
     To rotate an existing key, use ``iai-mcp crypto rotate``. To wipe and
     start over, the user must remove the file manually before re-running
@@ -1819,11 +2379,13 @@ def cmd_crypto_init(args: argparse.Namespace) -> int:
     return 0
 
 
+# Substring fallback handler for the bank-recall CLI — no daemon, no
+# store, no embedder.
 def cmd_bank_recall(args: argparse.Namespace) -> int:
     """Print a JSON memory_recall-shape response to stdout, substring-only.
 
     Reads the disk-side bank/processed + bank/recent artifacts without
-    opening LanceDB or loading the embedder. CryptoKey resolution
+    opening the store or loading the embedder. CryptoKey resolution
     happens lazily inside ``read_recent_records`` when ``key`` is None.
     """
     import json as _json
@@ -1843,7 +2405,7 @@ def cmd_bank_recall(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_topology(args: argparse.Namespace) -> int:
+def cmd_topology(args: argparse.Namespace) -> int:  # noqa: ARG001 -- argparse contract
     """Print live small-world topology snapshot.
 
     One key:value line per metric:
@@ -1856,18 +2418,18 @@ def cmd_topology(args: argparse.Namespace) -> int:
         N: <node count>
         regime: <"developmental" | "mid_life_drift" | "healthy" | "insufficient_data">
 
-    sigma is a diagnostic metric only; never a routing decision. The CLI is a
+    sigma is a diagnostic only; never a routing decision. The CLI is a
     print-only command -- no event writes, no state mutation.
-    compute_and_emit() runs in S4's offline pass instead
-    (see `iai_mcp.s4.run_offline_pass`).
-    """
-    from iai_mcp.retrieve import build_runtime_graph
-    from iai_mcp.sigma import compute_topology_snapshot
-    from iai_mcp.store import MemoryStore
+    compute_and_emit() runs in S4's offline pass instead (see iai_mcp.s4.run_offline_pass).
 
-    store = MemoryStore()
-    graph, _assignment, _rich_club = build_runtime_graph(store)
-    snap = compute_topology_snapshot(graph)
+    Socket-first: when the daemon is running it holds the HippoDB exclusive lock.
+    Routing through the AF_UNIX socket lets the daemon answer while keeping its own
+    lock -- no deadlock, no HippoLockHeldError. Direct-open fallback activates when
+    the socket is absent or unreachable (daemon down), at which point the lock is free.
+    If the socket times out (daemon mid-REM) and the direct open fails because the
+    daemon still holds the lock, the exception is caught and topology degrades to
+    insufficient_data -- the command never crashes.
+    """
 
     def _fmt(v) -> str:
         if v is None:
@@ -1876,33 +2438,137 @@ def cmd_topology(args: argparse.Namespace) -> int:
             return f"{v:.4f}"
         return str(v)
 
-    print(f"C: {_fmt(snap.get('C'))}")
-    print(f"L: {_fmt(snap.get('L'))}")
-    print(f"sigma: {_fmt(snap.get('sigma'))}")
-    print(f"communities: {_fmt(snap.get('community_count'))}")
-    print(f"rich_club_ratio: {_fmt(snap.get('rich_club_ratio'))}")
-    print(f"N: {_fmt(snap.get('N'))}")
-    print(f"regime: {_fmt(snap.get('regime'))}")
+    def _render(d: dict) -> None:
+        print(f"C: {_fmt(d.get('C'))}")
+        print(f"L: {_fmt(d.get('L'))}")
+        print(f"sigma: {_fmt(d.get('sigma'))}")
+        print(f"communities: {_fmt(d.get('community_count'))}")
+        print(f"rich_club_ratio: {_fmt(d.get('rich_club_ratio'))}")
+        print(f"N: {_fmt(d.get('N'))}")
+        print(f"regime: {_fmt(d.get('regime'))}")
+
+    # --- socket path (daemon up and holding the lock) ---
+    resp = _send_jsonrpc_request("topology", {})
+    if isinstance(resp, dict):
+        result = resp.get("result")
+        if isinstance(result, dict):
+            _render(result)
+            return 0
+
+    # --- direct-open fallback (daemon down / socket absent) ---
+    # Guard: if the daemon is mid-REM the socket may time out yet the lock is
+    # still held. Catch HippoLockHeldError and degrade gracefully instead of
+    # crashing the operator terminal.
+    from iai_mcp.hippo import HippoLockHeldError
+    from iai_mcp.retrieve import build_runtime_graph
+    from iai_mcp.sigma import compute_topology_snapshot
+    from iai_mcp.store import MemoryStore
+
+    try:
+        store = MemoryStore()
+        graph, _assignment, _rich_club = build_runtime_graph(store)
+        snap = compute_topology_snapshot(graph)
+    except HippoLockHeldError:
+        # Daemon holds the lock (e.g. mid-REM socket timeout). Degrade, don't crash.
+        _render({})
+        return 0
+
+    _render(snap)
     return 0
 
 
-def cmd_trajectory(args: argparse.Namespace) -> int:
-    """Aggregate M1..M6 trajectory events."""
-    from datetime import datetime, timedelta, timezone
+def cmd_drain_permanent_failed(args: argparse.Namespace) -> int:
+    """Recover terminal .permanent-failed-*.jsonl files in .deferred-captures/.
 
+    Socket-first: when the daemon is running it holds the HippoDB exclusive
+    lock. Routing through the AF_UNIX socket lets the daemon perform the drain
+    under its own lock — no second writer, no HippoLockHeldError. Direct-open
+    fallback activates when the socket is absent or unreachable (daemon down),
+    at which point the lock is free.
+
+    --dry-run lists the files + event counts without renaming or inserting
+    anything (safe to run at any time).
+    """
+    dry_run = bool(getattr(args, "dry_run", False))
+
+    # --- socket path (daemon up and holding the lock) ---
+    resp = _send_jsonrpc_request("drain_permanent_failed", {"dry_run": dry_run}, read_timeout=120.0)
+    if isinstance(resp, dict):
+        result = resp.get("result")
+        if isinstance(result, dict):
+            _print_drain_result(result)
+            return 0
+
+    # --- direct-open fallback (daemon down / socket absent) ---
+    from iai_mcp.hippo import HippoLockHeldError
     from iai_mcp.store import MemoryStore
-    from iai_mcp.trajectory import METRIC_NAMES, aggregate_trajectory
+    from iai_mcp.capture import drain_permanent_failed_files
 
-    store = MemoryStore()
-    weeks = getattr(args, "since", None)
-    since = None
-    if weeks is not None:
-        since = datetime.now(timezone.utc) - timedelta(weeks=int(weeks))
-    data = aggregate_trajectory(store, since=since)
-    if not any(data.get(m) for m in METRIC_NAMES):
+    try:
+        store = MemoryStore()
+        result = drain_permanent_failed_files(store, dry_run=dry_run)
+    except HippoLockHeldError:
+        print(
+            "Daemon holds the store lock — is it running? "
+            "Ensure the daemon is reachable or stopped before using the direct-open fallback.",
+            file=sys.stderr,
+        )
+        return 1
+
+    _print_drain_result(result)
+    return 0
+
+
+def _print_drain_result(result: dict) -> None:
+    """Pretty-print the drain_permanent_failed_files result dict."""
+    files = result.get("files") or []
+    if result.get("dry_run"):
+        count = result.get("count", len(files))
+        print(f"dry-run: {count} permanent-failed file(s) found")
+        for f in files:
+            print(f"  {f['name']}  ({f.get('line_count', '?')} lines)")
+        return
+    inserted = result.get("inserted", 0)
+    dropped = result.get("dropped", 0)
+    recovered = result.get("files_recovered") or []
+    q_dir = result.get("quarantine_dir", "")
+    print(f"recovered {len(recovered)} file(s): inserted={inserted} dropped={dropped}")
+    for name in recovered:
+        print(f"  {name}")
+    if q_dir:
+        print(f"quarantine copies at: {q_dir}")
+
+
+def _aggregate_trajectory_from_events(
+    events: list[dict],
+) -> dict[str, list[tuple]]:
+    """Build the same {metric: [(ts, value), ...]} dict as aggregate_trajectory
+    but from a pre-fetched socket event list rather than a live MemoryStore.
+
+    ts values are ISO strings from the socket — kept as strings here because
+    the render path only uses the float values, not timestamps.
+    """
+    from iai_mcp.trajectory import METRIC_NAMES
+
+    out: dict[str, list[tuple]] = {m: [] for m in METRIC_NAMES}
+    for e in events:
+        data = e.get("data") or {}
+        m = data.get("metric")
+        v = data.get("value")
+        if m in METRIC_NAMES and v is not None:
+            try:
+                out[m].append((e.get("ts"), float(v)))
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def _render_trajectory(data: dict, metric_names: list) -> None:
+    """Print trajectory output — shared by socket and direct-open paths."""
+    if not any(data.get(m) for m in metric_names):
         print("no trajectory data recorded")
-        return 0
-    for metric in METRIC_NAMES:
+        return
+    for metric in metric_names:
         points = data.get(metric, [])
         if not points:
             print(f"{metric.upper()}: (no data)")
@@ -1914,15 +2580,68 @@ def cmd_trajectory(args: argparse.Namespace) -> int:
             f"{metric.upper()}: n={n} mean={mean:.3f} "
             f"min={min(values):.3f} max={max(values):.3f}"
         )
+
+
+def cmd_trajectory(args: argparse.Namespace) -> int:
+    """Aggregate M1..M6 trajectory events.
+
+    Socket-first: asks the daemon via JSON-RPC events_query so the running
+    daemon's Hippo lock is not contended. Falls back to a direct MemoryStore
+    open when the daemon is down (socket absent or unreachable). If the
+    fallback also fails because the daemon still holds the lock (e.g. mid-REM
+    socket timeout), the error is caught and a clean message is printed.
+
+    Window note: the socket path is capped at 1000 events by the daemon's
+    events_query dispatcher. The direct-open fallback uses limit=10000.
+    For large stores with many trajectory events the two paths may show
+    slightly different aggregates; the socket path covers ~1000 most-recent
+    trajectory_metric events while the fallback covers up to 10000.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from iai_mcp.trajectory import METRIC_NAMES
+
+    weeks = getattr(args, "since", None)
+    since = None
+    since_iso = None
+    if weeks is not None:
+        since = datetime.now(timezone.utc) - timedelta(weeks=int(weeks))
+        since_iso = since.isoformat()
+
+    # --- socket path (daemon up and holding the lock) ---
+    socket_params: dict = {"kind": "trajectory_metric", "limit": 1000}
+    if since_iso:
+        socket_params["since"] = since_iso
+    resp = _send_jsonrpc_request("events_query", socket_params)
+    if isinstance(resp, dict) and "result" in resp:
+        payload = resp["result"]
+        if isinstance(payload, dict) and "events" in payload:
+            data = _aggregate_trajectory_from_events(payload["events"])
+            _render_trajectory(data, METRIC_NAMES)
+            return 0
+
+    # --- direct-open fallback (daemon down / socket absent) ---
+    from iai_mcp.hippo import HippoLockHeldError
+    from iai_mcp.store import MemoryStore
+    from iai_mcp.trajectory import aggregate_trajectory
+
+    try:
+        store = MemoryStore()
+        data = aggregate_trajectory(store, since=since)
+    except HippoLockHeldError:
+        print("daemon holds store lock; retry when daemon is idle")
+        return 0
+
+    _render_trajectory(data, METRIC_NAMES)
     return 0
 
 
 def _redact_shield_data(data: dict) -> str:
     """Render a shield event's data dict with matched-pattern redaction.
 
-    Shield_rejection / shield_flag events store the matched patterns. CLI
-    output shows ONLY the count to avoid leaking the shield's signal-word
-    dictionary to attackers inspecting logs.
+    shield_rejection / shield_flag events store the matched
+    patterns. CLI output shows ONLY the count to avoid leaking the shield's
+    signal-word dictionary to attackers inspecting logs.
     """
     matched = data.get("matched") or []
     tier = data.get("tier", "-")
@@ -1935,15 +2654,26 @@ def _redact_shield_data(data: dict) -> str:
 
 
 def _format_audit_event(event: dict, tz) -> str:
-    """Single-line audit event rendering in the user's local TZ."""
+    """Single-line audit event rendering in the user's local TZ.
+
+    Handles both datetime objects (direct-open path) and ISO-string timestamps
+    (socket path, where the daemon serializes ts to an ISO-8601 string).
+    """
+    from datetime import datetime as _dt
+
     from iai_mcp.tz import to_local
 
     ts = event.get("ts")
+    if isinstance(ts, str):
+        try:
+            ts = _dt.fromisoformat(ts.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            ts = None
     try:
         local_ts = to_local(ts, tz) if ts is not None else None
-    except Exception:
+    except (ValueError, TypeError, OSError):
         local_ts = None
-    ts_str = local_ts.isoformat() if local_ts is not None else str(ts)
+    ts_str = local_ts.isoformat() if local_ts is not None else str(event.get("ts"))
 
     kind = event.get("kind", "?")
     sev = event.get("severity") or "-"
@@ -1965,32 +2695,63 @@ def cmd_audit(args: argparse.Namespace) -> int:
       - 'identity'        -- s5_* events only (no shield)
 
     Shared flags: --since WEEKS, --severity SEV.
+
+    Socket-first: asks the daemon via JSON-RPC (audit_query / detect_drift)
+    so the running daemon's Hippo lock is not contended. Falls back to a
+    direct MemoryStore open when the daemon is down (socket absent or
+    unreachable). If the fallback also fails because the daemon still holds
+    the lock (e.g. mid-REM socket timeout), the error is caught and a clean
+    message is printed instead of crashing the operator terminal.
     """
     from datetime import datetime, timedelta, timezone
 
-    from iai_mcp.s5 import (
-        AUDIT_EVENT_KINDS,
-        audit_identity_events,
-        detect_drift_anomaly,
-    )
-    from iai_mcp.store import MemoryStore
     from iai_mcp.tz import load_user_tz
 
-    store = MemoryStore()
     tz = load_user_tz()
 
     since_raw = getattr(args, "since", None)
     since = None
+    since_iso = None
     if since_raw is not None:
         since = datetime.now(timezone.utc) - timedelta(weeks=int(since_raw))
+        since_iso = since.isoformat()
 
     sub = getattr(args, "audit_sub", None)
 
-    # Subcommand: drift -- runs detection + reports.
+    # ------------------------------------------------------------------ drift
+    # detect_drift also writes s5_drift_alert events (side-effect preserved).
     if sub == "drift":
-        alerts = detect_drift_anomaly(store)
+        resp = _send_jsonrpc_request("detect_drift", {})
+        if isinstance(resp, dict) and "result" in resp:
+            payload = resp["result"]
+            if isinstance(payload, dict) and "alerts" in payload:
+                alerts = payload["alerts"]
+                if not alerts:
+                    print("drift: no anomaly detected (variance stable)")
+                else:
+                    for a in alerts:
+                        print(
+                            f"drift: variance increasing across "
+                            f"{a.get('window_sessions')} sessions; "
+                            f"first={a.get('first_value'):.3f} "
+                            f"last={a.get('last_value'):.3f}"
+                        )
+                return 0
+
+        # Fallback: direct-open.
+        from iai_mcp.hippo import HippoLockHeldError
+        from iai_mcp.s5 import detect_drift_anomaly
+        from iai_mcp.store import MemoryStore
+
+        try:
+            store = MemoryStore()
+            alerts = detect_drift_anomaly(store)
+        except HippoLockHeldError:
+            print("daemon holds store lock; retry when daemon is idle")
+            return 0
+
         if not alerts:
-            print("drift: no anomaly detected (M4 variance stable)")
+            print("drift: no anomaly detected (variance stable)")
         else:
             for a in alerts:
                 print(
@@ -2001,47 +2762,65 @@ def cmd_audit(args: argparse.Namespace) -> int:
                 )
         return 0
 
-    # Subcommand: shield -- only shield-family events.
+    # ------------------------------------------------------------ event modes
+    # All of shield / identity / all use audit_query with a kinds list.
+    SHIELD_KINDS = ("shield_rejection", "shield_flag", "shield_log")
+    IDENTITY_KINDS = (
+        "s5_invariant_update",
+        "s5_invariant_proposal",
+        "s5_cooldown_block",
+        "s5_drift_alert",
+        "identity_cross_lingual_warning",
+    )
+
     if sub == "shield":
-        kinds = ("shield_rejection", "shield_flag", "shield_log")
-        events = audit_identity_events(store, since=since, kinds=kinds)
-        severity = getattr(args, "severity", None)
-        if severity:
-            events = [e for e in events if e.get("severity") == severity]
-        if not events:
-            print("audit shield: no events recorded")
-            return 0
-        for e in events:
-            print(_format_audit_event(e, tz))
-        return 0
+        audit_kinds = list(SHIELD_KINDS)
+        empty_msg = "audit shield: no events recorded"
+    elif sub == "identity":
+        audit_kinds = list(IDENTITY_KINDS)
+        empty_msg = "audit identity: no events recorded"
+    else:
+        # Default: full audit (all kinds).
+        from iai_mcp.s5 import AUDIT_EVENT_KINDS
+        audit_kinds = list(AUDIT_EVENT_KINDS)
+        empty_msg = "No identity events recorded"
 
-    # Subcommand: identity -- only s5_* + cross-lingual warnings.
-    if sub == "identity":
-        kinds = (
-            "s5_invariant_update",
-            "s5_invariant_proposal",
-            "s5_cooldown_block",
-            "s5_drift_alert",
-            "identity_cross_lingual_warning",
-        )
-        events = audit_identity_events(store, since=since, kinds=kinds)
-        severity = getattr(args, "severity", None)
-        if severity:
-            events = [e for e in events if e.get("severity") == severity]
-        if not events:
-            print("audit identity: no events recorded")
-            return 0
-        for e in events:
-            print(_format_audit_event(e, tz))
-        return 0
-
-    # Default: full audit.
-    events = audit_identity_events(store, since=since, kinds=AUDIT_EVENT_KINDS)
     severity = getattr(args, "severity", None)
+
+    # --- socket path ---
+    socket_params: dict = {"kinds": audit_kinds}
+    if since_iso:
+        socket_params["since"] = since_iso
+    resp = _send_jsonrpc_request("audit_query", socket_params)
+    if isinstance(resp, dict) and "result" in resp:
+        payload = resp["result"]
+        if isinstance(payload, dict) and "events" in payload:
+            events = payload["events"]
+            if severity:
+                events = [e for e in events if e.get("severity") == severity]
+            if not events:
+                print(empty_msg)
+                return 0
+            for e in events:
+                print(_format_audit_event(e, tz))
+            return 0
+
+    # --- direct-open fallback ---
+    from iai_mcp.hippo import HippoLockHeldError
+    from iai_mcp.s5 import audit_identity_events
+    from iai_mcp.store import MemoryStore
+
+    try:
+        store = MemoryStore()
+        events = audit_identity_events(store, since=since, kinds=tuple(audit_kinds))
+    except HippoLockHeldError:
+        print("daemon holds store lock; retry when daemon is idle")
+        return 0
+
     if severity:
         events = [e for e in events if e.get("severity") == severity]
     if not events:
-        print("No identity events recorded")
+        print(empty_msg)
         return 0
     for e in events:
         print(_format_audit_event(e, tz))
@@ -2051,13 +2830,17 @@ def cmd_audit(args: argparse.Namespace) -> int:
 def cmd_schema_cleanup(args: argparse.Namespace) -> int:
     """Schema-cleanup CLI dispatch.
 
-    Soft-deletes duplicate schema records. Default mode is --dry-run
-    (reversible). --apply requires the explicit flag; no interactive prompts
-    so the flow is reproducible and testable.
+    Soft-deletes duplicate schema records that accumulated in production
+    stores before `persist_schema` was made idempotent.
+
+    Default mode is --dry-run (reversibility).
+    --apply requires the explicit flag; no interactive prompts so the
+    flow is reproducible and testable.
 
     `--store-path` targets the IAI root directory (the path passed to
-    MemoryStore() — contains the `lancedb/` subdir with the actual tables).
-    Default is ~/.iai-mcp.
+    MemoryStore() — contains the `hippo/` subdir with the actual tables).
+    Default is ~/.iai-mcp (matches MemoryStore() no-args default per
+    DEFAULT_STORAGE_PATH).
     """
     from iai_mcp.migrate import cleanup_schema_duplicates
     from iai_mcp.store import MemoryStore
@@ -2066,7 +2849,7 @@ def cmd_schema_cleanup(args: argparse.Namespace) -> int:
         store_path = Path(args.store_path).expanduser()
     else:
         # Match MemoryStore() default semantics: store.root = ~/.iai-mcp
-        # (the IAI root); LanceDB tables live at store.root / "lancedb".
+        # (the IAI root); Hippo data lives at store.root / "hippo".
         store_path = Path.home() / ".iai-mcp"
 
     if not store_path.exists():
@@ -2104,19 +2887,16 @@ def cmd_schema_cleanup(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
-# One-shot LanceDB compaction CLI
+# One-shot Hippo storage compaction CLI
 # ---------------------------------------------------------------------------
 #
-# Addresses the runaway records.lance version-manifest pile that can dominate
-# daemon cold-start time. Re-uses the existing
-# `optimize_lance_storage(retention=timedelta(days=0))` helper from
-# `iai_mcp.maintenance` wrapped in:
+# Wraps `optimize_hippo_storage()` from `iai_mcp.maintenance` with:
 #   - daemon-stopped pre-flight (psutil cmdline check rules out PID-recycle)
 #   - record-id set equality assertion (verbatim-recall invariant)
-#   - audit JSON trail (UTC ISO timestamp)
+#   - audit JSON trail (UTC ISO timestamp; mirrors `.consent-{ts}.json` shape)
 #
-# Runs WITH DAEMON STOPPED. The optimize call is pure storage compaction —
-# never reads or paraphrases stored `literal_surface`.
+# This CLI runs WITH DAEMON STOPPED. The optimize call is pure storage
+# compaction — never reads or paraphrases stored `literal_surface`.
 # ---------------------------------------------------------------------------
 
 
@@ -2124,11 +2904,11 @@ def _maintenance_compact_preflight_daemon_alive() -> str | None:
     """Return None if the daemon is NOT alive (safe to proceed); return a
     friendly error string if alive (caller prints to stderr + returns 1).
 
-    Read `~/.iai-mcp/.daemon-state.json`, extract `daemon_pid`. If absent,
-    daemon is not alive → None. If present, check `os.kill(pid, 0)` (does
-    NOT signal — only checks process existence). If alive, confirm
-    `psutil.Process(pid).cmdline()` contains `iai_mcp.daemon` to rule out
-    PID-recycle false positives.
+    Defense in depth: read `~/.iai-mcp/.daemon-state.json`, extract
+    `daemon_pid`. If absent, daemon is not alive → None. If present, check
+    `os.kill(pid, 0)` (does NOT signal — only checks process existence).
+    If alive, confirm `psutil.Process(pid).cmdline()` contains
+    `iai_mcp.daemon` to rule out PID-recycle false positives.
     """
     import json as _json
     import os as _os
@@ -2153,8 +2933,9 @@ def _maintenance_compact_preflight_daemon_alive() -> str | None:
         import psutil
         proc = psutil.Process(pid)
         cmdline = " ".join(proc.cmdline())
-    except Exception:
+    except Exception as exc:
         # If psutil cannot inspect, conservatively treat as alive — REFUSE.
+        logger.debug("psutil inspect pid %d failed: %s", pid, exc)
         return (
             f"daemon running (pid {pid}); run `iai-mcp daemon stop` "
             f"first, then retry"
@@ -2168,30 +2949,24 @@ def _maintenance_compact_preflight_daemon_alive() -> str | None:
 
 
 def _maintenance_compact_metrics(
-    records_lance_dir: Path,
+    hippo_dir: Path,
     store: object | None = None,
 ) -> dict:
-    """Capture metrics for the records table.
+    """Capture metrics for the Hippo storage backend.
 
-    Returns dict with keys: versions_count, size_mb, records_count,
-    record_id_set. `store` may be None on the dry-run pass when caller
-    only walks the directory; on the apply pass it must be a live
-    MemoryStore so we can read tbl.count_rows() and the record-id set
-    via tbl.to_pandas(columns=['id']).
+    Returns dict with keys: db_size_mb, records_count, record_id_set.
+    `store` may be None on the dry-run pass when caller only checks the
+    directory; on the apply pass it must be a live MemoryStore so we can
+    read tbl.count_rows() and the record-id set.
     """
-    versions_count = 0
-    versions_dir = records_lance_dir / "_versions"
-    if versions_dir.exists():
-        versions_count = sum(
-            1 for _ in versions_dir.glob("*.manifest")
-        )
+    # Measure the SQLite DB file size directly (single authoritative file).
+    db_path = hippo_dir / "brain.sqlite3"
     size_bytes = 0
-    for p in records_lance_dir.rglob("*"):
-        try:
-            if p.is_file():
-                size_bytes += p.stat().st_size
-        except OSError:
-            continue
+    try:
+        if db_path.exists():
+            size_bytes = db_path.stat().st_size
+    except OSError:
+        pass
     size_mb = round(size_bytes / (1024 * 1024), 1)
     records_count = 0
     record_id_set: set[str] = set()
@@ -2199,22 +2974,21 @@ def _maintenance_compact_metrics(
         try:
             tbl = store.db.open_table("records")
             records_count = int(tbl.count_rows())
-            df = tbl.to_pandas(columns=["id"])
+            df = tbl.search().select(["id"]).to_pandas()
             record_id_set = {str(x) for x in df["id"].tolist()}
-        except Exception:
-            pass
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            logger.debug("compact metrics read failed: %s", exc)
     return {
-        "versions_count": versions_count,
-        "size_mb": size_mb,
+        "db_size_mb": size_mb,
         "records_count": records_count,
         "record_id_set": record_id_set,
     }
 
 
 def _maintenance_compact_dry_run(
-    store_path: Path, records_lance_dir: Path,
+    store_path: Path, hippo_dir: Path,
 ) -> int:
-    """Dry-run: open the store, capture pre-metrics, print JSON; do NOT
+    """--dry-run: open the store, capture pre-metrics, print JSON; do NOT
     call optimize, do NOT write an audit file.
     """
     import json as _json
@@ -2223,13 +2997,14 @@ def _maintenance_compact_dry_run(
     store = None
     try:
         store = MemoryStore(path=store_path)
-    except Exception as exc:
+    except (OSError, ValueError, RuntimeError) as exc:
+        logger.debug("compact dry-run MemoryStore open failed: %s", exc)
         print(
             f"warning: could not open MemoryStore (records_count + "
             f"record_id_set will be 0): {exc}",
             file=sys.stderr,
         )
-    metrics = _maintenance_compact_metrics(records_lance_dir, store=store)
+    metrics = _maintenance_compact_metrics(hippo_dir, store=store)
     out = {
         "mode": "dry-run",
         "metrics": {
@@ -2238,23 +3013,23 @@ def _maintenance_compact_dry_run(
             },
             "post": None,
         },
-        "would_invoke": "optimize_lance_storage(retention=0d)",
+        "would_invoke": "optimize_hippo_storage()",
     }
     print(_json.dumps(out, indent=2))
     return 0
 
 
 def _maintenance_compact_apply(
-    store_path: Path, records_lance_dir: Path,
+    store_path: Path, hippo_dir: Path,
 ) -> int:
-    """Apply: open store, capture pre-metrics, call optimize(retention=0d)
-    on records/edges/events via the existing helper, capture post-metrics,
-    assert record-id set equality on the records table, write audit file.
+    """--apply: open store, capture pre-metrics, call optimize_hippo_storage()
+    on records/edges/events, capture post-metrics, assert record-id set
+    equality on the records table, write audit file.
     """
     import json as _json
     import time as _time
-    from datetime import datetime, timedelta, timezone
-    from iai_mcp.maintenance import optimize_lance_storage
+    from datetime import datetime, timezone
+    from iai_mcp.maintenance import optimize_hippo_storage
     from iai_mcp.store import MemoryStore
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -2263,26 +3038,19 @@ def _maintenance_compact_apply(
     )
 
     store = MemoryStore(path=store_path)
-    pre_metrics = _maintenance_compact_metrics(
-        records_lance_dir, store=store,
-    )
+    pre_metrics = _maintenance_compact_metrics(hippo_dir, store=store)
     pre_id_set = pre_metrics["record_id_set"]
 
     t0 = _time.monotonic()
-    report = optimize_lance_storage(
-        store, retention=timedelta(days=0),
-    )
+    report = optimize_hippo_storage(store)
     elapsed = round(_time.monotonic() - t0, 3)
 
-    # Post: re-open store for fresh metadata view (some LanceDB versions
-    # cache table metadata on the original handle until refresh).
+    # Post: re-open store for fresh metadata view.
     store_after = MemoryStore(path=store_path)
-    post_metrics = _maintenance_compact_metrics(
-        records_lance_dir, store=store_after,
-    )
+    post_metrics = _maintenance_compact_metrics(hippo_dir, store=store_after)
     post_id_set = post_metrics["record_id_set"]
 
-    # Verbatim-recall invariant — record-id set must be unchanged post-optimize.
+    # Verbatim-recall invariant — record-id set equality.
     if pre_id_set != post_id_set:
         missing = pre_id_set - post_id_set
         extra = post_id_set - pre_id_set
@@ -2291,7 +3059,7 @@ def _maintenance_compact_apply(
             / f".maintenance-compact-FAILED-{ts}.json"
         )
         failed_payload = {
-            "command": "iai-mcp maintenance compact-records --apply",
+            "command": "iai-mcp maintenance compact-hippo --apply",
             "timestamp_utc": ts,
             "status": "aborted",
             "reason": "record_id_set divergence post-optimize",
@@ -2323,7 +3091,7 @@ def _maintenance_compact_apply(
         return 1
 
     payload = {
-        "command": "iai-mcp maintenance compact-records --apply",
+        "command": "iai-mcp maintenance compact-hippo --apply",
         "timestamp_utc": ts,
         "status": "ok",
         "metrics_pre": {
@@ -2356,31 +3124,41 @@ def _maintenance_compact_apply(
     return 0
 
 
-def cmd_maintenance_compact_records(args: argparse.Namespace) -> int:
-    """One-shot LanceDB compaction CLI.
+def cmd_maintenance_compact_hippo(args: argparse.Namespace) -> int:
+    """Compact the Hippo storage: wal_checkpoint + VACUUM + hnswlib rebuild and
+    atomic save. Requires the daemon to be stopped (pre-flight check refuses
+    to proceed when daemon is alive).
 
     Pre-flight: refuse if the daemon process is alive (PID + cmdline check).
     Mode: `--dry-run` (default) prints metrics-only JSON; `--apply --yes`
-    runs `optimize_lance_storage(retention=timedelta(days=0))` on the
-    records/edges/events tables, asserts record-id set equality on the
-    records table, and writes an audit JSON.
+    runs `optimize_hippo_storage()` on the storage, asserts record-id set
+    equality on the records table, and writes an audit JSON.
 
     Exit codes: 0 ok, 1 pre-flight refusal or invariant abort, 2 wrong-flag
     combo (apply without yes on a non-tty).
 
-    Runs with the daemon stopped. The optimize call never paraphrases or
-    smooths stored content — it is pure storage compaction.
+    This CLI runs with the daemon stopped, so `_should_yield_to_mcp` is
+    irrelevant. The optimize call never paraphrases or smooths stored
+    content — it is pure storage compaction.
     """
+    # Emit deprecation warning when invoked via the legacy alias.
+    if getattr(args, "maintenance_cmd", None) == "compact-records":
+        print(
+            "warning: compact-records is the deprecated name for "
+            "compact-hippo; use compact-hippo going forward",
+            file=sys.stderr,
+        )
+
     # Resolve store path (same convention as cmd_schema_cleanup).
     if args.store_path is not None:
         store_path = Path(args.store_path).expanduser()
     else:
         store_path = Path.home() / ".iai-mcp"
 
-    records_lance_dir = store_path / "lancedb" / "records.lance"
-    if not records_lance_dir.exists():
+    hippo_dir = store_path / "hippo"
+    if not hippo_dir.exists():
         print(
-            f"error: records.lance not found at {records_lance_dir}",
+            f"error: hippo storage not found at {hippo_dir}",
             file=sys.stderr,
         )
         return 1
@@ -2390,7 +3168,7 @@ def cmd_maintenance_compact_records(args: argparse.Namespace) -> int:
     # Default to dry-run when neither flag set.
     if not apply:
         # Treat `--dry-run` and "neither flag" identically.
-        return _maintenance_compact_dry_run(store_path, records_lance_dir)
+        return _maintenance_compact_dry_run(store_path, hippo_dir)
 
     # --apply path: pre-flight + optional consent + optimize + invariant.
     # Pre-flight 1: daemon alive?
@@ -2411,8 +3189,8 @@ def cmd_maintenance_compact_records(args: argparse.Namespace) -> int:
     # Pre-flight 3: interactive consent.
     if not yes:
         prompt = (
-            "About to compact records.lance via optimize(cleanup_older_than="
-            "0d). Daemon must be stopped. Type 'y' to proceed: "
+            "About to compact Hippo storage via wal_checkpoint + VACUUM + "
+            "hnswlib rebuild. Daemon must be stopped. Type 'y' to proceed: "
         )
         try:
             response = input(prompt)
@@ -2422,7 +3200,97 @@ def cmd_maintenance_compact_records(args: argparse.Namespace) -> int:
             print("aborted: user did not consent", file=sys.stderr)
             return 1
 
-    return _maintenance_compact_apply(store_path, records_lance_dir)
+    return _maintenance_compact_apply(store_path, hippo_dir)
+
+
+def cmd_maintenance_compact_records(args: argparse.Namespace) -> int:
+    """Deprecated alias for cmd_maintenance_compact_hippo.
+
+    Kept for one release cycle; prints a deprecation warning to stderr
+    and delegates to the new function.
+    """
+    # Ensure the deprecation warning fires via the maintenance_cmd check
+    # in cmd_maintenance_compact_hippo.
+    args.maintenance_cmd = "compact-records"
+    return cmd_maintenance_compact_hippo(args)
+
+
+def cmd_maintenance_symmetrize_self_loops(args: argparse.Namespace) -> int:
+    """Backfill missing hebbian self-loops on existing records.
+
+    Older stores have a per-record asymmetry: dedup-touched records had
+    `(rid, rid)` hebbian self-loops; fresh-INSERT records did not. A
+    write-path fix closed the source; this CLI backfills existing stores
+    so every record has a self-loop (degree-norm symmetry across corpus).
+
+    Pre-flight: refuse if the daemon process is alive (PID + cmdline
+    check). Reuses `_maintenance_compact_preflight_daemon_alive`.
+    Mode: `--dry-run` (default) prints counts JSON; `--apply --yes`
+    writes the missing self-loops via `store.boost_edges` at delta=0.1.
+
+    Exit codes:
+      0 ok
+      1 pre-flight refusal or user-declined-consent
+      2 wrong-flag combo (apply without yes on a non-tty)
+    """
+    # Resolve store path (same convention as compact-hippo).
+    if args.store_path is not None:
+        store_path = Path(args.store_path).expanduser()
+    else:
+        store_path = Path.home() / ".iai-mcp"
+
+    hippo_dir = store_path / "hippo"
+    if not hippo_dir.exists():
+        print(
+            f"error: hippo storage not found at {hippo_dir}",
+            file=sys.stderr,
+        )
+        return 1
+
+    apply = bool(getattr(args, "apply", False))
+    yes = bool(getattr(args, "yes", False))
+
+    from iai_mcp.maintenance import symmetrize_self_loops
+    from iai_mcp.store import MemoryStore
+
+    if not apply:
+        # Default to dry-run when neither flag set.
+        store = MemoryStore(path=store_path)
+        result = symmetrize_self_loops(store, dry_run=True)
+        print(json.dumps(result, indent=2))
+        return 0
+
+    # --apply path: pre-flight + optional consent + write.
+    refusal = _maintenance_compact_preflight_daemon_alive()
+    if refusal is not None:
+        print(refusal, file=sys.stderr)
+        return 1
+
+    if not yes and not sys.stdin.isatty():
+        print(
+            "error: --apply on non-tty requires --yes (refusing to "
+            "proceed without interactive consent or explicit --yes)",
+            file=sys.stderr,
+        )
+        return 2
+
+    if not yes:
+        prompt = (
+            "About to backfill missing hebbian self-loops on records. "
+            "Daemon must be stopped. Type 'y' to proceed: "
+        )
+        try:
+            response = input(prompt)
+        except EOFError:
+            response = ""
+        if response.strip().lower() != "y":
+            print("aborted: user did not consent", file=sys.stderr)
+            return 1
+
+    store = MemoryStore(path=store_path)
+    result = symmetrize_self_loops(store, dry_run=False)
+    print(json.dumps(result, indent=2))
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -2464,14 +3332,14 @@ def cmd_lifecycle_force_unlock(args: argparse.Namespace) -> int:
 
     Operator-facing recovery path for a stale lockfile that the
     daemon's own dead-PID takeover did not clear (e.g. cross-host
-    iCloud/NFS sync where the user wants to wipe the foreign hostname
-    BEFORE booting a new daemon, or a corrupt schema bump that the
-    operator wants to inspect).
+    iCloud/NFS sync where the user wants to wipe the foreign
+    hostname BEFORE booting a new daemon, or a corrupt schema
+    bump that the operator wants to inspect).
 
-    Output: prints the prior payload (PID + hostname + started_at) so
-    the operator can confirm what was cleared. ``--yes`` skips the
-    interactive [y/N] prompt; tests pass ``--yes`` to avoid blocking on
-    input().
+    Output: prints the prior payload (PID + hostname + started_at)
+    so the operator can confirm what was cleared. ``--yes`` skips
+    the interactive [y/N] prompt; tests pass ``--yes`` to avoid
+    blocking on input().
 
     Exit codes:
       0 -- file cleared (or absent already, which is also "clear")
@@ -2543,7 +3411,15 @@ def cmd_lifecycle_status(args: argparse.Namespace) -> int:
     if progress is None:
         print("sleep_cycle_progress: none")
     else:
-        step = progress.get("last_completed_step", 0)
+        # Prefer the canonical key `last_completed_index` (position into
+        # `SleepPipeline._STEP_ORDER`); fall back to the legacy
+        # `last_completed_step` key (a `SleepStep.<NAME>.value`) so older
+        # `lifecycle_state.json` files render without a daemon restart.
+        # The display field name `step` stays — operator-facing shorthand.
+        step = progress.get(
+            "last_completed_index",
+            progress.get("last_completed_step", 0),
+        )
         attempt = progress.get("attempt", 0)
         last_error = progress.get("last_error") or "none"
         started_at = progress.get("started_at", "?")
@@ -2563,7 +3439,9 @@ def cmd_lifecycle_status(args: argparse.Namespace) -> int:
 
     shadow = record.get("shadow_run", True)
     if shadow:
-        print("shadow_run: true")
+        print(
+            "shadow_run: true (legacy RSS-watchdog still owns shutdown)"
+        )
     else:
         print("shadow_run: false")
 
@@ -2578,7 +3456,7 @@ def cmd_lifecycle_status(args: argparse.Namespace) -> int:
 #   --force              Run even when quarantined (operator override).
 #   --reset-quarantine   Clear quarantine first; then run normally.
 #
-# Output format: one line per step in `[N/5] step_name ... ok (Ms)` format,
+# Output: one line per step in `[N/5] step_name ... ok (Ms)` format,
 # plus a final summary line. On quarantine without --force, exits non-zero
 # with an informational message pointing at --force / --reset-quarantine.
 # ---------------------------------------------------------------------------
@@ -2598,12 +3476,10 @@ def cmd_maintenance_sleep_cycle(args: argparse.Namespace) -> int:
     follow along in a terminal; structured event-log entries cover
     machine-readable telemetry needs.
 
-    No daemon-stopped pre-flight: unlike `compact-records`, the sleep
-    pipeline calls Lance optimize on a 1-day retention window (NOT
-    retention=0d for steps 1-4), so coexistence with the daemon's own
-    `optimize_lance_storage` periodic call is safe (LanceDB MVCC).
-    Step 5 (compact_records) uses retention=0d and is intended for
-    CLI-only invocation.
+    No daemon-stopped pre-flight: unlike `compact-hippo`, the sleep
+    pipeline calls optimize_hippo_storage inside the running daemon, so
+    coexistence with the daemon's own compaction pass is safe.
+    Step 5 (compact_records) uses the same helper, run sequentially.
     """
     from datetime import timezone as _tz
 
@@ -2621,6 +3497,7 @@ def cmd_maintenance_sleep_cycle(args: argparse.Namespace) -> int:
     try:
         store = MemoryStore(path=store_path)
     except Exception as exc:  # noqa: BLE001
+        logger.error("sleep-cycle MemoryStore open failed: %s", exc)
         print(
             f"error: could not open MemoryStore at {store_path}: {exc}",
             file=sys.stderr,
@@ -2662,14 +3539,13 @@ def cmd_maintenance_sleep_cycle(args: argparse.Namespace) -> int:
         )
         return 1
 
-    # Step-name -> 1..5 index for the progress prefix.
+    # Step-name -> 1..N progress index. Derived from `_STEP_ORDER` so
+    # future APPEND-without-renumber inserts auto-display in the right
+    # slot (the dispatch order is the source of truth, not enum value).
     step_index = {
-        SleepStep.SCHEMA_MINE: 1,
-        SleepStep.KNOB_TUNE: 2,
-        SleepStep.DREAM_DECAY: 3,
-        SleepStep.OPTIMIZE_LANCE: 4,
-        SleepStep.COMPACT_RECORDS: 5,
+        step: i + 1 for i, step in enumerate(SleepPipeline._STEP_ORDER)
     }
+    total_steps = len(SleepPipeline._STEP_ORDER)
 
     print("Sleep cycle started.")
     # Run via force_run() if --force was passed, else run().
@@ -2686,7 +3562,7 @@ def cmd_maintenance_sleep_cycle(args: argparse.Namespace) -> int:
         # `duration_sec` for the whole run). Print "ok" without timing
         # to keep the line shape stable; precise per-step timings live
         # in the lifecycle event log under sleep_step_completed.
-        print(f"[{idx}/5] {step.name.lower()} ... ok")
+        print(f"[{idx}/{total_steps}] {step.name.lower()} ... ok")
 
     duration = result.get("duration_sec", 0.0)
     failed = result.get("failed_step")
@@ -2697,7 +3573,7 @@ def cmd_maintenance_sleep_cycle(args: argparse.Namespace) -> int:
         idx = step_index.get(failed, "?")
         err = result.get("error") or "unknown"
         print(
-            f"[{idx}/5] {failed.name.lower()} ... FAILED: {err}",
+            f"[{idx}/{total_steps}] {failed.name.lower()} ... FAILED: {err}",
             file=sys.stderr,
         )
         if quarantine_triggered:
@@ -2731,10 +3607,19 @@ def _build_parser() -> argparse.ArgumentParser:
     h = sub.add_parser("health", help="show LLM health status")
     h.set_defaults(func=cmd_health)
 
+    bn = sub.add_parser(
+        "build-native",
+        help=(
+            "compile the Rust native extension (iai_mcp_native) in-place. "
+            "Run after Python upgrade or on fresh clone. Requires cargo."
+        ),
+    )
+    bn.set_defaults(func=cmd_build_native)
+
     m = sub.add_parser(
         "migrate",
         help=(
-            "migrate records: 1->2 (schema) or 2->3 (encryption) or 3->4 (TEM); "
+            "migrate records: 1->2 or 2->3 (encryption); "
             "OR --resume / --rollback a partial reembed migration"
         ),
     )
@@ -2742,8 +3627,9 @@ def _build_parser() -> argparse.ArgumentParser:
     m.add_argument("--to", type=int, default=2)
     m.add_argument("--dry-run", action="store_true")
     m.add_argument("--verbose", "-v", action="store_true")
-    # Crash-safe-reembed entry points. Additive flags; --from/--to dispatch
-    # is unchanged when neither --resume nor --rollback is passed.
+    # Crash-safe-reembed entry points. Additive flags;
+    # --from/--to dispatch is unchanged when neither --resume nor --rollback
+    # is passed.
     m.add_argument(
         "--resume",
         action="store_true",
@@ -2762,15 +3648,15 @@ def _build_parser() -> argparse.ArgumentParser:
     # Crypto subcommand.
     c = sub.add_parser(
         "crypto",
-        help="encryption key management (AES-256-GCM)",
+        help="encryption key management",
     )
     crypto_sub = c.add_subparsers(dest="crypto_cmd", required=True)
 
     cs = crypto_sub.add_parser(
         "status",
         help=(
-            "show file-backend key status: backend, path, mode, uid, "
-            "length validation, passphrase-fallback flag"
+            "show file-backend key status: backend, path, "
+            "mode, uid, length validation, passphrase-fallback flag"
         ),
     )
     cs.add_argument("--user-id", dest="user_id", default="default")
@@ -2782,12 +3668,12 @@ def _build_parser() -> argparse.ArgumentParser:
     cr.add_argument("--user-id", dest="user_id", default="default")
     cr.set_defaults(func=cmd_crypto_rotate)
 
-    # Migrate-to-file + init subcommands.
+    # migrate-to-file + init subcommands.
     mtf = crypto_sub.add_parser(
         "migrate-to-file",
         help=(
-            "one-time: read existing key from macOS Keychain and write to "
-            ".crypto.key file (interactive Terminal only)"
+            "one-time: read existing key from macOS Keychain "
+            "and write to .crypto.key file (interactive Terminal only)"
         ),
     )
     mtf.add_argument("--user-id", dest="user_id", default="default")
@@ -2821,7 +3707,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "recover-with-prior-key",
         help=(
             "stage all records, decrypt literal/provenance/gain with current "
-            "then prior key, re-encrypt under current key; atomic Lance swap"
+            "then prior key, re-encrypt under current key; atomic store swap"
         ),
     )
     rwpk.add_argument(
@@ -2850,7 +3736,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     t = sub.add_parser(
         "trajectory",
-        help="aggregate M1..M6 trajectory events",
+        help="aggregate trajectory events",
     )
     t.add_argument(
         "--since",
@@ -2860,17 +3746,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     t.set_defaults(func=cmd_trajectory)
 
-    # Live topology snapshot.
+    # live topology snapshot (sigma + C + L + community + rich-club).
     topo = sub.add_parser(
         "topology",
-        help=(
-            "live small-world topology snapshot: "
-            "C, L, sigma, communities, rich-club ratio, N, regime"
-        ),
+        help="live small-world topology snapshot: C, L, sigma, communities, rich-club ratio, N, regime",
     )
     topo.set_defaults(func=cmd_topology)
 
-    # Capture a Claude Code JSONL transcript into the store
+    # Ambient capture: capture a Claude Code JSONL transcript into the store
     # (called by ~/.claude/hooks/iai-mcp-session-capture.sh).
     cap = sub.add_parser(
         "capture-transcript",
@@ -2888,10 +3771,10 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help=(
-            "Hook-only mode: write transcript to "
-            "~/.iai-mcp/.deferred-captures/ and exit 0 within 2s. "
-            "NEVER spawn the daemon. Used by "
-            "~/.claude/hooks/iai-mcp-session-capture.sh."
+            "Hook-only mode: try connect with 250ms timeout. On miss, write "
+            "transcript to ~/.iai-mcp/.deferred-captures/ and exit 0 within 2s. "
+            "NEVER spawn daemon. Used by ~/.claude/hooks/iai-mcp-session-capture.sh "
+            "to eliminate spawn vector."
         ),
     )
     cap.set_defaults(func=cmd_capture_transcript)
@@ -2923,6 +3806,17 @@ def _build_parser() -> argparse.ArgumentParser:
     ssp.add_argument("--session-id", default="-", help="session id for provenance")
     ssp.set_defaults(func=cmd_session_start)
 
+    sris = sub.add_parser(
+        "session-refresh-if-stale",
+        help=(
+            "UserPromptSubmit hook gate: compare MAX(created_at) against the "
+            "per-session watermark sidecar; call session_refresh_if_stale RPC "
+            "only when new memory exists; emit additionalContext JSON on trigger."
+        ),
+    )
+    sris.add_argument("--session-id", default="-", help="session id for watermark sidecar")
+    sris.set_defaults(func=cmd_session_refresh_if_stale)
+
     # Ambient-capture installer: drops the Stop hook into
     # ~/.claude/hooks/ and patches ~/.claude/settings.json. Makes a fresh
     # install of iai-mcp on another machine a two-step flow:
@@ -2943,7 +3837,7 @@ def _build_parser() -> argparse.ArgumentParser:
                       help="show whether the Stop hook is installed and active"
                       ).set_defaults(func=cmd_capture_hooks_status)
 
-    # Audit subcommand.
+    # Audit subcommand + sub-subcommands.
     a = sub.add_parser(
         "audit",
         help="identity + shield audit log",
@@ -2997,13 +3891,13 @@ def _build_parser() -> argparse.ArgumentParser:
     di.add_argument(
         "--yes", "-y",
         action="store_true",
-        help="skip the first-run consent banner (audit trail still written)",
+        help="skip the consent banner (records --yes audit-trail still)",
     )
     di.set_defaults(func=cmd_daemon_install)
 
     du = daemon_sub.add_parser(
         "uninstall",
-        help="clean uninstall: remove plist/unit + state files",
+        help="clean uninstall: remove plist/unit + 3 state files",
     )
     du.add_argument("--yes", "-y", action="store_true")
     du.set_defaults(func=cmd_daemon_uninstall)
@@ -3047,6 +3941,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "resume", help="resume daemon scheduler after a pause",
     ).set_defaults(func=cmd_daemon_resume)
 
+    daemon_sub.add_parser(
+        "stats",
+        help=(
+            "Longitudinal metrics: session_start_tokens_p90 over the "
+            "most recent 100 session_started events (persisted in the events table)"
+        ),
+    ).set_defaults(func=cmd_daemon_stats)
+
     dconf = daemon_sub.add_parser(
         "configure",
         help=(
@@ -3067,15 +3969,15 @@ def _build_parser() -> argparse.ArgumentParser:
     dconf.add_argument("value", nargs="?", default=None)
     dconf.set_defaults(func=cmd_daemon_configure)
 
-    # Schema-cleanup top-level subcommand. NOT under `iai-mcp migrate ...` —
-    # `migrate` namespace is reserved for v-bump schema migrations; this is
-    # a maintenance op.
+    # schema-cleanup top-level subcommand. NOT under `iai-mcp migrate ...` —
+    # the `migrate` namespace is reserved for v-bump schema migrations
+    # (v3 -> v4 etc); this is a maintenance op.
     sc = sub.add_parser(
         "schema-cleanup",
         help=(
-            "soft-delete duplicate schema records. Default mode is "
-            "--dry-run; --apply snapshots the LanceDB dir and performs "
-            "the cleanup. Idempotent (re-running is a no-op)."
+            "soft-delete duplicate schema records. Default "
+            "mode is --dry-run; --apply snapshots the store dir and "
+            "performs the cleanup. Idempotent (re-running is a no-op)."
         ),
     )
     sc_mode = sc.add_mutually_exclusive_group()
@@ -3089,33 +3991,34 @@ def _build_parser() -> argparse.ArgumentParser:
         "--apply",
         action="store_true",
         default=False,
-        help="snapshot the LanceDB dir + soft-delete duplicates",
+        help="snapshot the store dir + soft-delete duplicates",
     )
     sc.add_argument(
         "--store-path",
         dest="store_path",
         default=None,
         help=(
-            "IAI root directory (defaults to ~/.iai-mcp; LanceDB tables "
-            "live at <store-path>/lancedb)"
+            "IAI root directory (defaults to ~/.iai-mcp; Hippo data "
+            "lives at <store-path>/hippo)"
         ),
     )
     sc.set_defaults(func=cmd_schema_cleanup)
 
-    # Top-level `maintenance` subcommand for one-shot Lance compaction.
-    # Same placement precedent as `schema-cleanup` and `doctor`.
+    # Top-level `maintenance` subcommand for one-shot Hippo compaction.
+    # Same placement precedent as `schema-cleanup` and `doctor` — top-level
+    # discoverability matters for first-touch ops.
     mtn = sub.add_parser(
         "maintenance",
         help=(
-            "one-shot maintenance ops. Currently: compact-records "
-            "(drain LanceDB version-manifest pile) and sleep-cycle."
+            "one-shot maintenance ops. Currently: compact-hippo "
+            "(PRAGMA wal_checkpoint + VACUUM + hnswlib rebuild)."
         ),
     )
     mtn_sub = mtn.add_subparsers(dest="maintenance_cmd", required=True)
     mtn_compact = mtn_sub.add_parser(
-        "compact-records",
+        "compact-hippo",
         help=(
-            "compact records.lance via optimize(cleanup_older_than=0d). "
+            "compact Hippo storage: wal_checkpoint + VACUUM + hnswlib rebuild. "
             "DAEMON MUST BE STOPPED. Default --dry-run; --apply requires "
             "--yes for non-tty."
         ),
@@ -3131,7 +4034,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--apply",
         action="store_true",
         default=False,
-        help="run optimize(cleanup_older_than=0d) on records/edges/events",
+        help="run wal_checkpoint + VACUUM + hnswlib rebuild on Hippo storage",
     )
     mtn_compact.add_argument(
         "--yes", "-y",
@@ -3144,21 +4047,92 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="store_path",
         default=None,
         help=(
-            "IAI root directory (defaults to ~/.iai-mcp; LanceDB tables "
-            "live at <store-path>/lancedb). Mirrors `schema-cleanup` flag."
+            "IAI root directory (defaults to ~/.iai-mcp; Hippo data "
+            "lives at <store-path>/hippo). Mirrors `schema-cleanup` flag."
         ),
     )
-    mtn_compact.set_defaults(func=cmd_maintenance_compact_records)
+    mtn_compact.set_defaults(func=cmd_maintenance_compact_hippo)
+    # Deprecation alias: compact-records → compact-hippo (one release cycle).
+    mtn_compact_legacy = mtn_sub.add_parser(
+        "compact-records",
+        help="Deprecated alias for compact-hippo (kept for one release).",
+    )
+    mtn_compact_legacy_mode = mtn_compact_legacy.add_mutually_exclusive_group()
+    mtn_compact_legacy_mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="(default) print metrics-only JSON; do NOT call optimize",
+    )
+    mtn_compact_legacy_mode.add_argument(
+        "--apply",
+        action="store_true",
+        default=False,
+        help="run wal_checkpoint + VACUUM + hnswlib rebuild on Hippo storage",
+    )
+    mtn_compact_legacy.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        default=False,
+        help="(use with --apply) skip the interactive 'y/N' prompt",
+    )
+    mtn_compact_legacy.add_argument(
+        "--store-path",
+        dest="store_path",
+        default=None,
+        help=(
+            "IAI root directory (defaults to ~/.iai-mcp; Hippo data "
+            "lives at <store-path>/hippo). Mirrors `schema-cleanup` flag."
+        ),
+    )
+    mtn_compact_legacy.set_defaults(func=cmd_maintenance_compact_records)
 
-    # Maintenance sleep-cycle subcommand.
-    # Runs the 5-step SleepPipeline (schema_mine -> knob_tune ->
-    # dream_decay -> optimize_lance -> compact_records) once, with
-    # quarantine gating + bounded-deferral support.
+    mtn_symmetrize = mtn_sub.add_parser(
+        "symmetrize-self-loops",
+        help=(
+            "backfill missing hebbian self-loops on existing records. "
+            "DAEMON MUST BE STOPPED. Default --dry-run; --apply requires "
+            "--yes for non-tty."
+        ),
+    )
+    mtn_symmetrize_mode = mtn_symmetrize.add_mutually_exclusive_group()
+    mtn_symmetrize_mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="(default) print counts JSON; do NOT write self-loops",
+    )
+    mtn_symmetrize_mode.add_argument(
+        "--apply",
+        action="store_true",
+        default=False,
+        help="write missing self-loops at delta=0.1 (hebbian edge_type)",
+    )
+    mtn_symmetrize.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        default=False,
+        help="(use with --apply) skip the interactive 'y/N' prompt",
+    )
+    mtn_symmetrize.add_argument(
+        "--store-path",
+        dest="store_path",
+        default=None,
+        help=(
+            "IAI root directory (defaults to ~/.iai-mcp; Hippo data "
+            "lives at <store-path>/hippo). Mirrors compact-hippo flag."
+        ),
+    )
+    mtn_symmetrize.set_defaults(func=cmd_maintenance_symmetrize_self_loops)
+
+    # maintenance sleep-cycle subcommand: runs the 5-step SleepPipeline
+    # (schema_mine -> knob_tune -> dream_decay -> optimize_hippo ->
+    # compact_records) once, with quarantine gating + bounded-deferral.
     mtn_sleep = mtn_sub.add_parser(
         "sleep-cycle",
         help=(
             "run the 5-step sleep pipeline once: "
-            "schema_mine, knob_tune, dream_decay, optimize_lance, "
+            "schema_mine, knob_tune, dream_decay, optimize_hippo, "
             "compact_records. 3-strike auto-quarantine; use --force "
             "to override, --reset-quarantine to clear."
         ),
@@ -3181,29 +4155,28 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="store_path",
         default=None,
         help=(
-            "IAI root directory (defaults to ~/.iai-mcp; LanceDB tables "
-            "live at <store-path>/lancedb)"
+            "IAI root directory (defaults to ~/.iai-mcp; Hippo data "
+            "lives at <store-path>/hippo)"
         ),
     )
     mtn_sleep.set_defaults(func=cmd_maintenance_sleep_cycle)
 
-    # Doctor top-level subcommand. Same placement precedent as
-    # `iai-mcp schema-cleanup`, NOT nested under `iai-mcp daemon`.
-    # First-touch recovery tool — top-level discoverability matters
-    # when the user sees `daemon_unreachable`.
+    # doctor top-level subcommand. NOT nested under `iai-mcp daemon` —
+    # top-level discoverability matters when the user sees
+    # `daemon_unreachable`.
     doc = sub.add_parser(
         "doctor",
         help=(
-            "Diagnose daemon health (7 checks including duplicate-binder "
-            "detection). With --apply, attempt safe repairs (unlink stale "
-            "socket, kill duplicate binders, cleanup orphans, respawn daemon). "
-            "With --apply --yes, skip confirmations. "
+            "Diagnose daemon health (7 checks; (g) duplicate-binder detection). "
+            "With --apply, attempt safe repairs "
+            "(unlink stale socket, kill duplicate binders, cleanup orphans, "
+            "respawn daemon). With --apply --yes, skip confirmations. "
             "Exit 0=all green, 1=any FAIL, 2=--apply tried but FAIL persists."
         ),
     )
     # --apply is additive (NOT a mode switch like dry-run/apply on
     # schema-cleanup), so no mutually-exclusive group; --yes is a sub-modifier
-    # that cmd_doctor checks for its warning semantics if used alone.
+    # that cmd_doctor checks for warning-and-ignore semantics if used alone.
     doc.add_argument(
         "--apply",
         action="store_true",
@@ -3216,10 +4189,28 @@ def _build_parser() -> argparse.ArgumentParser:
         default=False,
         help="(use with --apply) skip confirmation prompts; equivalent to typing 'y' to all",
     )
-    doc.set_defaults(func=cmd_doctor)
+    # Forces headless mode: downgrades (n) HID idle source + (b) socket
+    # file fresh from FAIL to WARN. Auto-detected on Linux when
+    # DISPLAY/WAYLAND_DISPLAY are unset; on macOS this flag is the only
+    # path (Quartz desktops never set DISPLAY).
+    doc.add_argument(
+        "--headless",
+        action="store_true",
+        default=False,
+        help=(
+            "force headless mode (downgrade `(n) HID idle source` and "
+            "`(b) socket file fresh` from FAIL to WARN). Auto-detected on "
+            "Linux when DISPLAY/WAYLAND_DISPLAY are unset; on macOS use this "
+            "flag explicitly."
+        ),
+    )
+    def _cmd_doctor_lazy(args: argparse.Namespace) -> int:
+        from iai_mcp.doctor import cmd_doctor
+        return cmd_doctor(args)
+    doc.set_defaults(func=_cmd_doctor_lazy)
 
-    # iai-mcp lifecycle status. Top-level placement follows the
-    # `doctor` / `maintenance` precedent.
+    # lifecycle status. Top-level placement follows the `doctor` /
+    # `maintenance` precedent: first-touch observability matters.
     lc = sub.add_parser(
         "lifecycle",
         help=(
@@ -3238,7 +4229,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     lc_status.set_defaults(func=cmd_lifecycle_status)
 
-    # Force-unlock recovery for ~/.iai-mcp/.locked. Operator path;
+    # force-unlock recovery for ~/.iai-mcp/.locked. Operator path;
     # daemon-side dead-PID takeover handles the common case automatically.
     lc_unlock = lc_sub.add_parser(
         "force-unlock",
@@ -3254,6 +4245,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     lc_unlock.set_defaults(func=cmd_lifecycle_force_unlock)
 
+    # Read-side substring fallback over the memory-bank tier.
     br = sub.add_parser(
         "bank-recall",
         help=(
@@ -3279,6 +4271,24 @@ def _build_parser() -> argparse.ArgumentParser:
         help="emit JSON to stdout (current default; --no-json is reserved)",
     )
     br.set_defaults(func=cmd_bank_recall)
+
+    # Terminal capture file recovery — socket-first, direct-open fallback.
+    dpf = sub.add_parser(
+        "drain-permanent-failed",
+        help=(
+            "recover terminal .permanent-failed-*.jsonl files from "
+            ".deferred-captures/. Routes through daemon socket when daemon "
+            "is running; direct-open fallback when daemon is down. "
+            "--dry-run lists files without mutating anything."
+        ),
+    )
+    dpf.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="list terminal files + event counts without inserting or renaming",
+    )
+    dpf.set_defaults(func=cmd_drain_permanent_failed)
 
     return parser
 

@@ -1,6 +1,6 @@
-"""— comprehensive tests for ``IdleDetector``.
+"""Comprehensive tests for ``IdleDetector``.
 
-Covers the 11-test matrix from CONTEXT 10.4:
+Covers the 11-test matrix:
 - HIDIdleTime parses ioreg output (ns -> sec).
 - HIDIdleTime returns None when ioreg missing (FileNotFoundError).
 - pmset detects sleep event within window.
@@ -55,7 +55,7 @@ def _ioreg_stdout(idle_ns: int) -> str:
 
 
 def _pmset_log_stdout(events: list[tuple[str, str]]) -> str:
-    """Build a fake pmset -g log stdout from ``[(timestamp, marker), ...]``.
+    """Build a fake pmset -g log stdout from ``[(timestamp, marker),...]``.
 
     Each event becomes a line in the format the real pmset emits — the
     timestamp regex anchors the line, and the marker substring is what
@@ -132,7 +132,7 @@ def test_pmset_recent_sleep_detects_event_within_window() -> None:
 
 
 def test_pmset_recent_sleep_detects_display_off_event() -> None:
-    """'Display is turned off' marker also counts (per CONTEXT 10.4)."""
+    """'Display is turned off' marker also counts."""
     log = _pmset_log_stdout([
         (_now_pmset_ts(offset_min=1), "Display is turned off"),
     ])

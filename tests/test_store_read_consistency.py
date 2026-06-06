@@ -89,15 +89,12 @@ def test_reader_with_strong_consistency_sees_writer_insert(tmp_store_env):
 
 
 def test_default_connection_is_snapshot_pinned(tmp_store_env):
-    """Documents the non-default behaviour: a reader opened with the
-    default ``read_consistency_interval=None`` pins its view of the
-    ``records`` table to the version present at ``open_table`` time.
+    """Documents Hippo/SQLite consistency: all reads see committed writes.
 
-    This is the semantics short-lived MCP callers rely on (they finish
-    and exit before staleness matters). Guards against an accidental
-    default change that would regress MCP latency. The test also proves
-    ``checkout_latest()`` is the manual escape hatch, matching the
-    LanceDB consistency contract.
+    SQLite WAL mode with autocommit provides read-committed isolation.
+    Unlike LanceDB (which had snapshot pinning), every count_rows() call
+    sees all previously committed rows. The read_consistency_interval kwarg
+    is a no-op on the Hippo backend but is preserved for API compatibility.
     """
     from iai_mcp.store import MemoryStore
 
@@ -108,13 +105,8 @@ def test_default_connection_is_snapshot_pinned(tmp_store_env):
     writer = MemoryStore()
     writer.insert(_make_record(writer))
 
-    # Same table handle, reader did not ask for strong consistency:
-    # the pinned snapshot still shows zero.
-    assert records_tbl.count_rows() == 0
-
-    # Manual refresh restores visibility — this is the second blessed
-    # pattern (strong consistency being the first).
-    records_tbl.checkout_latest()
+    # Hippo (SQLite WAL autocommit) provides immediate read visibility:
+    # the write is committed and every subsequent read sees it.
     assert records_tbl.count_rows() == 1
 
 

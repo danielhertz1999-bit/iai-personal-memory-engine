@@ -1,8 +1,8 @@
-"""-- iai-mcp daemon subcommand group tests ( + ).
+"""iai-mcp daemon subcommand group tests.
 
 Verifies dispatcher wiring, install/uninstall flow with consent banner,
-launchd / systemd template rendering with sys.executable substitution
-(Pitfall 5), version skew detection in `daemon status`, and C4 clean uninstall
+launchd / systemd template rendering with sys.executable substitution,
+version skew detection in `daemon status`, and clean uninstall
 (removes plist/unit + all 3 state files).
 
 All subprocess calls (launchctl, systemctl, loginctl, tail, journalctl) are
@@ -215,7 +215,7 @@ def test_install_macos_writes_plist_with_sys_executable(
     assert rc == 0
     assert cli_mod.LAUNCHD_TARGET.exists()
     contents = cli_mod.LAUNCHD_TARGET.read_text()
-    # Pitfall 5: absolute sys.executable substituted into plist
+    # Absolute sys.executable must be substituted into plist.
     assert sys.executable in contents
     # USERNAME placeholder substituted (not present literally)
     assert "{USERNAME}" not in contents
@@ -297,9 +297,8 @@ def test_install_without_yes_prompts_consent_banner_aborts(
 
     err = capsys.readouterr().err
     # Banner must mention key phrases.
-    # Banner phrasing was updated 2026-04-19 (bge-small-en pivot):
-    # "rises to ~2 GB if the opt-in bge-m3 model is selected" — with space.
-    assert "~2 GB" in err or "2 GB" in err
+    # RAM budget is ~400 MB (bge-small-en-v1.5 kept warm).
+    assert "~400 MB" in err or "400 MB" in err
     assert "1%" in err
     assert "iai-mcp daemon uninstall" in err
 
@@ -320,7 +319,7 @@ def test_install_consent_records_audit_trail(
     fake_state_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """D-10 audit trail: explicit consent writes a timestamped JSON receipt
+    """Audit trail: explicit consent writes a timestamped JSON receipt
     under ~/.iai-mcp/.consent-*.json so a later forensic review can confirm
     the user actually consented (not bypassed via --yes)."""
     monkeypatch.setattr(platform, "system", lambda: "Darwin")
@@ -336,7 +335,7 @@ def test_install_consent_records_audit_trail(
 
 
 # ---------------------------------------------------------------------------
-# Test 5: macOS uninstall removes plist + all 3 state files
+# Test 5: macOS uninstall removes plist + all 3 state files (C4)
 # ---------------------------------------------------------------------------
 
 
@@ -358,7 +357,7 @@ def test_uninstall_macos_removes_plist_and_all_state_files(
 
     rc = cli_mod.main(["daemon", "uninstall", "--yes"])
     assert rc == 0
-    # C4 invariant: all 4 artefacts gone
+    # all 4 artefacts gone
     assert not cli_mod.LAUNCHD_TARGET.exists()
     assert not cli_mod.LOCK_PATH.exists()
     assert not cli_mod.SOCKET_PATH.exists()
@@ -366,7 +365,7 @@ def test_uninstall_macos_removes_plist_and_all_state_files(
 
 
 # ---------------------------------------------------------------------------
-# Test 6: Linux uninstall removes unit + all 3 state files
+# Test 6: Linux uninstall removes unit + all 3 state files (C4)
 # ---------------------------------------------------------------------------
 
 
@@ -412,6 +411,10 @@ def test_status_socket_round_trip(
     capsys: pytest.CaptureFixture,
 ) -> None:
     monkeypatch.setattr(cli_mod, "SOCKET_PATH", short_socket)
+    # CLI resolves IAI_DAEMON_SOCKET_PATH before the SOCKET_PATH constant
+    # (env wins, by contract), and the autouse fixture points that env at an
+    # empty tmp socket; redirect it to this test's live socket (last-wins).
+    monkeypatch.setenv("IAI_DAEMON_SOCKET_PATH", str(short_socket))
     captured: list[dict] = []
     daemon = _ThreadedFakeDaemon(
         short_socket,
@@ -461,6 +464,10 @@ def test_status_warns_on_version_skew(
     capsys: pytest.CaptureFixture,
 ) -> None:
     monkeypatch.setattr(cli_mod, "SOCKET_PATH", short_socket)
+    # CLI resolves IAI_DAEMON_SOCKET_PATH before the SOCKET_PATH constant
+    # (env wins, by contract), and the autouse fixture points that env at an
+    # empty tmp socket; redirect it to this test's live socket (last-wins).
+    monkeypatch.setenv("IAI_DAEMON_SOCKET_PATH", str(short_socket))
     captured: list[dict] = []
     daemon = _ThreadedFakeDaemon(
         short_socket,
@@ -519,7 +526,7 @@ def test_configure_set_cycle_count_persists(
     assert state["cycle_count_override"] == 5
 
 
-def test_configure_disable_host_persists(
+def test_configure_disable_claude_persists(
     fake_state_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -542,6 +549,10 @@ def test_force_rem_sends_correct_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(cli_mod, "SOCKET_PATH", short_socket)
+    # CLI resolves IAI_DAEMON_SOCKET_PATH before the SOCKET_PATH constant
+    # (env wins, by contract), and the autouse fixture points that env at an
+    # empty tmp socket; redirect it to this test's live socket (last-wins).
+    monkeypatch.setenv("IAI_DAEMON_SOCKET_PATH", str(short_socket))
     captured: list[dict] = []
     daemon = _ThreadedFakeDaemon(
         short_socket, captured, reply={"ok": True, "cycles_completed": 1},
@@ -552,7 +563,9 @@ def test_force_rem_sends_correct_message(
         assert rc == 0
     finally:
         daemon.stop()
-    assert captured == [{"type": "force_rem"}]
+    assert len(captured) == 1
+    assert captured[0]["type"] == "force_rem"
+    assert isinstance(captured[0].get("ts"), str)
 
 
 # ---------------------------------------------------------------------------
@@ -565,6 +578,10 @@ def test_pause_sends_seconds_arg(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(cli_mod, "SOCKET_PATH", short_socket)
+    # CLI resolves IAI_DAEMON_SOCKET_PATH before the SOCKET_PATH constant
+    # (env wins, by contract), and the autouse fixture points that env at an
+    # empty tmp socket; redirect it to this test's live socket (last-wins).
+    monkeypatch.setenv("IAI_DAEMON_SOCKET_PATH", str(short_socket))
     captured: list[dict] = []
     daemon = _ThreadedFakeDaemon(short_socket, captured, reply={"ok": True})
     daemon.start()
@@ -581,6 +598,10 @@ def test_resume_sends_resume_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(cli_mod, "SOCKET_PATH", short_socket)
+    # CLI resolves IAI_DAEMON_SOCKET_PATH before the SOCKET_PATH constant
+    # (env wins, by contract), and the autouse fixture points that env at an
+    # empty tmp socket; redirect it to this test's live socket (last-wins).
+    monkeypatch.setenv("IAI_DAEMON_SOCKET_PATH", str(short_socket))
     captured: list[dict] = []
     daemon = _ThreadedFakeDaemon(short_socket, captured, reply={"ok": True})
     daemon.start()
@@ -613,20 +634,23 @@ def test_start_macos_uses_launchctl_kickstart(
     assert any("launchctl kickstart" in s for s in cmd_strs), cmd_strs
 
 
-def test_stop_macos_uses_launchctl_kill_sigterm(
+def test_stop_macos_disables_keepalive_then_signals(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """daemon stop (macOS) now disables KeepAlive (launchctl bootout) and
+    self-issues a signal to the lockfile PID -- it no longer relies on the
+    in-loop-handler `launchctl kill SIGTERM` path."""
     monkeypatch.setattr(platform, "system", lambda: "Darwin")
-    calls: list[list[str]] = []
-    monkeypatch.setattr(
-        cli_mod.subprocess,
-        "run",
-        lambda argv, **k: (calls.append(list(argv)) or type("R", (), {"returncode": 0})()),
+    calls, sig = _patch_stop_collaborators(
+        monkeypatch, pid=9090, alive_sequence=[True, False],
     )
     rc = cli_mod.main(["daemon", "stop"])
     assert rc == 0
-    cmd_strs = [" ".join(c) for c in calls]
-    assert any("launchctl kill SIGTERM" in s for s in cmd_strs), cmd_strs
+    run_strs = [" ".join(c[1]) for c in calls if c[0] == "run"]
+    assert any("launchctl bootout" in s for s in run_strs), calls
+    # The legacy in-loop `launchctl kill SIGTERM` path is gone.
+    assert not any("launchctl kill" in s for s in run_strs), calls
+    assert ("kill", 9090, sig.SIGTERM) in calls
 
 
 def test_start_linux_uses_systemctl_start(
@@ -748,3 +772,266 @@ def test_daemon_help_lists_all_subcommands(
         "configure",
     ):
         assert sub in out, f"missing {sub} in daemon --help output"
+
+
+# ---------------------------------------------------------------------------
+# Test 14: force-rem message passes the real daemon validator
+# ---------------------------------------------------------------------------
+
+
+def test_force_rem_message_passes_daemon_validator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression guard: the force-rem CLI request must satisfy the daemon's
+    validator (requires ts to be a str).  Reverting the ts field makes this
+    test fail with "ts must be a string"."""
+    from iai_mcp.concurrency import _validate_socket_message
+
+    captured: dict = {}
+
+    def fake_send(req, *, timeout=None):
+        captured["req"] = req
+        return {"ok": True, "reason": "rem_queued"}
+
+    monkeypatch.setattr(cli_mod, "_send_socket_request", fake_send)
+
+    rc = cli_mod.main(["daemon", "force-rem"])
+    assert rc == 0
+    req = captured["req"]
+    assert req["type"] == "force_rem"
+    ok, err = _validate_socket_message(req)
+    assert ok is True and err is None, f"validator rejected: {err}"
+
+
+# ---------------------------------------------------------------------------
+# daemon stop (DMN-02): self-issued SIGTERM->bounded-wait->SIGKILL escalation
+# (path B). The shipped mechanism MUST match what the hermetic wedged-loop
+# test proves. All signals + launchctl are mocked: NEVER the real daemon,
+# NEVER a real PID.
+# ---------------------------------------------------------------------------
+
+
+def _patch_stop_collaborators(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    pid,
+    alive_sequence,
+):
+    """Wire a shared ordered call-log across subprocess.run + os.kill +
+    a scripted _is_pid_alive, and stub LifecycleLock.read -> {"pid": pid}.
+
+    Returns the call-log list of tagged tuples in chronological order:
+      ("run", argv_list)         -- a subprocess.run (launchctl) invocation
+      ("kill", pid, signum)      -- an os.kill invocation
+    `alive_sequence` is consumed one item per _is_pid_alive call (after the
+    last item is reached, the final value sticks).
+    """
+    import signal as _signal
+    import iai_mcp.lifecycle_lock as lifecycle_lock
+
+    calls: list = []
+
+    def _fake_run(argv, **kwargs):
+        calls.append(("run", list(argv)))
+        class _R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return _R()
+
+    def _fake_kill(target_pid, signum):
+        calls.append(("kill", target_pid, signum))
+
+    seq = list(alive_sequence)
+    idx = {"i": 0}
+
+    def _fake_is_pid_alive(target_pid):
+        i = idx["i"]
+        if i < len(seq):
+            val = seq[i]
+            idx["i"] = i + 1
+        else:
+            val = seq[-1] if seq else False
+        return val
+
+    # Patch where cmd_daemon_stop binds them (it does a lazy
+    # `from iai_mcp.lifecycle_lock import LifecycleLock, _is_pid_alive`,
+    # so patching the module attributes is authoritative).
+    monkeypatch.setattr(cli_mod.subprocess, "run", _fake_run)
+    monkeypatch.setattr(cli_mod.os, "kill", _fake_kill)
+    monkeypatch.setattr(lifecycle_lock, "_is_pid_alive", _fake_is_pid_alive)
+    monkeypatch.setattr(
+        lifecycle_lock.LifecycleLock,
+        "read",
+        lambda self: ({"pid": pid} if pid is not None else None),
+    )
+    # No-op the best-effort sentinel write (decoupled from the kill path).
+    monkeypatch.setattr(
+        cli_mod,
+        "logger",
+        cli_mod.logger,  # leave logger; we just don't want real state I/O
+    )
+
+    return calls, _signal
+
+
+def test_stop_bootout_precedes_sigterm(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(platform, "system", lambda: "Darwin")
+    # PID dies immediately after SIGTERM (first poll sees it dead).
+    calls, sig = _patch_stop_collaborators(
+        monkeypatch, pid=4242, alive_sequence=[True, False],
+    )
+    rc = cli_mod.cmd_daemon_stop(object())
+    assert rc == 0
+
+    # bootout (KeepAlive disable) must occur BEFORE the SIGTERM signal.
+    bootout_idx = next(
+        i for i, c in enumerate(calls)
+        if c[0] == "run" and "bootout" in c[1]
+    )
+    sigterm_idx = next(
+        i for i, c in enumerate(calls)
+        if c[0] == "kill" and c[2] == sig.SIGTERM
+    )
+    assert bootout_idx < sigterm_idx, calls
+    # SIGTERM targets the lockfile PID, not a bogus one.
+    assert ("kill", 4242, sig.SIGTERM) in calls
+
+
+def test_stop_escalates_to_sigkill_when_pid_survives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(platform, "system", lambda: "Darwin")
+    # Tiny bound + interval so the poll loop spins out fast.
+    monkeypatch.setenv("IAI_DAEMON_STOP_TIMEOUT_S", "0.05")
+    monkeypatch.setenv("IAI_DAEMON_STOP_POLL_S", "0.01")
+    # PID stays alive through every poll -> escalation fires.
+    calls, sig = _patch_stop_collaborators(
+        monkeypatch, pid=5151, alive_sequence=[True],  # sticks True
+    )
+    rc = cli_mod.cmd_daemon_stop(object())
+    assert rc == 0
+
+    bootout_idx = next(
+        i for i, c in enumerate(calls)
+        if c[0] == "run" and "bootout" in c[1]
+    )
+    sigkill_idx = next(
+        i for i, c in enumerate(calls)
+        if c[0] == "kill" and c[2] == sig.SIGKILL
+    )
+    # KeepAlive disabled BEFORE the SIGKILL.
+    assert bootout_idx < sigkill_idx, calls
+    assert ("kill", 5151, sig.SIGKILL) in calls
+    # SIGTERM still issued before the escalation.
+    assert ("kill", 5151, sig.SIGTERM) in calls
+
+
+def test_stop_no_sigkill_when_pid_dies_during_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(platform, "system", lambda: "Darwin")
+    monkeypatch.setenv("IAI_DAEMON_STOP_TIMEOUT_S", "1.0")
+    monkeypatch.setenv("IAI_DAEMON_STOP_POLL_S", "0.01")
+    # alive at the pre-SIGTERM gate, then dead at the first poll -> no SIGKILL.
+    calls, sig = _patch_stop_collaborators(
+        monkeypatch, pid=6262, alive_sequence=[True, False],
+    )
+    rc = cli_mod.cmd_daemon_stop(object())
+    assert rc == 0
+
+    assert ("kill", 6262, sig.SIGTERM) in calls
+    assert not any(
+        c[0] == "kill" and c[2] == sig.SIGKILL for c in calls
+    ), calls
+
+
+def test_stop_lockfile_absent_bootout_only_no_signal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(platform, "system", lambda: "Darwin")
+    calls, sig = _patch_stop_collaborators(
+        monkeypatch, pid=None, alive_sequence=[True],
+    )
+    rc = cli_mod.cmd_daemon_stop(object())
+    assert rc == 0
+
+    # bootout still removes KeepAlive...
+    assert any(c[0] == "run" and "bootout" in c[1] for c in calls), calls
+    # ...but NO os.kill against a bogus PID.
+    assert not any(c[0] == "kill" for c in calls), calls
+
+
+def test_stop_sentinel_failure_does_not_block_kill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(platform, "system", lambda: "Darwin")
+    calls, sig = _patch_stop_collaborators(
+        monkeypatch, pid=7373, alive_sequence=[True, False],
+    )
+
+    # Force the sentinel write to raise; the kill path must still run.
+    import iai_mcp.daemon_state as daemon_state
+
+    def _boom():
+        raise OSError("sentinel disk full")
+
+    monkeypatch.setattr(daemon_state, "load_state", _boom)
+
+    rc = cli_mod.cmd_daemon_stop(object())
+    assert rc == 0
+    # Despite the sentinel failure, bootout + SIGTERM still happened.
+    assert any(c[0] == "run" and "bootout" in c[1] for c in calls), calls
+    assert ("kill", 7373, sig.SIGTERM) in calls
+
+
+def test_stop_linux_path_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    calls: list = []
+
+    def _fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        class _R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return _R()
+
+    monkeypatch.setattr(cli_mod.subprocess, "run", _fake_run)
+    # os.kill must NOT be touched on Linux.
+    killed: list = []
+    monkeypatch.setattr(cli_mod.os, "kill", lambda *a: killed.append(a))
+
+    rc = cli_mod.cmd_daemon_stop(object())
+    assert rc == 0
+    assert ["systemctl", "--user", "stop", cli_mod.SERVICE_NAME] in calls
+    assert killed == [], killed
+
+
+def test_start_rebootstraps_booted_out_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(platform, "system", lambda: "Darwin")
+    calls: list = []
+
+    def _fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        class _R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return _R()
+
+    monkeypatch.setattr(cli_mod.subprocess, "run", _fake_run)
+
+    rc = cli_mod.cmd_daemon_start(object())
+    assert rc == 0
+
+    bootstrap_idx = next(
+        i for i, c in enumerate(calls) if "bootstrap" in c
+    )
+    kickstart_idx = next(
+        i for i, c in enumerate(calls) if "kickstart" in c
+    )
+    # A booted-out job is re-registered (bootstrap) before kickstart.
+    assert bootstrap_idx < kickstart_idx, calls

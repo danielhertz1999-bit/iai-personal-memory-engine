@@ -1,4 +1,4 @@
-"""Tests for schema_list dispatch.
+"""Tests for MCP-08 schema_list dispatch (Task 1).
 
 schema_list returns induced schemas with confidence + evidence + status.
 Supports domain + confidence_min filters.

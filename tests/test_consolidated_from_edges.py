@@ -1,10 +1,10 @@
-"""Tests for the consolidated_from edge type (, , ).
+"""Tests for the consolidated_from edge type.
 
 After run_heavy_consolidation:
 - `consolidated_from` edges link the semantic summary record to each source
   episodic record in its cluster.
 - src = summary record (tier=semantic); dst = source episode.
-- Source episodes keep their literal_surface verbatim ( preservation).
+- Source episodes keep their literal_surface verbatim (preservation).
 """
 from __future__ import annotations
 

@@ -1,19 +1,19 @@
-"""Wave 3 R5 daemon-side fail-loud + HIGH-3 yield acceptance tests.
+"""Daemon-side fail-loud + yield acceptance tests.
 
-R5 daemon-side semantics
-------------------------
+Daemon-side semantics
+---------------------
 
 Killing the live daemon (`kill -9` or `kill -TERM`) mid-call MUST leave NO
-orphan `iai_mcp.core` processes anywhere on the system (post-Phase-7 there
-should be ZERO `iai_mcp.core` processes under any circumstance — the
-singleton invariant), AND the next connect attempt to the socket MUST
-surface as ECONNREFUSED or ENOENT (which Wave 4's `bridge.ts` will
-translate to the wrapper-side `daemon_unreachable` rejection).
+orphan `iai_mcp.core` processes anywhere on the system (there should be ZERO
+`iai_mcp.core` processes afterward under any circumstance — the singleton
+invariant), AND the next connect attempt to the socket MUST surface as
+ECONNREFUSED or ENOENT (which `bridge.ts` translates to the wrapper-side
+`daemon_unreachable` rejection).
 
-HIGH-3 yield acceptance (D7-09 LOCKED)
---------------------------------------
+Yield acceptance
+----------------
 
-The in-process C1 HUMAN-FIRST yield helper `_should_yield_to_mcp` defers
+The in-process yield helper `_should_yield_to_mcp` defers
 REM cycles when EITHER `mcp_socket.active_connections > 0` OR
 `(time.monotonic() - mcp_socket.last_activity_ts) < 30`. This file exercises
 the helper directly with mocked `time.monotonic` so we never wait 35
@@ -72,9 +72,9 @@ def short_socket_paths(tmp_path):
 def _count_iai_mcp_processes() -> dict[str, int]:
     """Snapshot iai_mcp.core / iai_mcp.daemon process counts for fail-loud assertions.
 
-    invariant: `iai_mcp.core` count must be 0 under all
-    circumstances. The daemon is the singleton; wrappers no longer spawn
-    their own Python core processes (Wave 4 bridge.ts refactor).
+    Invariant: `iai_mcp.core` count must be 0 under all circumstances.
+    The daemon is the singleton; wrappers no longer spawn their own
+    Python core processes.
     """
     counts = {"core": 0, "daemon": 0}
     for p in psutil.process_iter(["cmdline"]):
@@ -96,7 +96,7 @@ def _spawn_daemon_for_test(sock_path: Path, store_root: Path) -> subprocess.Pope
     """Spawn `python -m iai_mcp.daemon` against an isolated tmp socket+store.
 
     Uses IAI_DAEMON_SOCKET_PATH + IAI_MCP_STORE env overrides so the
-    subprocess never touches the user's real ~/.iai-mcp/.daemon.sock.
+    subprocess stays isolated from any on-disk socket or store.
 
     IAI_DAEMON_IDLE_SHUTDOWN_SECS=99999 disables idle shutdown so the
     daemon stays alive for the duration of the test.
@@ -129,15 +129,15 @@ def _wait_for_socket(sock_path: Path, timeout_sec: float = 30.0) -> bool:
 
 
 def test_kill_daemon_midcall_no_orphan_core_spawn(short_socket_paths, tmp_path):
-    """R5/A8 daemon-side: kill -9 daemon → daemon does NOT spawn any new iai_mcp.core.
+    """Daemon-side: kill -9 daemon → daemon does NOT spawn any new iai_mcp.core.
 
     The wrapper-side semantics (Promise rejection with daemon_unreachable, single
-    retry) live in mcp-wrapper/src/bridge.ts and are tested in Wave 4.
+    retry) live in mcp-wrapper/src/bridge.ts.
 
-    invariant (DELTA-based): the daemon under test must NOT
+    Invariant (DELTA-based): the daemon under test must NOT
     spawn any `iai_mcp.core` subprocesses, even on hard kill. Pre-existing
     `iai_mcp.core` processes from the host's other MCP wrappers (live
-    Claude Code sessions, etc.) are out of scope — they belong to the
+    host sessions, etc.) are out of scope — they belong to the
     user's running stack, not to this daemon. We measure the DELTA
     (after - before) to filter them out.
     """
@@ -167,7 +167,7 @@ def test_kill_daemon_midcall_no_orphan_core_spawn(short_socket_paths, tmp_path):
             f"(baseline={baseline}, before={before}) — post-Phase-7 singleton invariant violated"
         )
 
-        # SIGKILL — simulate hard daemon death (the threat R5 defends against).
+        # SIGKILL — simulate hard daemon death (the failure mode under test).
         proc.send_signal(signal.SIGKILL)
         proc.wait(timeout=5)
 
@@ -225,10 +225,10 @@ def test_kill_daemon_midcall_no_orphan_core_spawn(short_socket_paths, tmp_path):
 
 
 def test_kill_daemon_during_active_connection(short_socket_paths, tmp_path):
-    """R5: kill daemon while a wrapper holds an open socket → wrapper sees EOF / OSError.
+    """Kill daemon while a wrapper holds an open socket → wrapper sees EOF / OSError.
 
-    The Wave 4 bridge.ts will translate that EOF into a `daemon_unreachable`
-    rejection (which then triggers the single-retry per D7-04). This test
+    bridge.ts translates that EOF into a `daemon_unreachable` rejection
+    (which then triggers the single retry). This test
     just confirms the daemon-side surface: an open connection is broken
     cleanly when the daemon dies, no half-open zombie socket.
     """
@@ -267,7 +267,7 @@ def test_kill_daemon_during_active_connection(short_socket_paths, tmp_path):
 
         # The next read on the open socket must surface as EOF (b'') OR raise.
         # Either is an acceptable fail-loud signal for the wrapper-side
-        # daemon_unreachable translation in Wave 4.
+        # daemon_unreachable translation.
         s.settimeout(2.0)
         eof_or_error = False
         try:
@@ -318,19 +318,9 @@ def test_kill_daemon_during_active_connection(short_socket_paths, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# REMOVED the HIGH-3 yield-acceptance
-# tests (test_scheduler_yields_to_mcp_within_35s and
-# test_should_yield_called_in_loop_returns_true_every_5s).
-#
-# The D7-09 in-process C1 HUMAN-FIRST yield helper
-# `_should_yield_to_mcp(socket)` was removed in Task 1.4. The lifecycle
-# state machine + sleep_pipeline + heartbeat scanner supersede this
-# design: SLEEP-state coexistence with active MCP traffic is provided
-# by the bounded-deferral interrupt_check inside lifecycle_tick (each
-# sleep_pipeline chunk re-checks `mcp_socket.active_connections > 0
-# OR (now - last_activity_ts) < 30s` and defers if true).
-#
-# The kill-daemon-midcall tests above (test 1, test 2) cover the R5
-# fail-loud contract and stay green; they do not reference the
-# removed yield helper.
+# SLEEP-state coexistence with active MCP traffic is provided by the
+# bounded-deferral interrupt_check inside lifecycle_tick: each sleep_pipeline
+# chunk re-checks `mcp_socket.active_connections > 0 OR
+# (now - last_activity_ts) < 30s` and defers if true. The kill-daemon-midcall
+# tests above cover the fail-loud contract.
 # ---------------------------------------------------------------------------

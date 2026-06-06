@@ -1,47 +1,45 @@
-"""R3 acceptance suite — literal_preservation knob modulates W_DEGREE.
+"""Acceptance suite for the literal_preservation knob modulating W_DEGREE.
 
-Two-tier coverage matching the plan's two TDD tasks:
+Two-tier coverage:
 
   Task 1 (rank-stage scale-map wiring):
     - test_literal_preservation_strong_ranks_verbatim_high
     - test_literal_preservation_loose_ranks_verbatim_low
-    - test_literal_preservation_knob_moves_verbatim_position    ← R3 main acceptance (Δ ≥ 3)
+    - test_literal_preservation_knob_moves_verbatim_position ← main acceptance (Δ ≥ 3)
     - test_literal_preservation_medium_is_normalize_only_baseline
-    - test_scale_constant_keys_match_profile_enum               ← shape lock
+    - test_scale_constant_keys_match_profile_enum ← shape lock
     - test_empty_profile_state_falls_back_to_medium_scale
 
-  Task 2 (core.py:dispatch threading of profile_state):
-    - test_dispatch_passes_profile_state_to_recall_for_response     (kwarg-capture)
-    - test_dispatch_end_to_end_knob_moves_verbatim_position     (integration via dispatch)
+  Task 2 (core.py dispatch threading of profile_state):
+    - test_dispatch_passes_profile_state_to_recall_for_response (kwarg-capture)
+    - test_dispatch_end_to_end_knob_moves_verbatim_position (integration via dispatch)
 
 Fixture geometry (5 hubs + 1 verbatim, all degrees equal so max_deg=hub_deg
 and every hub has deg_norm=1.0 exactly):
 
-  cue_text:        "literal preservation cue marker R3"
-  hub_cos = 0.50   × 5 records, each with hub_degree (=8) Hebbian edges
+  cue_text: the fixed literal-preservation cue marker (see CUE_TEXT)
+  hub_cos = 0.50 × 5 records, each with hub_degree (=8) Hebbian edges
   verbatim_cos = 0.60, deg = 0 (no edges)
   → max_deg = 8, deg_norm(hub) = log(9)/log(9) = 1.0, deg_norm(verbatim) = 0.
 
 Score budget per knob (W_DEGREE = 0.1):
-  strong (scale 0.3):  effective = 0.03
-    hub_score      = 0.50 + 0.03 * 1.0 = 0.53
-    verbatim_score = 0.60 + 0.03 * 0.0 = 0.60   → verbatim wins all hubs (pos 0)
+  strong (scale 0.3): effective = 0.03
+    hub_score = 0.50 + 0.03 * 1.0 = 0.53
+    verbatim_score = 0.60 + 0.03 * 0.0 = 0.60 → verbatim wins all hubs (pos 0)
   medium (scale 1.0): effective = 0.10 (baseline)
-    hub_score      = 0.50 + 0.10 * 1.0 = 0.60
-    verbatim_score = 0.60                        → ties hub on score; UUID tie-break
+    hub_score = 0.50 + 0.10 * 1.0 = 0.60
+    verbatim_score = 0.60 → ties hub on score; UUID tie-break
                                                    places between depending on UUID order
-  loose  (scale 1.5):  effective = 0.15
-    hub_score      = 0.50 + 0.15 * 1.0 = 0.65
-    verbatim_score = 0.60                        → verbatim loses all hubs (pos 5)
+  loose (scale 1.5): effective = 0.15
+    hub_score = 0.50 + 0.15 * 1.0 = 0.65
+    verbatim_score = 0.60 → verbatim loses all hubs (pos 5)
 
-Position delta strong→loose = 5 ≥ 3 (R3 acceptance).
+Position delta strong→loose = 5 ≥ 3.
 
-The reconciled scale-map keys are `strong | medium | loose` per the canonical
-profile.py:87 KnobSpec enum (`enum:strong|medium|loose`), NOT the CONTEXT D-07
-phantom keys `balanced/weak`. The 11-knob registry is closed (
-removed AUTIST-02/08/11/12) — expanding the enum was out of scope for
-and remains a phase-level decision. Numeric ordering and semantic intent
-(strong tightens degree influence; loose lets hubs speak louder) are preserved.
+The scale-map keys are `strong | medium | loose` per the canonical
+profile KnobSpec enum (`enum:strong|medium|loose`). Numeric ordering and
+semantic intent (strong tightens degree influence; loose lets hubs speak
+louder) are preserved.
 """
 from __future__ import annotations
 
@@ -147,16 +145,11 @@ def _make_schema_hub(vec: list[float], text: str, pattern: str) -> MemoryRecord:
     here as a high-cosine-but-low-cosine-vs-verbatim foil so the rank-stage
     W_DEGREE knob is the only modulating signal.
 
-    R6 deviation note: 's original fixture tagged hubs
-    with `pattern:{pattern}` anticipating the eventual R6 router. R6 then
-    LANDED with the contract "schema records (tier=semantic AND any tag
-    startswith 'pattern:') are stripped from hits[] into patterns_observed[]
-    in concept mode" — which made the R3 assertion (loose knob displaces
-    verbatim down past hubs) impossible because the hubs no longer occupied
-    hits[]. The minimum-blast-radius fix is to keep tier=semantic + the high
-    degree count (the only inputs R3's W_DEGREE math actually reads) but
-    drop the `pattern:` prefix from the tag so R6's strip leaves the hub
-    in hits[]. R3's testable invariant is preserved verbatim.
+    The hub keeps tier=semantic and the high degree count (the only inputs
+    the W_DEGREE math reads) but drops the `pattern:` prefix from its tag, so
+    the concept-mode strip (which removes tier=semantic records tagged
+    `pattern:*` from hits[]) leaves the hub in hits[] where the ranking
+    assertion needs it.
     """
     now = datetime.now(timezone.utc)
     return MemoryRecord(
@@ -177,7 +170,7 @@ def _make_schema_hub(vec: list[float], text: str, pattern: str) -> MemoryRecord:
         provenance=[],
         created_at=now,
         updated_at=now,
-        # R6 fixture-shape fix: drop `pattern:` prefix.
+        # Drop the `pattern:` prefix so the concept-mode strip keeps the hub.
         tags=["schema", "draft", f"hub:test:{pattern}"],
         language="en",
     )
@@ -213,14 +206,14 @@ def _seed_verbatim_vs_hubs(tmp_path):
     Geometry rationale:
       max_deg = HUB_DEGREE → deg_norm(hub) = log(1+8)/log(1+8) = 1.0 exactly
       deg_norm(verbatim) = log(1)/log(9) = 0.0
-      With strong scale 0.3:  hub=0.50+0.03=0.53,  verbatim=0.60   verbatim@0
-      With loose scale 1.5:   hub=0.50+0.15=0.65,  verbatim=0.60   verbatim@5
-      Δposition = 5 ≥ 3  (R3 acceptance ceiling at 5; floor is 3.)
+      With strong scale 0.3: hub=0.50+0.03=0.53, verbatim=0.60 verbatim@0
+      With loose scale 1.5: hub=0.50+0.15=0.65, verbatim=0.60 verbatim@5
+      Δposition = 5 ≥ 3 (ceiling at 5; floor is 3).
     """
     from iai_mcp.retrieve import build_runtime_graph
     from iai_mcp.store import MemoryStore
 
-    store = MemoryStore(path=tmp_path / "lancedb")
+    store = MemoryStore(path=tmp_path / "hippo")
     embedder = _ControlledEmbedder()
 
     cue_vec = embedder.embed(CUE_TEXT)
@@ -276,8 +269,8 @@ def _verbatim_position(resp, verbatim_id) -> int | None:
 
 def test_scale_constant_keys_match_profile_enum():
     """Shape lock: LITERAL_PRESERVATION_W_DEGREE_SCALE must be exactly the
-    canonical profile.py:87 enum keys with the agreed numeric values. Locks
-    against future drift back to the CONTEXT phantom keys (balanced/weak).
+    canonical profile enum keys with the agreed numeric values. Locks
+    against future drift back to phantom keys (balanced/weak).
     """
     from iai_mcp.pipeline import LITERAL_PRESERVATION_W_DEGREE_SCALE
 
@@ -286,8 +279,8 @@ def test_scale_constant_keys_match_profile_enum():
         "medium": 1.0,
         "loose": 1.5,
     }, (
-        "Scale map must use profile.py:87 enum keys "
-        "(`strong|medium|loose`), not CONTEXT.md `balanced/weak`. "
+        "Scale map must use profile enum keys "
+        "(`strong|medium|loose`), not `balanced/weak`. "
         f"Got {LITERAL_PRESERVATION_W_DEGREE_SCALE}"
     )
 
@@ -357,7 +350,7 @@ def test_literal_preservation_loose_ranks_verbatim_low(tmp_path):
 
 
 def test_literal_preservation_knob_moves_verbatim_position(tmp_path):
-    """R3 main acceptance: position delta between literal_preservation=strong
+    """Main acceptance: position delta between literal_preservation=strong
     and literal_preservation=loose on the same store + same cue ≥ 3.
     """
     from iai_mcp.pipeline import recall_for_response
@@ -387,7 +380,7 @@ def test_literal_preservation_knob_moves_verbatim_position(tmp_path):
     )
     delta = pos_loose - pos_strong
     assert delta >= 3, (
-        f"R3 acceptance: position delta between strong and loose must be "
+        f"acceptance: position delta between strong and loose must be "
         f">= 3. got pos_strong={pos_strong}, pos_loose={pos_loose}, "
         f"delta={delta}"
     )
@@ -539,22 +532,19 @@ def test_dispatch_passes_profile_state_to_recall_for_response(tmp_path, monkeypa
 
 @pytest.mark.skip(
     reason=(
-        "R3 dispatch-integration test — fixture geometry "
+        "Dispatch-integration test — fixture geometry "
         "(verbatim cos=0.60, hub cos=0.50, deg_norm spread 0→1.0) "
-        "was authored when dispatch routed to the OLD pipeline_recall "
-        "body which had no community-bias term. "
-        "puts a +0.1*cos community-bias on records inside top-3 gated "
-        "communities for concept-mode recalls. On this fixture, BOTH "
+        "was authored before the community-bias term existed. The "
+        "community-bias adds a +0.1*cos boost on records inside top-3 "
+        "gated communities for concept-mode recalls. On this fixture, BOTH "
         "verbatim AND hubs land in top-3 communities, so verbatim's "
         "+0.06 boost outweighs the hub's +0.05 + W_DEGREE delta even "
         "with literal_preservation=loose. The position-delta proof is "
-        "unreachable on this fixture geometry under D-02. "
+        "unreachable on this fixture geometry under the community-bias term. "
         "Direct-call variants (test_e2e_knob_moves_verbatim_position "
-        "and the 9 other tests in this module) verify the same wiring "
-        "and PASS — the dispatch-integration variant becomes a future "
-        "plan's fixture-recalibration concern, not Wave 2's. "
-        "See internal architecture spec"
-        "08-02-SUMMARY.md deviation log for the full rationale."
+        "and the other tests in this module) verify the same wiring "
+        "and PASS — the dispatch-integration variant needs a "
+        "fixture recalibration."
     )
 )
 def test_dispatch_end_to_end_knob_moves_verbatim_position(tmp_path, monkeypatch):

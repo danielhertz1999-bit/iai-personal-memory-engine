@@ -1,7 +1,7 @@
-"""(P4.A) — runtime_graph_cache tests.
+"""runtime_graph_cache tests.
 
 The cache persists the Leiden community assignment + rich-club node
-list next to the LanceDB store. On subsequent ``build_runtime_graph``
+list next to the store. On subsequent ``build_runtime_graph``
 calls, a valid cache skips the Leiden + rich-club computations;
 invalid cache falls through to a clean rebuild.
 
@@ -52,19 +52,18 @@ def _isolated_keyring(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.fixture
 def store(tmp_path: Path) -> MemoryStore:
-    """Fresh MemoryStore in tmp_path/lancedb with the cache file path set
+    """Fresh MemoryStore in tmp_path/hippo with the cache file path set
     to tmp_path/runtime_graph_cache.json."""
-    s = MemoryStore(path=tmp_path / "lancedb")
+    s = MemoryStore(path=tmp_path / "hippo")
     # Override root so the cache file lives in tmp_path, not the real store
-    # root (which would be tmp_path/lancedb — still fine, but explicit).
+    # root (which would be tmp_path/hippo — still fine, but explicit).
     s.root = tmp_path
     return s
 
 
 def _read_decrypted_cache(store: MemoryStore, path: Path) -> dict:
-    """W3: decrypt the v3 ciphertext sidecar and return the
-    underlying JSON dict. Tests that pre-07.9 read the cache via
-    ``json.load(f)`` go through this helper instead.
+    """Decrypt the v3 ciphertext sidecar and return the underlying JSON dict.
+    Tests read the cache through this helper instead of ``json.load(f)``.
     """
     raw_text = path.read_text(encoding="utf-8")
     if not raw_text.startswith("iai:enc:v1:"):
@@ -118,11 +117,10 @@ def test_save_creates_json_file(store):
     assert ok is True
     path = runtime_graph_cache._cache_path(store)
     assert path.exists()
-    # W3: file is now AES-256-GCM-wrapped — decrypt before
-    # inspecting the JSON shape.
+    # File is AES-256-GCM-wrapped — decrypt before inspecting the JSON shape.
     raw = path.read_text(encoding="utf-8")
     assert raw.startswith("iai:enc:v1:"), (
-        "W3: cache must be v3 ciphertext on disk"
+        "cache must be v3 ciphertext on disk"
     )
     data = _read_decrypted_cache(store, path)
     assert data["cache_version"] == runtime_graph_cache.CACHE_VERSION
@@ -141,10 +139,9 @@ def test_try_load_round_trip_on_unchanged_store(store):
 
     loaded = runtime_graph_cache.try_load(store)
     assert loaded is not None
-    # try_load returns (assignment, rich_club, node_payload, ...).
-    # node_payload is the v2 blob — None (or empty) when legacy 2-arg
-    # save() shape was used.
-    # 4th element is max_degree (int >= 0).
+    # try_load returns (assignment, rich_club, node_payload, max_degree).
+    # node_payload is the v2 blob — None (or empty) when the legacy 2-arg
+    # save() shape was used. max_degree is an int >= 0.
     loaded_assignment, loaded_rich_club, _node_payload, _max_degree = loaded
     assert loaded_assignment.backend == assignment.backend
     assert loaded_assignment.modularity == pytest.approx(assignment.modularity)
@@ -161,8 +158,8 @@ def test_key_mismatch_invalidates_cache(store):
     path = runtime_graph_cache._cache_path(store)
     assert path.exists()
 
-    # Simulate a store change by forging a wrong key in the saved file.
-    # W3: decrypt → mutate → re-encrypt round-trip.
+    # Simulate a store change by forging a wrong key in the saved file:
+    # decrypt → mutate → re-encrypt round-trip.
     data = _read_decrypted_cache(store, path)
     data["key"][0] = 999  # bogus records_count
     _write_encrypted_cache(store, path, data)
@@ -176,7 +173,7 @@ def test_key_mismatch_invalidates_cache(store):
 def test_cache_version_mismatch_triggers_rebuild(store):
     runtime_graph_cache.save(store, _make_assignment(), [uuid4()])
     path = runtime_graph_cache._cache_path(store)
-    # W3: decrypt → mutate version → re-encrypt round-trip.
+    # decrypt → mutate version → re-encrypt round-trip.
     data = _read_decrypted_cache(store, path)
     data["cache_version"] = "old-format-v0"
     _write_encrypted_cache(store, path, data)
@@ -191,6 +188,51 @@ def test_corrupt_json_returns_none(store):
     path = runtime_graph_cache._cache_path(store)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("{not valid json at all")
+    assert runtime_graph_cache.try_load(store) is None
+
+
+def test_aes_gcm_tag_failure_returns_none_not_raises(store):
+    """A sidecar whose AES-GCM tag check fails (wrong key / corrupt /
+    tampered ciphertext) must degrade to a clean MISS and let the caller
+    rebuild — it must NOT let ``cryptography.exceptions.InvalidTag`` escape
+    and crash the recall pipeline.
+
+    Distinct from test_corrupt_json_returns_none (non-prefixed garbage,
+    rejected by the is_encrypted guard BEFORE decrypt) and from
+    test_key_mismatch_invalidates_cache (a valid decrypt with a stale count
+    key). Here the ciphertext is well-formed (iai:enc:v1: prefix, valid
+    base64, correct length) but a tampered byte makes the GCM tag invalid,
+    so decrypt_field genuinely raises InvalidTag. Both rgc read entry points
+    must swallow it and return None.
+    """
+    from cryptography.exceptions import InvalidTag
+
+    runtime_graph_cache.save(store, _make_assignment(), [uuid4()])
+    path = runtime_graph_cache._cache_path(store)
+    raw = path.read_text(encoding="utf-8")
+    assert raw.startswith("iai:enc:v1:")
+
+    # Sanity: the untampered sidecar decrypts cleanly (the failure below is
+    # caused by the tamper, not by an unrelated key/format problem).
+    from iai_mcp.crypto import decrypt_field
+
+    prefix = "iai:enc:v1:"
+    body = raw[len(prefix):]
+    # Flip one base64 char in the middle of the payload so the GCM-protected
+    # bytes change and the tag check fails on decrypt (a deterministic
+    # InvalidTag — independent of the key).
+    mid = len(body) // 2
+    flipped = "A" if body[mid] != "A" else "B"
+    tampered = prefix + body[:mid] + flipped + body[mid + 1:]
+    path.write_text(tampered, encoding="ascii")
+
+    # The tamper genuinely produces InvalidTag at the crypto layer...
+    with pytest.raises(InvalidTag):
+        decrypt_field(tampered, store._key(), runtime_graph_cache._CACHE_AAD)
+
+    # ...but both rgc read paths must absorb it and return None (rebuild),
+    # never propagate InvalidTag.
+    assert runtime_graph_cache._load_and_decrypt_cache(store) is None
     assert runtime_graph_cache.try_load(store) is None
 
 
@@ -227,45 +269,57 @@ def test_build_runtime_graph_uses_cache_on_second_call(store):
 
 
 def test_build_runtime_graph_invalidates_on_record_added(store, tmp_path):
-    """Adding a record bumps records_count -> cache key changes -> rebuild."""
-    # First call seeds the cache on an empty store.
-    retrieve.build_runtime_graph(store)
-    assert runtime_graph_cache._cache_path(store).exists()
-
-    # Insert a real record via the store so records_count increments.
+    """Inserting >= _STALENESS_WINDOW records crosses the window bucket and
+    forces a cache MISS -> rebuild.  A single record within the same window
+    does NOT trigger a rebuild (staleness-window decouple)."""
     from datetime import datetime, timezone
     from iai_mcp.types import MemoryRecord
 
-    rec = MemoryRecord(
-        id=uuid4(),
-        tier="episodic",
-        literal_surface="x",
-        aaak_index="",
-        embedding=[0.0] * store.embed_dim,
-        community_id=None,
-        centrality=0.0,
-        detail_level=2,
-        pinned=False,
-        stability=0.0,
-        difficulty=0.0,
-        last_reviewed=None,
-        never_decay=False,
-        never_merge=False,
-        provenance=[],
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
-        tags=["t"],
-        language="en",
-    )
-    store.insert(rec)
+    def _make_rec(seed: int) -> MemoryRecord:
+        import numpy as np
+        rng = np.random.default_rng(seed)
+        vec = rng.random(store.embed_dim).astype(np.float32)
+        vec = (vec / np.linalg.norm(vec)).tolist()
+        now = datetime.now(timezone.utc)
+        return MemoryRecord(
+            id=uuid4(), tier="episodic", literal_surface=f"r{seed}",
+            aaak_index="", embedding=vec, community_id=None, centrality=0.0,
+            detail_level=2, pinned=False, stability=0.0, difficulty=0.0,
+            last_reviewed=None, never_decay=False, never_merge=False,
+            provenance=[], created_at=now, updated_at=now, tags=[], language="en",
+        )
 
-    # Second build sees records_count changed -> cache invalid -> rebuild.
+    window = runtime_graph_cache._STALENESS_WINDOW
+
+    # Pre-populate to a mid-window count to avoid boundary effects.
+    base = window + 2
+    for i in range(base):
+        store.insert(_make_rec(i))
+
+    # First build seeds the cache.
+    retrieve.build_runtime_graph(store)
+    assert runtime_graph_cache._cache_path(store).exists()
+
+    # Single-write within window: cache HIT → detect_communities NOT called.
+    store.insert(_make_rec(seed=base + 100))
+    with mock.patch("iai_mcp.community.detect_communities") as detect_spy:
+        retrieve.build_runtime_graph(store)
+        assert detect_spy.call_count == 0, (
+            "detect_communities fired on a single-record insert within the "
+            "staleness window — the windowed key should absorb single writes."
+        )
+
+    # Cross the window boundary: now the bucket increments → cache MISS → rebuild.
+    for i in range(window):
+        store.insert(_make_rec(seed=base + 200 + i))
     with mock.patch(
         "iai_mcp.community.detect_communities",
         wraps=__import__("iai_mcp.community", fromlist=["detect_communities"]).detect_communities,
     ) as detect_spy:
         retrieve.build_runtime_graph(store)
-        assert detect_spy.call_count == 1
+        assert detect_spy.call_count == 1, (
+            "detect_communities should have fired after a window-crossing insert."
+        )
 
 
 # --------------------------------------------------------------------------- Test 9
@@ -313,7 +367,7 @@ def test_invalidate_removes_cache_file(store):
 
 
 def test_embed_dim_change_invalidates(store):
-    """swapping embedders (1024d -> 384d) must force a
+    """Swapping embedders (1024d -> 384d) must force a
     rebuild. The cache_key includes store.embed_dim so this is
     automatic — no separate signal needed."""
     runtime_graph_cache.save(store, _make_assignment(), [uuid4()])
@@ -324,18 +378,16 @@ def test_embed_dim_change_invalidates(store):
     assert runtime_graph_cache.try_load(store) is None
 
 
-# --------------------------------------------------------------------------- tests
+# --------------------------------------------------------------------------- oversize-drop tests
 
 
 def test_save_drops_oversize_community_centroids(store):
-    """when ``assignment.community_centroids`` alone overflows
+    """When ``assignment.community_centroids`` alone overflows
     the 10 MiB cap (the scenario on an all-isolated graph where Leiden
     gives one community per node), the iterative drop path must prune
     centroids too — not just node_payload — and produce a file ≤ cap.
 
-    Pre-F-09 behaviour: the single-shot drop cleared node_payload,
-    re-serialised, saw the payload still > cap, and shipped it anyway.
-    Post-node_payload drops first, centroids drop next,
+    The drop order is: node_payload first, centroids next, while
     node_to_community + modularity + top_communities survive.
     """
     # 2000 communities × 1024-dim float vectors ≈ 40 MiB JSON-encoded,
@@ -380,7 +432,7 @@ def test_save_drops_oversize_community_centroids(store):
 
     data = _read_decrypted_cache(store, path)
 
-    # Both pre-F-09 drop candidates emptied in order.
+    # Both drop candidates emptied in order.
     assert data["node_payload"] == {}
     assert data["assignment"]["community_centroids"] == {}
 
@@ -431,12 +483,12 @@ def test_save_small_payload_survives_unchanged(store):
     assert len(data["assignment"]["mid_regions"]) == 2
 
 
-# --------------------------------------------------------------------------- W3 / tests
+# --------------------------------------------------------------------------- ciphertext-at-rest tests
 
 
 def test_save_writes_ciphertext_no_plaintext_surface(store):
-    """W3 / saved sidecar must NOT contain plaintext surface bytes
-    anywhere on disk. The whole JSON payload is wrapped in AES-256-GCM."""
+    """Saved sidecar must NOT contain plaintext surface bytes anywhere on
+    disk. The whole JSON payload is wrapped in AES-256-GCM."""
     canary = "PLAINTEXT_CANARY_4d7f_07_9_W3"
     rid = uuid4()
     node_payload = {
@@ -467,7 +519,7 @@ def test_save_writes_ciphertext_no_plaintext_surface(store):
 
 
 def test_save_then_try_load_preserves_surface_byte_for_byte(store):
-    """W3 / surface round-trips through encrypt → decrypt cleanly,
+    """Surface round-trips through encrypt → decrypt cleanly,
     including non-ASCII (byte-for-byte across encryption)."""
     rid = uuid4()
     surface = "user сказал важное — please remember this 重要"
@@ -497,7 +549,7 @@ def test_save_then_try_load_preserves_surface_byte_for_byte(store):
 
 
 def test_v2_plaintext_lazy_migrates_to_v3(store):
-    """W3 / a hand-written legacy v2 plaintext file is read once,
+    """A hand-written legacy v2 plaintext file is read once,
     then re-saved under the v3 ciphertext format on the same call.
     Subsequent reads see only ciphertext on disk."""
     path = runtime_graph_cache._cache_path(store)

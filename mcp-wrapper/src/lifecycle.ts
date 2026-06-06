@@ -1,57 +1,57 @@
-// Phase 10.5 L5 + L4 — wrapper-side proactive wake + heartbeat refresh.
+// L5 + L4 — wrapper-side proactive wake + heartbeat refresh.
 //
 // Two responsibilities, both lazy and idle-CPU-near-zero:
 //
-//   L5  ensureDaemonAlive:
-//       Probe the daemon UNIX socket (~/.iai-mcp/.daemon.sock) at boot.
-//       If reachable, return immediately — no kickstart cost, no signal.
-//       If unreachable AND platform is darwin, spawn `launchctl kickstart
-//       -k gui/<uid>/com.iai-mcp.daemon` via Node's `execFile` API
-//       (array args, hard-coded binary path, NEVER `shell: true`).
-//       If the kickstart command fails or the platform is not darwin,
-//       atomic-write ~/.iai-mcp/wake.signal so the next daemon cold-
-//       start consumes it via `iai_mcp.wake_handler.WakeHandler`. The
-//       wrapper itself NEVER spawns the daemon Python process — that
-//       remains a launchd / external-init concern (Phase 7.1 invariant).
+// L5 ensureDaemonAlive:
+// Probe the daemon UNIX socket (~/.iai-mcp/.daemon.sock) at boot.
+// If reachable, return immediately — no kickstart cost, no signal.
+// If unreachable AND platform is darwin, spawn `launchctl kickstart
+// -k gui/<uid>/com.iai-mcp.daemon` via Node's `execFile` API
+// (array args, hard-coded binary path, NEVER `shell: true`).
+// If the kickstart command fails or the platform is not darwin,
+// atomic-write ~/.iai-mcp/wake.signal so the next daemon cold-
+// start consumes it via `iai_mcp.wake_handler.WakeHandler`. The
+// wrapper itself NEVER spawns the daemon Python process — that
+// remains a launchd / external-init concern (invariant).
 //
-//   L4  registerHeartbeat:
-//       Atomically write ~/.iai-mcp/wrappers/heartbeat-<pid>-<uuid>.json
-//       (temp + rename) and start a 30-second interval timer that
-//       refreshes the `last_refresh` field. The timer is `unref()`d so
-//       it does NOT block Node.js shutdown — the wrapper exits cleanly
-//       even if `cleanupHeartbeat` is not called (the daemon's
-//       HeartbeatScanner from Phase 10.4 will eventually classify the
-//       file as STALE / ORPHAN and reap it).
+// L4 registerHeartbeat:
+// Atomically write ~/.iai-mcp/wrappers/heartbeat-<pid>-<uuid>.json
+// (temp + rename) and start a 30-second interval timer that
+// refreshes the `last_refresh` field. The timer is `unref()`d so
+// it does NOT block Node.js shutdown — the wrapper exits cleanly
+// even if `cleanupHeartbeat` is not called (the daemon's
+// HeartbeatScanner will eventually classify the
+// file as STALE / ORPHAN and reap it).
 //
-// Hard rules carried from CONTEXT 10.5:
+// Hard rules:
 //
-//   - All `child_process` calls go through `execFile` (array args).
-//     NEVER the shell-interpreting `exec` variant. NEVER `shell: true`.
-//     Hard-coded binary path (/bin/launchctl); only the GUI uid is
-//     process-derived (`process.getuid()`).
-//   - The 30-sec refresh is a single `setInterval` with `unref()`, not
-//     a busy loop or per-tick spawn.
-//   - macOS-first; Linux / unknown platforms write `wake.signal`
-//     directly without attempting kickstart.
-//   - 045999b decoupling preserved — this module is independent of the
-//     bridge / tools/list path. `ensureDaemonAlive` is a probe + spawn,
-//     not a connect; tools/list MUST keep responding from the static
-//     wrapper registry whether the daemon is up or not.
-//   - `src/utils/execFileNoThrow.ts` is referenced in CONTEXT 10.5 as a
-//     pattern reference but does NOT exist in this repo. We inline the
-//     pattern here: `promisify(execFile)` + try/catch. Keeps the LOC
-//     budget tight and makes the security guarantee local.
+// - All `child_process` calls go through `execFile` (array args).
+// NEVER the shell-interpreting `exec` variant. NEVER `shell: true`.
+// Hard-coded binary path (bin/launchctl); only the GUI uid is
+// process-derived (`process.getuid()`).
+// - The 30-sec refresh is a single `setInterval` with `unref()`, not
+// a busy loop or per-tick spawn.
+// - macOS-first; Linux / unknown platforms write `wake.signal`
+// directly without attempting kickstart.
+// - Decoupling preserved — this module is independent of the
+// bridge / tools/list path. `ensureDaemonAlive` is a probe + spawn,
+// not a connect; tools/list MUST keep responding from the static
+// wrapper registry whether the daemon is up or not.
+// - `src/utils/execFileNoThrow.ts` is a pattern reference but does
+// NOT exist in this repo. We inline the
+// pattern here: `promisify(execFile)` + try/catch. Keeps the LOC
+// budget tight and makes the security guarantee local.
 //
 // File schema (matches `iai_mcp.heartbeat_scanner._parse_heartbeat_file`):
 //
-//     {
-//       "pid": 12345,
-//       "uuid": "01HZQ...",                         // crypto.randomUUID()
-//       "started_at": "2026-05-02T15:00:00Z",
-//       "last_refresh": "2026-05-02T15:14:30Z",
-//       "wrapper_version": "1.0.0",
-//       "schema_version": 1
-//     }
+// {
+// "pid": 12345,
+// "uuid": "01HZQ...", // crypto.randomUUID()
+// "started_at": "2026-05-02T15:00:00Z",
+// "last_refresh": "2026-05-02T15:14:30Z",
+// "wrapper_version": "1.0.0",
+// "schema_version": 1
+// }
 
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -64,13 +64,13 @@ const execFileAsync = promisify(execFile);
 
 // ---------------------------------------------------------------- constants
 
-/** Refresh cadence (ms). 30 s is the LOCKED contract from CONTEXT 10.4 / 10.5
- * — three missed refreshes (~90 s) trip the heartbeat scanner's STALE
+/** Refresh cadence (ms). 30 s is the LOCKED contract
+ * three missed refreshes (~90 s) trip the heartbeat scanner's STALE
  * threshold (`DEFAULT_STALE_THRESHOLD_SEC` in `heartbeat_scanner.py`). */
 export const HEARTBEAT_REFRESH_INTERVAL_MS = 30_000;
 
 /** Wrapper schema version. Bump only on a breaking change to the heartbeat
- * file shape. Phase 10.4 reader currently treats `schema_version` as
+ * file shape. The reader currently treats `schema_version` as
  * informational; future versions may gate field-presence checks on it. */
 export const HEARTBEAT_SCHEMA_VERSION = 1;
 

@@ -1,6 +1,6 @@
-"""Tests for identity-tier write gate hardening (, + ).
+"""Tests for identity-tier write gate hardening (+).
 
-extends 's check_identity_anchor_on_write with:
+ extends 's check_identity_anchor_on_write with:
 
 1. **Shield pre-check (HARD_BLOCK tier):** identity-tier records
    (s5_trust_score >= 0.9) are routed through the shield first; any signal
@@ -9,7 +9,7 @@ extends 's check_identity_anchor_on_write with:
 2. **Cross-language warning:** if the record carries a language tag that
    differs from the anchor's language (inferred via existing anchor metadata),
    emit a warning event. does not HARD BLOCK cross-lingual identity
-   updates (multilingual users are supported); the warning surfaces for user
+   updates (honours multilingual users); the warning surfaces for user
    audit via `iai-mcp audit shield` / `iai-mcp audit identity`.
 """
 from __future__ import annotations
@@ -97,21 +97,21 @@ def test_identity_tier_with_clean_text_proceeds_to_voting(tmp_path):
     from iai_mcp.store import MemoryStore
 
     store = MemoryStore(path=tmp_path)
-    good = _identity_record(text="User is Alice Smith, software engineer")
+    good = _identity_record(text="User is Alice Chen, software engineer")
     ok, reason = check_identity_anchor_on_write(store, good, profile_state={})
     assert ok is True
 
 
 def test_identity_tier_direct_without_consensus_still_rejected(tmp_path):
     """Clean identity text WITHOUT s5_consensus tag -> still rejected per
-    semantics (shield pre-check does not weaken the
+      semantics (shield pre-check does not weaken the
     consensus requirement)."""
     from iai_mcp.s5 import check_identity_anchor_on_write
     from iai_mcp.store import MemoryStore
 
     store = MemoryStore(path=tmp_path)
     good = _identity_record(
-        text="User is Alice, creative producer",
+        text="User is Alice, software engineer",
         tags=["identity"],  # no s5_consensus
     )
     ok, reason = check_identity_anchor_on_write(store, good, profile_state={})
@@ -162,7 +162,7 @@ def test_identity_tier_monolingual_commit(tmp_path):
     store.insert(anchor)
 
     # Monolingual proposed update.
-    update = _identity_record(text="User role: LA producer", language="en")
+    update = _identity_record(text="User role: software engineer", language="en")
     ok, _reason = check_identity_anchor_on_write(store, update, profile_state={})
     assert ok is True
     events = query_events(store, kind="identity_cross_lingual_warning", limit=5)

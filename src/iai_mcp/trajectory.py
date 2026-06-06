@@ -1,4 +1,4 @@
-"""Trajectory metrics M1..M6 (LEARN-07, ) -- Task 4.
+"""Trajectory metrics M1..M6.
 
 Every session_exit writes one `trajectory_metric` event per metric. The CLI
 aggregator reads these events via aggregate_trajectory.
@@ -11,15 +11,15 @@ Metrics (all computed in session-local scope):
 - M5: curiosity question frequency (entropy dropping)
 - M6: context-repeat rate (> 90% by session ~20)
 
-scope: event emission + basic aggregation. wires the
-CLI aggregator + synthetic-corpus benchmark.
+Scope: event emission + basic aggregation, plus the CLI aggregator and
+synthetic-corpus benchmark.
 """
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
 
-from iai_mcp.events import query_events, write_event
+from iai_mcp.events import flush_event_buffer, query_events, write_event
 from iai_mcp.store import MemoryStore
 
 
@@ -62,7 +62,7 @@ def aggregate_trajectory(
 ) -> dict[str, list[tuple[datetime, float]]]:
     """CLI support: group all trajectory_metric events by metric.
 
-    Returns {"m1": [(ts, value), ...], ..., "m6": [...]}.
+    Returns {"m1": [(ts, value),...],..., "m6": [...]}.
     """
     events = query_events(
         store, kind="trajectory_metric", since=since, limit=10000,
@@ -129,10 +129,9 @@ def compute_session_metrics_snapshot(
 ) -> dict[str, float]:
     """Produce a partial snapshot of M1..M6 from the current event stream.
 
-    scope: M1/M3/M5 are computable from the event stream.
-    promotion: M2/M4/M6 are now LIVE (read retrieval_used /
-    profile_updated / session_started events emitted by retrieve.py /
-    profile.py / session.py respectively).
+    M1/M3/M5 are computable directly from the event stream. M2/M4/M6 are
+    LIVE (read retrieval_used / profile_updated / session_started events
+    emitted by retrieve.py / profile.py / session.py respectively).
     """
     return {
         "m1": compute_m1_clarifying_questions_per_session(store, session_id),
@@ -155,17 +154,17 @@ M6_SYNTHETIC_CONSTANT: float = 0.0
 
 
 def m2_precision_at_5_synthetic() -> float:
-    """Pre-Plan-03-02 placeholder. Kept for trajectory bench comparison."""
+    """Legacy synthetic placeholder. Kept for trajectory bench comparison."""
     return M2_SYNTHETIC_CONSTANT
 
 
 def m4_profile_variance_synthetic() -> float:
-    """Pre-Plan-03-02 placeholder. Kept for trajectory bench comparison."""
+    """Legacy synthetic placeholder. Kept for trajectory bench comparison."""
     return M4_SYNTHETIC_CONSTANT
 
 
 def m6_context_repeat_rate_synthetic() -> float:
-    """Pre-Plan-03-02 placeholder. Kept for trajectory bench comparison."""
+    """Legacy synthetic placeholder. Kept for trajectory bench comparison."""
     return M6_SYNTHETIC_CONSTANT
 
 
@@ -186,7 +185,13 @@ def m2_precision_at_5_live(
     The fallback path is what makes the live value differ from the synthetic
     constant in production -- the metric stops being a flat zero the moment
     retrieve.recall starts returning hits.
+
+    retrieval_used events may be deferred in the in-memory write buffer (to
+    avoid lock contention on concurrent socket recalls). Flush before reading
+    so the metric always reflects all retrievals that have happened, including
+    any that are still buffered.
     """
+    flush_event_buffer(store)
     events = query_events(store, kind="retrieval_used", limit=window)
     if not events:
         return 0.0

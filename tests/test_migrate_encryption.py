@@ -1,6 +1,6 @@
 """v2 -> v3 encryption migration.
 
-Covers:
+Scope:
 - Migration re-encrypts plaintext sensitive columns in place
 - Dry-run leaves disk untouched
 - Idempotent: running the migration a second time is a no-op
@@ -68,36 +68,47 @@ def _make(text: str = "hello", language: str = "en"):
 
 
 def _write_plaintext_row(store, rec):
-    """Bypass the store's encryption wrapper and write a fully-plaintext row."""
-    from iai_mcp.store import RECORDS_TABLE
+    """Bypass the store's encryption wrapper and write a fully-plaintext row.
 
-    row = {
-        "id": str(rec.id),
-        "tier": rec.tier,
-        "literal_surface": rec.literal_surface,
-        "aaak_index": rec.aaak_index,
-        "embedding": [float(x) for x in rec.embedding],
-        "structure_hv": b"",
-        "community_id": "",
-        "centrality": float(rec.centrality),
-        "detail_level": int(rec.detail_level),
-        "pinned": bool(rec.pinned),
-        "stability": float(rec.stability),
-        "difficulty": float(rec.difficulty),
-        "last_reviewed": rec.last_reviewed,
-        "never_decay": bool(rec.never_decay),
-        "never_merge": bool(rec.never_merge),
-        "provenance_json": json.dumps(rec.provenance),
-        "created_at": rec.created_at,
-        "updated_at": rec.updated_at,
-        "tags_json": json.dumps(rec.tags),
-        "language": rec.language,
-        "s5_trust_score": 0.5,
-        "profile_modulation_gain_json": json.dumps(rec.profile_modulation_gain or {}),
-        "schema_version": 2,
-    }
-    tbl = store.db.open_table(RECORDS_TABLE)
-    tbl.add([row])
+    Writes directly via the SQLite connection to avoid HippoTable._encrypt_rows,
+    so the row lands on disk with unencrypted literal_surface / provenance_json /
+    profile_modulation_gain_json — the pre-migration state that migrate_encryption_v2_to_v3
+    is designed to fix.
+    """
+    import sqlite3
+    import numpy as np
+
+    db_path = store.root / "hippo" / "brain.sqlite3"
+    embedding_blob = np.array(rec.embedding, dtype=np.float32).tobytes()
+    provenance_json = json.dumps(rec.provenance)
+    profile_gain_json = json.dumps(rec.profile_modulation_gain or {})
+    created_at = rec.created_at.isoformat() if rec.created_at else None
+    updated_at = rec.updated_at.isoformat() if rec.updated_at else None
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO records "
+            "(id, tier, literal_surface, aaak_index, embedding, structure_hv, "
+            " community_id, centrality, detail_level, pinned, stability, difficulty, "
+            " last_reviewed, never_decay, never_merge, provenance_json, "
+            " created_at, updated_at, tags_json, language, s5_trust_score, "
+            " profile_modulation_gain_json, schema_version) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                str(rec.id), rec.tier, rec.literal_surface, rec.aaak_index,
+                embedding_blob, b"",
+                "", float(rec.centrality), int(rec.detail_level),
+                int(rec.pinned), float(rec.stability), float(rec.difficulty),
+                None, int(rec.never_decay), int(rec.never_merge),
+                provenance_json, created_at, updated_at,
+                json.dumps(rec.tags), rec.language, 0.5,
+                profile_gain_json, 2,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def test_migrate_encryption_helper_exists() -> None:
@@ -152,7 +163,7 @@ def test_migration_preserves_content_byte_for_byte(tmp_path):
     from iai_mcp.store import MemoryStore
 
     store = MemoryStore(path=tmp_path)
-    text = " verbatim: Привет, мир"
+    text = "MEM-01 verbatim: Привет, мир"
     rec = _make(text=text, language="ru")
     _write_plaintext_row(store, rec)
 

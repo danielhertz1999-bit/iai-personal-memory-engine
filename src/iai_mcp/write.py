@@ -1,22 +1,20 @@
-"""ART vigilance write gate (, ) + S5 identity guard (, )
-+ prompt-injection shield (, , ).
+"""ART vigilance write gate + S5 identity guard
++ prompt-injection shield.
 
-Grossberg-style Adaptive Resonance Theory vigilance: on write, compare the new
-record against existing records by cosine similarity. If the best match exceeds
-vigilance ρ, merge; else create a new distinct record.
+ART vigilance: on write, compare the new record against existing records by
+cosine similarity. If the best match exceeds vigilance ρ, merge; else create
+a new distinct record.
 
-ρ is fixed at 0.95 for per (matches autistic-kernel literal_preservation=strong).
+ρ is fixed at 0.95 (literal_preservation=strong).
 High ρ = prefer distinct record over merge = preserves fine detail.
 
-adds `guarded_insert` which layers the S5 identity gate on top of
-the ART decision. Identity-tier records (s5_trust_score >= 0.9) must carry
-the `s5_consensus` tag -- direct writes are rejected to prevent prompt-
-injection poisoning.
+`guarded_insert` layers the S5 identity gate on top of the ART decision.
+Identity-tier records (s5_trust_score >= 0.9) must carry the `s5_consensus`
+tag -- direct writes are rejected to prevent prompt-injection poisoning.
 
-extends `guarded_insert` with a shield pre-check ( / ):
-the tier is determined from record properties, and the shield is consulted
-BEFORE the S5 gate. HARD_BLOCK rejects propagate as (False, "shield: ...");
-FLAG and LOG tiers emit events but allow the write to proceed.
+A shield pre-check runs BEFORE the S5 gate. HARD_BLOCK rejects propagate
+as (False, "shield:..."); FLAG and LOG tiers emit events but allow the
+write to proceed.
 """
 from __future__ import annotations
 
@@ -26,9 +24,9 @@ import numpy as np
 
 from iai_mcp.types import MemoryRecord
 
-# fixed ρ for (matches literal_preservation=strong in autistic kernel).
-# DO NOT CHANGE without updating tests.
-VIGILANCE_RHO = 0.95  # float constant -- plan acceptance criterion greps for exact literal
+#: fixed ρ = 0.95 (literal_preservation=strong).
+# DO NOT CHANGE without updating the corresponding tests.
+VIGILANCE_RHO = 0.95  # float constant -- greps for exact literal value 0.95
 
 
 def cosine(a: list[float], b: list[float]) -> float:
@@ -49,7 +47,7 @@ def apply_art_gate(
 ) -> tuple[str, UUID]:
     """Return ('create', new_record.id) or ('merge', target_record_id).
 
-    Skips any existing record with `never_merge=True` ( pinned-L0 guarantee):
+    Skips any existing record with `never_merge=True` (pinned-L0 guarantee):
     even if the input matches L0 perfectly, L0 is never overwritten.
 
     Args:
@@ -98,31 +96,31 @@ def guarded_insert(
 ) -> tuple[bool, str]:
     """Central write gate combining shield pre-check + S5 identity check + ART gate.
 
-    (, ): determine the shield tier from the record
+    First, determine the shield tier from the record
     (HARD_BLOCK for pinned/identity-tier, FLAG for profile, LOG for content),
     evaluate the shield, then:
       - HARD_BLOCK + detection -> reject (shield_rejection event already logged)
-      - FLAG + detection        -> proceed (shield_flag event already logged)
-      - LOG + detection         -> proceed (shield_log event already logged)
+      - FLAG + detection -> proceed (shield_flag event already logged)
+      - LOG + detection -> proceed (shield_log event already logged)
 
-    identity-tier records (s5_trust_score >= 0.9)
+    Identity-tier records (s5_trust_score >= 0.9)
     must pass through propose_invariant_update. Direct writes -- via this
     function, the MCP surface, or any other write path -- are rejected unless
     they carry the `s5_consensus` marker tag.
 
     Below-identity writes (s5_trust_score < 0.9) fall through the ART gate.
-    Currently we use the existing Phase-1 behaviour (create-or-merge) and
+    Currently we use the existing behaviour (create-or-merge) and
     report the outcome via the return tuple. Callers receive:
-        (True, "created")          -- store.insert succeeded, distinct record
+        (True, "created") -- store.insert succeeded, distinct record
         (True, "merged_into:<id>") -- ART gate merged into an existing record
-        (True, "flagged")          -- shield FLAG tier matched; write still proceeded
-        (False, reason)            -- shield OR S5 blocked the write
+        (True, "flagged") -- shield FLAG tier matched; write still proceeded
+        (False, reason) -- shield OR S5 blocked the write
     """
     # Lazy imports so write.py doesn't pull events/numpy into every read path.
     from iai_mcp.s5 import check_identity_anchor_on_write
     from iai_mcp.shield import ShieldTier, apply_shield
 
-    # shield pre-check.
+    # Shield pre-check.
     tier = _shield_tier_for_record(record)
     verdict = apply_shield(store, record, tier, session_id=session_id)
     if verdict.action == "reject":

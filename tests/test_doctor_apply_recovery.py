@@ -1,18 +1,17 @@
-"""Wave 5 R9/A11 acceptance — `iai-mcp doctor --apply --yes`
-recovers from `kill -9 <daemon_pid>`.
+"""`iai-mcp doctor --apply --yes` recovers from `kill -9 <daemon_pid>`.
 
 Flow:
   1. Spawn a real `python -m iai_mcp.daemon` against an isolated tmp socket
-     (HIGH-4 LOCK pattern: IAI_DAEMON_SOCKET_PATH + IAI_MCP_STORE + HOME
-     env propagation isolates state file too).
+     (IAI_DAEMON_SOCKET_PATH + IAI_MCP_STORE + HOME env propagation
+     isolates the state file too).
   2. Wait for socket bind + state file with daemon_pid populated.
   3. SIGKILL the daemon.
   4. Run `cmd_doctor(args)` with apply=True, yes=True.
   5. Assert: rc=0, post-recovery checks all PASS, doctor_action events
      written to the events ledger, total elapsed time within budget.
 
-A11 budget: SPEC says ≤5 s recovery on warm cache. Test uses 15 s safety
-budget to absorb cold-cache bge-small load (~3-10 s) + LanceDB store open
+Budget: ≤5 s recovery on warm cache. Test uses 15 s safety
+budget to absorb cold-cache bge-small load (~3-10 s) + store open
 (~1 s) + harness overhead — same precedent as cold-start tests.
 """
 from __future__ import annotations
@@ -79,7 +78,7 @@ def isolated_daemon_paths(tmp_path, monkeypatch):
     # CRITICAL: force the keyring "fail" backend in the test process too,
     # so the doctor's `_respawn_daemon` audit-event write — which goes
     # through MemoryStore()._key() → crypto.get_or_create() → keyring —
-    # triggers the D-GUARD passphrase fallback rather than hanging on
+    # triggers the passphrase fallback rather than hanging on
     # the macOS Security framework's interactive keychain prompt under
     # fresh HOME. The fixture's finally clause resets keyring's cached
     # backend so this isolation does NOT leak to subsequent tests.
@@ -139,7 +138,7 @@ def _spawn_daemon(sock_path: Path, store_dir: Path, home: Path) -> subprocess.Po
 
     Adds PYTHON_KEYRING_BACKEND + IAI_MCP_CRYPTO_PASSPHRASE explicitly here
     (NOT in the test process env) so the spawned daemon's first write_event
-    call uses the D-GUARD passphrase fallback instead of hanging on the
+    call uses the passphrase fallback instead of hanging on the
     macOS Security framework's interactive keychain prompt. Setting these
     in-process would poison the test's keyring module cache.
     """
@@ -221,8 +220,9 @@ def _kill_test_daemons(sock_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.slow
 def test_apply_yes_recovers_from_kill(isolated_daemon_paths):
-    """R9/A11 acceptance: simulate kill -9 → cmd_doctor(apply=True, yes=True) →
+    """Simulate kill -9 → cmd_doctor(apply=True, yes=True) →
     daemon respawns, socket reappears, all 6 checks PASS, exit 0; doctor_action
     events emitted to the events ledger.
     """
@@ -267,9 +267,9 @@ def test_apply_yes_recovers_from_kill(isolated_daemon_paths):
             f"doctor recovery returned rc={rc}, elapsed={elapsed:.2f}s "
             "— expected exit 0 (all PASS after recovery)"
         )
-        # 15s safety budget covers cold-cache bge-small + LanceDB open +
-        # harness overhead; SPEC A11 5s budget is verified by Wave 6
-        # acceptance against the production warm-cache daemon.
+        # 15s safety budget covers cold-cache bge-small + store open +
+        # harness overhead; the 5s budget is verified by acceptance
+        # against the production warm-cache daemon.
         assert elapsed < 15.0, (
             f"doctor recovery took {elapsed:.2f}s, exceeds 15s safety budget"
         )
@@ -317,14 +317,14 @@ def test_apply_yes_recovers_from_kill(isolated_daemon_paths):
 
 # ---------------------------------------------------------------------------
 # Test 2: --apply WITHOUT --yes prompts for each destructive action;
-#         'n' answer skips the action and the FAIL persists → rc=2.
+# 'n' answer skips the action and the FAIL persists → rc=2.
 # ---------------------------------------------------------------------------
 
 
 def test_apply_no_yes_skips_destructive_action_on_n_response(
     isolated_daemon_paths, monkeypatch
 ):
-    """R9 UX: --apply without --yes presents [y/N] prompts; user typing 'n'
+    """UX: --apply without --yes presents [y/N] prompts; user typing 'n'
     skips the destructive action; the unfixed FAIL persists → rc=2.
 
     Setup: monkeypatch psutil.process_iter to fabricate one orphan

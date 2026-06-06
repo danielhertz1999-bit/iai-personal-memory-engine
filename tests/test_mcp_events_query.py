@@ -1,4 +1,4 @@
-"""Tests for events_query dispatch.
+"""Tests for MCP-05 events_query dispatch (Task 1).
 
 events_query exposes the events table to users with a STRICT whitelist of
 user-visible event kinds. Non-whitelisted kinds (e.g. s5_invariant_update)
@@ -16,7 +16,7 @@ from iai_mcp.store import MemoryStore
 
 
 def test_events_query_rejects_non_whitelisted_kind(tmp_path):
-    """Identity-kernel kinds MUST be rejected (D-22 threat model)."""
+    """Identity-kernel kinds MUST be rejected (threat model)."""
     store = MemoryStore(path=tmp_path)
     write_event(
         store,

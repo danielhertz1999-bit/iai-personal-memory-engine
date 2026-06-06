@@ -1,4 +1,4 @@
-# IAI-MCP Sleep Daemon -- systemd user unit (Plan 04-01, DAEMON-01)
+# IAI-MCP Sleep Daemon -- systemd user unit
 #
 # Install at ~/.config/systemd/user/iai-mcp-daemon.service, then:
 #   systemctl --user daemon-reload
@@ -7,7 +7,7 @@
 # For survival past logout (headless servers):
 #   loginctl enable-linger $USER
 #
-# C3 / guard: NO paid-API env var in Environment= lines. host_cli.py
+# C3 / D-14 guard: NO paid-API env var in Environment= lines. claude_cli.py
 # scrubs the subprocess env at spawn time; the unit env is intentionally minimal.
 
 [Unit]

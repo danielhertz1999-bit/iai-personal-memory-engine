@@ -4,7 +4,7 @@ Trace WHICH pipeline stage drops the gold session in loss cases
 (rows where retrieve_recall hits in top-k but recall_for_benchmark does not).
 
 Usage:
-    python bench/lme500/debug_pipeline_loss.py <question_id> [<question_id> ...]
+    python bench/lme500/debug_pipeline_loss.py <question_id> [<question_id>...]
 
 For each qid:
 - Loads the LongMemEval-S row from the pinned dataset.
@@ -110,7 +110,7 @@ def trace_one(qid: str) -> dict:
     tmp_root = Path(tempfile.mkdtemp(prefix="lme_dbg_"))
     store_dir = tmp_root / f"row-{qid}"
     store_dir.mkdir(parents=True, exist_ok=True)
-    store = MemoryStore(path=store_dir / "lancedb")
+    store = MemoryStore(path=store_dir / "hippo")
     asyncio.run(store.enable_async_writes(coalesce_ms=50, max_batch=128))
     embedder = embedder_for_store(store)
 
@@ -140,7 +140,7 @@ def trace_one(qid: str) -> dict:
     print(f"  gold records: {len(gold_record_ids)}", flush=True)
 
     graph, assignment, rich_club = build_runtime_graph(store)
-    print(f"  graph nodes: {len(graph._nx.nodes)}", flush=True)
+    print(f"  graph nodes: {graph.node_count()}", flush=True)
     print(f"  communities: {len(assignment.mid_regions)}", flush=True)
     print(f"  rich-club: {len(rich_club)}", flush=True)
     cue_emb = embedder.embed(question)
@@ -171,7 +171,10 @@ def trace_one(qid: str) -> dict:
         for cid in assignment.mid_regions.get(gc, []):
             candidates_set.add(cid)
     if not candidates_set:
-        candidates_set = {UUID(n) for n in graph._nx.nodes()}
+        # ``iter_nodes()`` yields UUID instances (was ``str(uuid)`` under the
+        # prior networkx backend); the prior ``UUID(n)`` wrap is therefore no
+        # longer needed.
+        candidates_set = set(graph.iter_nodes())
         print(f"    Stage 2 (community gate): EMPTY, fallback to all nodes", flush=True)
     print(f"    Stage 2 (community gate): top-3 communities = {gated}", flush=True)
     print(f"      candidates after gate: {len(candidates_set)}", flush=True)
@@ -179,19 +182,19 @@ def trace_one(qid: str) -> dict:
     print(f"      gold survives gate: {len(gold_in_gate)} / {len(gold_record_ids)}", flush=True)
 
     centrality: dict[UUID, float] = {}
-    for nid in graph._nx.nodes:
-        n = graph._nx.nodes[nid]
-        if "centrality" in n:
+    for nid in graph.iter_nodes():
+        payload = graph.get_payload(nid)
+        if "centrality" in payload:
             try:
-                centrality[UUID(nid)] = float(n["centrality"])
+                centrality[nid] = float(payload["centrality"])
             except (TypeError, ValueError):
-                centrality[UUID(nid)] = 0.0
+                centrality[nid] = 0.0
     if not centrality:
         try:
             centrality = graph.centrality()
         except Exception:
             centrality = {}
-    # (08-01): _pick_seeds now reads from a shared cosine array.
+    # _pick_seeds now reads from a shared cosine array.
     # Build the same array the production pipeline builds.
     pool_ids, pool_embs = _collect_graph_pool(graph, None, store)
     cue_vec_norm = np.asarray(cue_emb, dtype=np.float32)
@@ -248,11 +251,11 @@ def trace_one(qid: str) -> dict:
     print(f"      gold hit positions: {y_gold_pos}", flush=True)
 
     # ----- Verdict -----
-    # verdict primary signal is whether gold lands in
+    #: verdict primary signal is whether gold lands in
     # recall_for_benchmark's top-10 — which is what matters for R@5/R@10.
     # Stage-2/3/4 stage-by-stage diagnostics still print above (useful when
     # gold is missed) but they observe the PRIVATE _community_gate /
-    # _pick_seeds path. The redesign (08-CONTEXT.md D-02) makes the
+    # _pick_seeds path. The redesign makes the
     # community gate a soft-bias diagnostic rather than a hard filter, so a
     # "stage_2 missed" diagnostic with gold present in final hits means:
     # the gate's communities did not include gold, but the cosine top-K

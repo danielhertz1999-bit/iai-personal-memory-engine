@@ -1,4 +1,4 @@
-"""Tests for — the 7th unix-socket message type `session_open`.
+"""Tests for the 7th unix-socket message type `session_open`.
 
 Covers:
 - Valid session_open message is accepted; reply = {"ok": True, "reason": "session_open_queued"}.
@@ -9,9 +9,9 @@ Covers:
     * hippea_cascade_request with pending=True
 - The 6 prior message types still work (no regression).
 
-Uses a real `serve_control_socket(store, lock, state, shutdown)` behind a
-threaded background event-loop so asyncio.run() calls in the test body don't
-tear the server down between requests.
+Uses a real `serve_control_socket(store, state, shutdown)` behind a threaded
+background event-loop so asyncio.run() calls in the test body don't tear the
+server down between requests.
 """
 from __future__ import annotations
 
@@ -27,7 +27,6 @@ import pytest
 
 from iai_mcp import concurrency, daemon_state
 from iai_mcp.concurrency import (
-    ProcessLock,
     _dispatch_socket_request,
     _validate_socket_message,
     serve_control_socket,
@@ -97,10 +96,6 @@ def _make_fake_store() -> Any:
     return MagicMock()
 
 
-def _make_fake_lock() -> Any:
-    return MagicMock(spec=ProcessLock)
-
-
 # We call asyncio.run() directly in tests below; no asyncio marker needed.
 
 
@@ -116,7 +111,7 @@ def test_dispatch_session_open_queues_first_turn_and_cascade(
         "ts": "2026-04-19T12:00:00Z",
     }
     resp = asyncio.run(
-        _dispatch_socket_request(req, _make_fake_store(), _make_fake_lock(), state)
+        _dispatch_socket_request(req, _make_fake_store(), state)
     )
     assert resp == {"ok": True, "reason": "session_open_queued"}
     # Flag set for first-turn hook.
@@ -144,7 +139,7 @@ def test_dispatch_session_open_missing_session_id_ok(tmp_state: Path) -> None:
     state: dict = {"fsm_state": "WAKE"}
     req = {"type": "session_open", "ts": "2026-04-19T12:00:00Z"}
     resp = asyncio.run(
-        _dispatch_socket_request(req, _make_fake_store(), _make_fake_lock(), state)
+        _dispatch_socket_request(req, _make_fake_store(), state)
     )
     assert resp.get("ok") is True
     assert resp.get("reason") == "session_open_queued"
@@ -156,7 +151,7 @@ def test_dispatch_session_open_clips_long_session_id(tmp_state: Path) -> None:
     long_id = "a" * 1000
     req = {"type": "session_open", "session_id": long_id, "ts": "x"}
     resp = asyncio.run(
-        _dispatch_socket_request(req, _make_fake_store(), _make_fake_lock(), state)
+        _dispatch_socket_request(req, _make_fake_store(), state)
     )
     assert resp["ok"] is True
     last = state.get("last_session_open") or {}
@@ -172,7 +167,6 @@ def test_dispatch_force_wake_still_works(tmp_state: Path) -> None:
         _dispatch_socket_request(
             {"type": "force_wake", "ts": "x"},
             _make_fake_store(),
-            _make_fake_lock(),
             state,
         )
     )
@@ -185,7 +179,6 @@ def test_dispatch_force_rem_still_works(tmp_state: Path) -> None:
         _dispatch_socket_request(
             {"type": "force_rem", "ts": "x"},
             _make_fake_store(),
-            _make_fake_lock(),
             state,
         )
     )
@@ -198,7 +191,6 @@ def test_dispatch_pause_still_works(tmp_state: Path) -> None:
         _dispatch_socket_request(
             {"type": "pause"},
             _make_fake_store(),
-            _make_fake_lock(),
             state,
         )
     )
@@ -212,7 +204,6 @@ def test_dispatch_resume_still_works(tmp_state: Path) -> None:
         _dispatch_socket_request(
             {"type": "resume"},
             _make_fake_store(),
-            _make_fake_lock(),
             state,
         )
     )
@@ -226,7 +217,6 @@ def test_dispatch_user_initiated_sleep_still_works(tmp_state: Path) -> None:
         _dispatch_socket_request(
             {"type": "user_initiated_sleep", "reason": "night", "ts": "x"},
             _make_fake_store(),
-            _make_fake_lock(),
             state,
         )
     )
@@ -240,13 +230,12 @@ def test_dispatch_status_still_works(tmp_state: Path) -> None:
         _dispatch_socket_request(
             {"type": "status"},
             _make_fake_store(),
-            _make_fake_lock(),
             state,
         )
     )
     assert resp.get("ok") is True
     assert resp.get("state") == "WAKE"
-    # Version echoed in session-open response.
+    # Version echoed in the response.
     assert "version" in resp
 
 
@@ -264,7 +253,6 @@ class _ThreadedDaemon:
     def __init__(self, path: Path, state: dict) -> None:
         self.path = path
         self.state = state
-        self.lock = MagicMock(spec=ProcessLock)
         self.store = MagicMock()
         self.shutdown = None  # populated on the loop thread
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -281,13 +269,12 @@ class _ThreadedDaemon:
                 # Hand the real dispatcher the state we own.
                 async def _dispatcher(req: dict) -> dict:
                     return await _dispatch_socket_request(
-                        req, self.store, self.lock, self.state
+                        req, self.store, self.state
                     )
 
                 task = asyncio.create_task(
                     serve_control_socket(
                         self.store,
-                        self.lock,
                         self.state,
                         self.shutdown,  # type: ignore[arg-type]
                         dispatcher=_dispatcher,

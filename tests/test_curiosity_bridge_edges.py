@@ -1,4 +1,4 @@
-"""Tests for curiosity_bridge edges.
+"""Tests for curiosity_bridge edges (Task 4).
 
 curiosity_bridge edges:
 - Created when fire_curiosity surfaces a mid/high-entropy question.

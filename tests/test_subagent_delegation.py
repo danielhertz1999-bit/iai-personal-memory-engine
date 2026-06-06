@@ -1,9 +1,9 @@
-"""Tests for subagent delegation (Task 3, ).
+"""Tests for subagent delegation.
 
 serialize_session_for_subagent emits a JSON-safe dict containing:
-- l0, l1, l2, rich_club segments (D-10 session-start payload)
-- hashes dict (D-28 delta-encoding integration)
-- proxy_tools list (5 Phase-1 memory tools; no 02-04 user-introspection tools)
+- l0, l1, l2, rich_club segments (session-start payload)
+- hashes dict (delta-encoding integration)
+- proxy_tools list (5 memory tools; no user-introspection tools)
 """
 from __future__ import annotations
 

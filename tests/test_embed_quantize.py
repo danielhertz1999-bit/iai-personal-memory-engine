@@ -1,13 +1,16 @@
 """Tests for opt-in int8 embedding quantization.
 
-Adds the WRITE-side quantization knob `IAI_MCP_EMBED_QUANTIZE=int8`.
-Default (env unset) keeps the fp32 path byte-identical; the int8 surface
-is exposed via the new `Embedder.embed_quantized()` method and returns
-a `QuantizedVector` dataclass with per-vector min/max calibration
-metadata.
+Adds the WRITE-side quantization knob
+`IAI_MCP_EMBED_QUANTIZE=int8`. Default (env unset) keeps the fp32 path
+byte-identical; the int8 surface is exposed via the new
+`Embedder.embed_quantized()` method and returns a `QuantizedVector`
+dataclass with per-vector min/max calibration metadata.
+
+These tests are written RED-first per the plan: they MUST fail before the
+implementation lands in src/iai_mcp/embed.py.
 
 A full LongMemEval-S A/B (recall loss measurement) is OUT of scope and
-must run manually before any default flip from fp32 to int8.
+must run manually post-merge before any default flip from fp32 to int8.
 """
 
 from __future__ import annotations
@@ -93,7 +96,7 @@ def test_quantize_dequantize_round_trip_cos_ge_0_99(
     original = emb.embed(probe)
     qv = emb.embed_quantized(probe)
     # Dequantize via the documented inverse:
-    #   fp32[i] ≈ (int8_code[i] - zero_point) * scale
+    # fp32[i] ≈ (int8_code[i] - zero_point) * scale
     recovered = [(int(x) - qv.zero_point) * qv.scale for x in qv.values]
     a = np.asarray(original, dtype=np.float64)
     b = np.asarray(recovered, dtype=np.float64)

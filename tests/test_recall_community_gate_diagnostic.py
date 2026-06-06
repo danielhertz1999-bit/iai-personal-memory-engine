@@ -1,24 +1,20 @@
-"""redesign (08-CONTEXT.md ): regression-fence — community
-gate is a MODE-DEPENDENT diagnostic, not a hard filter.
+"""Regression fence — the community gate is a MODE-DEPENDENT diagnostic,
+not a hard filter.
 
-The redesign's load-bearing claim has two parts:
+The load-bearing claim has two parts:
   1. Records OUTSIDE the top-3 gated communities can still surface in
      `scored_hits[:K]` when their cosine rank is high. The gate never
      filters; it only biases.
-  2. The bias is mode-dependent (D-02 grounded in CLS / EPF / HIPPEA /
-     Ashby / Beer VSM):
-       - verbatim mode -> 0.0  (HIPPEA pure / EPF literal / hippocampal
-                                episodic; categorical filtering is
-                                anti-aSD here)
-       - concept  mode -> 0.1  (CLS neocortical semantic; soft +10%
-                                categorical hint to records inside
-                                top-3 gated communities)
+  2. The bias is mode-dependent:
+       - verbatim mode -> 0.0 (no categorical bias)
+       - concept mode -> 0.1 (soft +10% categorical hint to records
+                                inside top-3 gated communities)
 
-Pre-08 the gate was a HARD FILTER: `pipeline_recall` reduced
+Previously the gate was a HARD FILTER: `pipeline_recall` reduced
 `candidates` to records inside the top-3 communities. On a degenerate
-one-record-per-community graph (the cold-start bug class smoking gun
-in the published LongMemEval-S bench report) only 3 candidates survived; gold (12-24
-records) could not. The redesign closes this by reading the candidate
+one-record-per-community graph (the cold-start bug class) only 3
+candidates survived; gold (12-24 records) could not. The redesign closes
+this by reading the candidate
 pool from cosine top-K_CANDIDATES instead, and applying a mode-dependent
 soft bias only at the Stage-5 ranking step.
 
@@ -109,7 +105,7 @@ def _build_one_record_per_community(
     helper `_build_degenerate_graph_and_assignment` (patch
     era). Kept as a private helper here since the patch tests are gone.
     """
-    store = MemoryStore(path=tmp_path / "lancedb")
+    store = MemoryStore(path=tmp_path / "hippo")
     recs: list[MemoryRecord] = []
     for i in range(n):
         vec = [0.0] * EMBED_DIM
@@ -123,7 +119,7 @@ def _build_one_record_per_community(
         graph.add_node(
             rec.id, community_id=None, embedding=list(rec.embedding),
         )
-        graph._nx.nodes[str(rec.id)].update({
+        graph.set_node_payload(rec.id, {
             "embedding": list(rec.embedding),
             "surface": rec.literal_surface,
             "centrality": 0.0,
@@ -152,7 +148,7 @@ def _build_one_record_per_community(
 
 
 def test_records_outside_gated_communities_surface_via_cosine(tmp_path):
-    """D-02 anti-hard-filter fence: gold OUTSIDE top-3 communities still surfaces.
+    """anti-hard-filter fence: gold OUTSIDE top-3 communities still surfaces.
 
     Build a 50-record fixture where each record has a distinct primary
     axis. The cue points at axis 5 (rec[5] is the gold). The community
@@ -170,8 +166,8 @@ def test_records_outside_gated_communities_surface_via_cosine(tmp_path):
     active; the gold record (cosine 1.0 to the cue) wins on its raw
     cosine alone, even when the gate's bias goes to other communities.
 
-    If a future change re-introduces a hard filter (pre-08 behavior
-    where `candidates` are reduced to gate members only), this test
+    If a future change re-introduces a hard filter (where `candidates`
+    are reduced to gate members only), this test
     fails: rec[5] has cosine 1.0 but only the 3 gated communities
     survive, and on the orthogonal-axes geometry the gate may rank
     rec[5]'s community OUTSIDE the top-3, dropping the gold record
@@ -193,10 +189,10 @@ def test_records_outside_gated_communities_surface_via_cosine(tmp_path):
 
     found_ids = {h.record_id for h in resp.hits}
     assert recs[5].id in found_ids, (
-        "D-02 violation: gold record (cosine 1.0 to cue, on axis 5) "
+        "gold record (cosine 1.0 to cue, on axis 5) "
         "is NOT in top-10 hits. The gate must NEVER filter — only "
-        "bias. If this fails, someone re-introduced the pre-Phase-8 "
-        "hard-filter behavior (candidates restricted to top-3 "
+        "bias. If this fails, someone re-introduced the hard-filter "
+        "behavior (candidates restricted to top-3 "
         "gated-community members)."
     )
     # Stronger version: the gold record is the TOP hit (cosine 1.0 vs
@@ -213,7 +209,7 @@ def test_records_outside_gated_communities_surface_via_cosine(tmp_path):
 
 
 def test_mode_bias_verbatim_zero_concept_nonzero(tmp_path):
-    """D-02 canonical fence: verbatim mode bias=0.0; concept mode bias=0.1.
+    """canonical fence: verbatim mode bias=0.0; concept mode bias=0.1.
 
     Records inside top-3 gated communities get a score bonus ONLY in
     concept mode. A record outside top-3 communities never gets the
@@ -297,7 +293,7 @@ def test_mode_bias_verbatim_zero_concept_nonzero(tmp_path):
     verbatim_ids = {h.record_id for h in result_v.scored_hits}
     concept_ids = {h.record_id for h in result_c.scored_hits}
     assert verbatim_ids == concept_ids, (
-        "D-02 fence: gate must NEVER filter; mode change should not "
+        "gate must NEVER filter; mode change should not "
         f"alter the record list. verbatim_only={verbatim_ids - concept_ids}, "
         f"concept_only={concept_ids - verbatim_ids}"
     )
@@ -318,7 +314,7 @@ def test_mode_bias_verbatim_zero_concept_nonzero(tmp_path):
     expected_bonus = COMMUNITY_BIAS_CONCEPT * cos_GATED
     delta_gated = c_gated.score - v_gated.score
     assert delta_gated == pytest.approx(expected_bonus, abs=1e-4), (
-        f"D-02 concept mode: GATED record (rec[0], cosine={cos_GATED}) "
+        f"concept mode: GATED record (rec[0], cosine={cos_GATED}) "
         f"should gain ~{expected_bonus:.4f} from "
         f"COMMUNITY_BIAS_CONCEPT * cos when transitioning verbatim -> "
         f"concept. Got delta = c_gated.score - v_gated.score = "
@@ -335,7 +331,7 @@ def test_mode_bias_verbatim_zero_concept_nonzero(tmp_path):
     # across modes.
     delta_ctrl = c_ctrl.score - v_ctrl.score
     assert delta_ctrl == pytest.approx(0.0, abs=1e-6), (
-        f"D-02 concept mode: CONTROL record (rec[20], cosine 0 to cue, "
+        f"concept mode: CONTROL record (rec[20], cosine 0 to cue, "
         f"in non-gated community c20) must NOT receive the community "
         f"bias. Got delta = c_ctrl.score - v_ctrl.score = {delta_ctrl:.6f}; "
         f"expected 0.0.\n"
@@ -357,7 +353,7 @@ def test_mode_bias_verbatim_zero_concept_nonzero(tmp_path):
     assert actual_verbatim_delta == pytest.approx(
         expected_verbatim_delta, abs=1e-4
     ), (
-        f"D-02 verbatim mode: gated vs control score delta should be "
+        f"verbatim mode: gated vs control score delta should be "
         f"W_COSINE * cos_diff = {W_COSINE} * 1.0 = {expected_verbatim_delta:.4f} "
         f"with NO community-bias contribution. Got delta = "
         f"{actual_verbatim_delta:.4f}. If this differs, either "

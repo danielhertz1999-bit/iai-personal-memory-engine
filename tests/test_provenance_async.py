@@ -1,4 +1,4 @@
-"""— async provenance write queue ( / M-02).
+"""— async provenance write queue.
 
 Moves provenance writes off the recall critical path via a daemon-thread
 queue so pipeline_recall returns before append_provenance_batch runs.
@@ -7,7 +7,7 @@ All 6 tests below MUST FAIL on first run (RED) — the module
 `iai_mcp.provenance_queue` and the `MemoryStore.queue_provenance_batch`
 entry point do not exist yet.
 
-Constitutional fence:
+Fence:
 - preserved (every recall still appends a provenance entry;
   writes are async but not dropped).
 - Rule 1: provenance-write failure never blocks recall.
@@ -59,7 +59,7 @@ def test_enqueue_fast(tmp_path):
 
 
 def test_flush_drains(tmp_path):
-    """P2: worker drains all pending pairs within 500ms after .flush()."""
+    """P2: worker drains all pending pairs within 500ms after.flush()."""
     from iai_mcp.provenance_queue import ProvenanceWriteQueue
 
     store = MemoryStore(path=tmp_path)
@@ -124,12 +124,12 @@ def test_atexit_flush(tmp_path, monkeypatch):
 
 # ---------------------------------------------------------------------- P3, P4, P6
 
-def test_pipeline_recall_does_not_block_on_merge_insert(tmp_path):
+def test_pipeline_recall_does_not_block_on_merge_insert(tmp_path, monkeypatch):
     """P3: pipeline_recall latency does NOT include merge_insert when queue is enabled.
 
-    Setup: make append_provenance_batch artificially slow (150ms). With the
-    queue enabled, pipeline_recall should return well under 100ms (the write
-    is handed off). Without the queue it would be >=150ms.
+    Setup: make append_provenance_batch artificially slow (500ms). With the
+    queue enabled, pipeline_recall should return well under 400ms (the write
+    is handed off). Without the queue it would be >=500ms.
     """
     from iai_mcp.core import dispatch
 
@@ -137,12 +137,22 @@ def test_pipeline_recall_does_not_block_on_merge_insert(tmp_path):
     r = _make()
     store.insert(r)
 
-    # Warm call first — initialises embedders, opens LanceDB tables, etc.
-    # so the timed call below only measures the hot path.
+    # Warm call first — initialises embedders, opens tables, etc. so the
+    # timed call below only measures the hot path. Conftest autoflush is
+    # still active here so the record lands in the store before the slow
+    # mock is installed.
     dispatch(
         store, "memory_recall",
         {"cue": "warmup", "session_id": "s0", "cue_embedding": r.embedding},
     )
+
+    # Disable conftest defer_provenance autoflush before installing the slow
+    # mock. flush_deferred_provenance calls append_provenance_batch directly
+    # (bypasses the async queue), so leaving autoflush active would cause the
+    # pipeline's deferred write to hit the slow mock during the timed call.
+    # Production code has no such autoflush; this restores production semantics
+    # for the latency measurement.
+    monkeypatch.setenv("IAI_MCP_TEST_NO_AUTOFLUSH", "1")
 
     # Enable the provenance queue.
     store.enable_provenance_queue(coalesce_ms=50)
@@ -205,7 +215,7 @@ def test_mem05_preserved_after_drain(tmp_path):
 
 
 def test_overflow_spill_round_trip(tmp_path, monkeypatch):
-    """W1 / when _q is full, batches spill to
+    """W1 /: when _q is full, batches spill to
     ~/.iai-mcp/.provenance-overflow/ instead of dropping. The worker
     re-enqueues spilled batches on idle. holds under overload."""
     import threading
@@ -280,7 +290,7 @@ def test_overflow_spill_round_trip(tmp_path, monkeypatch):
 
 
 def test_overflow_dir_lazy_create(tmp_path, monkeypatch):
-    """W1 / the overflow dir is created only on the first spill.
+    """W1 /: the overflow dir is created only on the first spill.
     Cold start with no overload must NOT create it."""
     from iai_mcp.provenance_queue import ProvenanceWriteQueue
 
@@ -308,7 +318,7 @@ def test_overflow_dir_lazy_create(tmp_path, monkeypatch):
 
 
 def test_overflow_malformed_spill_file_quarantined(tmp_path, monkeypatch):
-    """W1 / a malformed spill file is renamed .failed-<ts>.jsonl
+    """W1 /: a malformed spill file is renamed.failed-<ts>.jsonl
     and does NOT block the drain loop."""
     from iai_mcp.provenance_queue import ProvenanceWriteQueue
 
@@ -330,7 +340,7 @@ def test_overflow_malformed_spill_file_quarantined(tmp_path, monkeypatch):
     finally:
         q.stop()
 
-    # Malformed file moved to .failed-*.jsonl
+    # Malformed file moved to.failed-*.jsonl
     assert not bad_file.exists()
     failed_files = list(overflow_dir.glob("*.failed-*.jsonl"))
     assert len(failed_files) == 1, (

@@ -1,16 +1,15 @@
-"""-05 R5 / A5 regression test — CPU watchdog emits one event under sustained overload.
+"""Regression test — CPU watchdog emits one event under sustained overload.
 
 Mock psutil.Process.cpu_percent with a scripted sequence so the test runs
-in seconds instead of 75s wall time. D7.2-23 explicitly allows mocks for
-heavy-dep tests. The synthetic-CPU-burner approach (real 80% CPU thread)
-is documented in SPEC A5 but is impractical for the unit suite; we test
+in seconds instead of 75s wall time. The synthetic-CPU-burner approach
+(a real 80% CPU thread) is impractical for the unit suite; we test
 the SAME contract (sustained > threshold => one event) with deterministic
 sample injection.
 
 Project async-test idiom (mandatory): sync `def test_X(...)` body wraps
 `asyncio.run(_async_body())`. The project does NOT depend on
 `pytest-asyncio`; `@pytest.mark.asyncio` markers silently pass without
-running. See tests/test_daemon_tick_flags.py:144 for the canonical pattern.
+running.
 """
 from __future__ import annotations
 
@@ -19,7 +18,7 @@ from unittest.mock import MagicMock, patch
 
 
 def test_sustained_overload_emits_exactly_one_daemon_cpu_overload_event(monkeypatch):
-    """A5 acceptance: 2 consecutive samples > threshold => 1 critical event."""
+    """2 consecutive samples > threshold => 1 critical event."""
     asyncio.run(_sustained_overload_body(monkeypatch))
 
 
@@ -83,7 +82,7 @@ async def _sustained_overload_body(monkeypatch):
     # Filter to overload events only.
     overload_events = [e for e in captured_events if e[0] == "daemon_cpu_overload"]
 
-    # A5: exactly one event.
+    # Exactly one event.
     assert len(overload_events) == 1, (
         f"Expected exactly 1 daemon_cpu_overload event; got "
         f"{len(overload_events)}: {overload_events}"
@@ -151,7 +150,7 @@ async def _below_threshold_body(monkeypatch):
 
 
 def test_event_cooldown_prevents_ledger_flood(monkeypatch):
-    """D7.2-20: at most one event per WATCHDOG_EVENT_COOLDOWN_SEC."""
+    """At most one event per WATCHDOG_EVENT_COOLDOWN_SEC."""
     asyncio.run(_event_cooldown_body(monkeypatch))
 
 

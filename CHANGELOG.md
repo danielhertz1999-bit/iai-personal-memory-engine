@@ -5,6 +5,100 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] — 2026-06-04
+
+First stable release. The architecture has settled and the public surface — the
+MCP tool set and the on-disk store — is committed-to from here on. SemVer-major
+bump from `0.4.2`.
+
+### Added
+
+- **Hippo storage engine** — a single encrypted local store holding records, the
+  vector index, the graph, and the event ledger together, built on SQLite +
+  `hnswlib` + AES-256-GCM. Replaces the previous embedded vector database.
+- **Native Rust engine** (`iai_mcp_native`) — the text embedder and the graph
+  kernels (centrality, clustering, connectivity) run as a compiled Rust
+  extension. Built automatically during `pip install` via `setuptools-rust`;
+  `iai-mcp build-native` rebuilds it in place.
+- **MOSAIC community detection** — original MIT-licensed, pure-Python + Numba
+  algorithm written for the memory-graph workload (small graph, heterogeneous
+  edge weights, re-clustered every sleep cycle) with a calibrated quality floor,
+  a hyper-fragmentation guard, and per-community lineage across consolidation.
+- **Lilli HD substrate** — hyperdimensional memory representations (BSC / FHRR /
+  sparse VSA) backing the episodic / semantic / procedural tiers, with
+  structural recall by the shape of a memory at zero LLM cost.
+- **Queryable cross-session episodic recall** — turns are captured verbatim and a
+  relevant slice is surfaced at the start of each new session; recent turns are
+  also queryable directly through the `iai` CLI and the `episodes_recent` tool.
+- **`iai` user CLI** — `iai recall` / `capture` / `ask` / `status`, driven from
+  any shell, separate from the operator-side `iai-mcp` CLI. Falls back to an
+  offline scan when the daemon is down.
+- **Subscription-billed consolidation** — the nightly LLM step runs through your
+  existing Claude subscription via `claude -p`; no API key, capped at ≤1% of the
+  daily quota.
+- **Export / backup / restore CLI** — full data portability of the store, crypto
+  key, and config.
+- **Write-ahead log for destructive sleep operations** — consolidation and
+  pruning steps are journaled and resume across a crash.
+- **Typed exception hierarchy** — narrowed error handling across the daemon and
+  pipeline.
+- **`iai-mcp doctor`** — 23 health checks across the daemon, the store, the
+  native engine, and the subscription credential path.
+
+### Changed
+
+- **Storage** moved from the previous embedded vector database to Hippo.
+- **Embedder** is now the native Rust embedder (English-only, 384-dimensional),
+  built locally — no large Python ML runtime is installed.
+- **Graph algorithms** run through the native Rust engine plus a pure-numpy
+  rich-club helper instead of a third-party graph library at runtime.
+- **Install** is pip-native: `pip install` compiles the native engine through
+  `setuptools-rust`. There is no shell install script.
+- **Graph centrality** is computed unweighted.
+- **Record schema** carries hyperdimensional tier fields; migration from an
+  older store is idempotent.
+
+### Removed
+
+- The previous embedded vector database from the runtime path — it now installs
+  only via the one-time `migration` extra to import a legacy store.
+- The PyTorch-based embedding stack (`sentence-transformers`, `torch`) — replaced
+  by the native Rust embedder.
+- The third-party hyperdimensional-computing dependency — replaced by the in-tree
+  Lilli HD substrate.
+- The third-party graph library from the runtime path — it remains a test-only
+  oracle in the `dev` extra.
+- Language auto-detection — the store is English-only by design.
+- `pydantic` and `structlog` — unused; replaced by the standard library.
+- The API-key SDK path — the daemon never calls a paid token API; consolidation
+  is subscription-only.
+
+### Fixed
+
+- Recall hot-path latency and daemon responsiveness under load (state I/O moved
+  off the event loop).
+- A range of store, migration, and consolidation stability issues surfaced while
+  hardening the new storage and native-engine paths.
+
+### Security
+
+- All records encrypted at rest with AES-256-GCM; the key is local
+  (`~/.iai-mcp/.key`, mode 0600). No telemetry, no cloud dependency, and no API
+  key stored or required by the daemon.
+
+### Migration
+
+Existing installs with data in the legacy store must import it once before the
+first `1.0.0` start:
+
+```
+pip install ".[migration]"
+python scripts/migrate_lance_to_hippo.py
+```
+
+The script backs up the old data before any writes and verifies byte-for-byte
+before removing it.
+
 ## [0.4.2] — 2026-05-14
 
 ### Added
@@ -109,11 +203,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Initial public release. Local memory daemon for MCP-over-stdio hosts. Verbatim recall, ambient capture, sleep-cycle consolidation, encrypted-at-rest LanceDB store, configurable operating profile.
 
-[0.4.2]: https://github.com/CodeAbra/iai-mcp/releases/tag/v0.4.2
-[0.4.1]: https://github.com/CodeAbra/iai-mcp/releases/tag/v0.4.1
-[0.4.0]: https://github.com/CodeAbra/iai-mcp/releases/tag/v0.4.0
-[0.3.2]: https://github.com/CodeAbra/iai-mcp/releases/tag/v0.3.2
-[0.3.1]: https://github.com/CodeAbra/iai-mcp/releases/tag/v0.3.1
-[0.3.0]: https://github.com/CodeAbra/iai-mcp/releases/tag/v0.3.0
-[0.2.0]: https://github.com/CodeAbra/iai-mcp/releases/tag/v0.2.0
-[0.1.0]: https://github.com/CodeAbra/iai-mcp/releases/tag/v0.1.0
+[1.0.0]: https://github.com/CodeAbra/iai-personal-memory-engine/releases/tag/v1.0.0
+[0.4.2]: https://github.com/CodeAbra/iai-personal-memory-engine/releases/tag/v0.4.2
+[0.4.1]: https://github.com/CodeAbra/iai-personal-memory-engine/releases/tag/v0.4.1
+[0.4.0]: https://github.com/CodeAbra/iai-personal-memory-engine/releases/tag/v0.4.0
+[0.3.2]: https://github.com/CodeAbra/iai-personal-memory-engine/releases/tag/v0.3.2
+[0.3.1]: https://github.com/CodeAbra/iai-personal-memory-engine/releases/tag/v0.3.1
+[0.3.0]: https://github.com/CodeAbra/iai-personal-memory-engine/releases/tag/v0.3.0
+[0.2.0]: https://github.com/CodeAbra/iai-personal-memory-engine/releases/tag/v0.2.0
+[0.1.0]: https://github.com/CodeAbra/iai-personal-memory-engine/releases/tag/v0.1.0

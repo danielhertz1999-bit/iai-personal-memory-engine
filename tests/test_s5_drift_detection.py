@@ -1,6 +1,6 @@
-"""Tests for s5.detect_drift_anomaly + s5.audit_identity_events .
+"""Tests for s5.detect_drift_anomaly + s5.audit_identity_events.
 
-D-30 gradual-drift detection:
+ gradual-drift detection:
 - Reads trajectory_metric events for the M4 (profile-vector variance) metric.
 - When variance has been REVERSING direction (was decreasing, now increasing)
   across `window_sessions` consecutive sessions, emits an s5_drift_alert event

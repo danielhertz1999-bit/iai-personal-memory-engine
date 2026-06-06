@@ -1,4 +1,4 @@
-""" delta encoding for session-start payloads (Task 2, ).
+"""Delta encoding for session-start payloads.
 
 The session-start payload is a 4-component dict: l0, l1, l2 (list), rich_club.
 On the first session turn the client sends nothing; the server hashes each

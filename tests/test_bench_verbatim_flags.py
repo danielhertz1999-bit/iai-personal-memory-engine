@@ -3,8 +3,8 @@
 Covers the 5 behaviors from the plan:
  1. `python -m bench.verbatim --help` lists --skip-l0-seed, --storage-direct,
     --n, --gap, --noise-per-session, --k.
- 2. `run_verbatim_bench(skip_l0_seed=True, ...)` does NOT seed L0 identity.
- 3. `run_verbatim_bench(storage_direct=True, ...)` writes zero provenance
+ 2. `run_verbatim_bench(skip_l0_seed=True,...)` does NOT seed L0 identity.
+ 3. `run_verbatim_bench(storage_direct=True,...)` writes zero provenance
     entries on pinned records across the query loop.
  4. Default invocation (no new flags set) is byte-identical to pre-plan
     behavior on the public dict keys.

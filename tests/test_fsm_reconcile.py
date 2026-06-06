@@ -1,144 +1,153 @@
-"""Detect-only reconciliation between canonical and legacy daemon-state files.
+"""FSM consolidation tests.
 
-The canonical lifecycle state lives in ``~/.iai-mcp/lifecycle_state.json``
-with values WAKE / DROWSY / SLEEP / HIBERNATION. The legacy
-file ``~/.iai-mcp/.daemon-state.json`` retains historical values
-WAKE / TRANSITIONING / SLEEP / DREAMING.
-
-``reconcile_fsm_state`` reads both files (if present) and reports whether
-their declared lifecycle states disagree. It is a pure read — no writes,
-no logging, no event emission; the caller decides how to surface drift.
-
-Mapping table (no drift):
-  canonical=WAKE        <-> legacy=WAKE         (steady)
-  canonical=SLEEP       <-> legacy=SLEEP        (steady)
-  canonical=SLEEP       <-> legacy=DREAMING     (DREAMING is a sub-state)
-  canonical=DROWSY      <-> legacy=TRANSITIONING
-  canonical=HIBERNATION <-> any legacy value    (legacy did not model it)
-
-Any other combo => drift=True.
-Both files missing or one side missing => drift=False (one-sided is not
-drift; it is the bootstrapping condition).
+Verifies that fsm_reconcile auto-corrects legacy state to match canonical,
+handles interrupted transitions, and crash-between-writes scenarios.
 """
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
+import pytest
 
-def _write_canonical(path: Path, state: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "current_state": state,
-        "since_ts": "2026-05-13T00:00:00+00:00",
-        "last_activity_ts": "2026-05-13T00:00:00+00:00",
-        "wrapper_event_seq": 0,
-        "sleep_cycle_progress": None,
-        "quarantine": None,
-        "shadow_run": False,
-    }
-    path.write_text(json.dumps(payload))
+from iai_mcp.fsm_reconcile import reconcile_fsm_state
 
 
-def _write_legacy(path: Path, fsm_state: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"fsm_state": fsm_state}
-    path.write_text(json.dumps(payload))
+@pytest.fixture
+def state_dir(tmp_path):
+    return tmp_path
 
 
-def test_reconcile_detects_drift(tmp_path):
-    from iai_mcp.fsm_reconcile import reconcile_fsm_state
-
-    canonical = tmp_path / "lifecycle_state.json"
-    legacy = tmp_path / ".daemon-state.json"
-    _write_canonical(canonical, "WAKE")
-    _write_legacy(legacy, "SLEEP")
-
-    report = reconcile_fsm_state(canonical_path=canonical, legacy_path=legacy)
-
-    assert report == {"canonical": "WAKE", "legacy": "SLEEP", "drift": True}
+def _write_canonical(state_dir: Path, state: str):
+    p = state_dir / "lifecycle_state.json"
+    p.write_text(json.dumps({"current_state": state, "updated_at": "2026-05-17T00:00:00Z"}))
+    return p
 
 
-def test_no_drift_returns_drift_false(tmp_path):
-    from iai_mcp.fsm_reconcile import reconcile_fsm_state
-
-    canonical = tmp_path / "lifecycle_state.json"
-    legacy = tmp_path / ".daemon-state.json"
-
-    _write_canonical(canonical, "WAKE")
-    _write_legacy(legacy, "WAKE")
-    report = reconcile_fsm_state(canonical_path=canonical, legacy_path=legacy)
-    assert report["drift"] is False
-    assert report["canonical"] == "WAKE"
-    assert report["legacy"] == "WAKE"
+def _write_legacy(state_dir: Path, fsm_state: str):
+    p = state_dir / ".daemon-state.json"
+    p.write_text(json.dumps({"fsm_state": fsm_state, "daemon_started_at": "2026-05-17T00:00:00Z"}))
+    return p
 
 
-def test_both_files_missing_returns_no_drift(tmp_path):
-    from iai_mcp.fsm_reconcile import reconcile_fsm_state
+class TestReconcileNoDrift:
+    def test_both_wake(self, state_dir):
+        c = _write_canonical(state_dir, "WAKE")
+        l = _write_legacy(state_dir, "WAKE")
+        r = reconcile_fsm_state(c, l)
+        assert r["drift"] is False
+        assert r["canonical"] == "WAKE"
+        assert r["legacy"] == "WAKE"
 
-    canonical = tmp_path / "lifecycle_state.json"
-    legacy = tmp_path / ".daemon-state.json"
-    report = reconcile_fsm_state(canonical_path=canonical, legacy_path=legacy)
-    assert report == {"canonical": None, "legacy": None, "drift": False}
+    def test_sleep_dreaming_is_equivalent(self, state_dir):
+        c = _write_canonical(state_dir, "SLEEP")
+        l = _write_legacy(state_dir, "DREAMING")
+        r = reconcile_fsm_state(c, l)
+        assert r["drift"] is False
 
+    def test_drowsy_transitioning_is_equivalent(self, state_dir):
+        c = _write_canonical(state_dir, "DROWSY")
+        l = _write_legacy(state_dir, "TRANSITIONING")
+        r = reconcile_fsm_state(c, l)
+        assert r["drift"] is False
 
-def test_one_side_missing_returns_no_drift(tmp_path):
-    from iai_mcp.fsm_reconcile import reconcile_fsm_state
-
-    canonical = tmp_path / "lifecycle_state.json"
-    legacy = tmp_path / ".daemon-state.json"
-    _write_canonical(canonical, "SLEEP")
-    report = reconcile_fsm_state(canonical_path=canonical, legacy_path=legacy)
-    assert report["drift"] is False
-    assert report["canonical"] == "SLEEP"
-    assert report["legacy"] is None
-
-
-def test_dreaming_maps_to_sleep_no_drift(tmp_path):
-    from iai_mcp.fsm_reconcile import reconcile_fsm_state
-
-    canonical = tmp_path / "lifecycle_state.json"
-    legacy = tmp_path / ".daemon-state.json"
-    _write_canonical(canonical, "SLEEP")
-    _write_legacy(legacy, "DREAMING")
-    report = reconcile_fsm_state(canonical_path=canonical, legacy_path=legacy)
-    assert report["drift"] is False
+    def test_hibernation_accepts_any_legacy(self, state_dir):
+        c = _write_canonical(state_dir, "HIBERNATION")
+        l = _write_legacy(state_dir, "WAKE")
+        r = reconcile_fsm_state(c, l)
+        assert r["drift"] is False
 
 
-def test_transitioning_maps_to_drowsy_no_drift(tmp_path):
-    from iai_mcp.fsm_reconcile import reconcile_fsm_state
+class TestReconcileDrift:
+    def test_wake_vs_sleep_is_drift(self, state_dir):
+        c = _write_canonical(state_dir, "WAKE")
+        l = _write_legacy(state_dir, "SLEEP")
+        r = reconcile_fsm_state(c, l)
+        assert r["drift"] is True
 
-    canonical = tmp_path / "lifecycle_state.json"
-    legacy = tmp_path / ".daemon-state.json"
-    _write_canonical(canonical, "DROWSY")
-    _write_legacy(legacy, "TRANSITIONING")
-    report = reconcile_fsm_state(canonical_path=canonical, legacy_path=legacy)
-    assert report["drift"] is False
-
-
-def test_hibernation_accepts_any_legacy_no_drift(tmp_path):
-    from iai_mcp.fsm_reconcile import reconcile_fsm_state
-
-    canonical = tmp_path / "lifecycle_state.json"
-    legacy = tmp_path / ".daemon-state.json"
-    for legacy_state in ("WAKE", "TRANSITIONING", "SLEEP", "DREAMING"):
-        _write_canonical(canonical, "HIBERNATION")
-        _write_legacy(legacy, legacy_state)
-        report = reconcile_fsm_state(
-            canonical_path=canonical, legacy_path=legacy
-        )
-        assert report["drift"] is False, (legacy_state, report)
+    def test_sleep_vs_wake_is_drift(self, state_dir):
+        c = _write_canonical(state_dir, "SLEEP")
+        l = _write_legacy(state_dir, "WAKE")
+        r = reconcile_fsm_state(c, l)
+        assert r["drift"] is True
 
 
-def test_corrupt_file_treated_as_missing(tmp_path):
-    from iai_mcp.fsm_reconcile import reconcile_fsm_state
+class TestAutoCorrect:
+    def test_corrects_legacy_on_drift(self, state_dir):
+        c = _write_canonical(state_dir, "WAKE")
+        l = _write_legacy(state_dir, "SLEEP")
+        r = reconcile_fsm_state(c, l, auto_correct=True)
+        assert r["drift"] is True
+        assert r["corrected"] is True
+        updated = json.loads(l.read_text())
+        assert updated["fsm_state"] == "WAKE"
+        assert "fsm_corrected_at" in updated
 
-    canonical = tmp_path / "lifecycle_state.json"
-    legacy = tmp_path / ".daemon-state.json"
-    canonical.parent.mkdir(parents=True, exist_ok=True)
-    canonical.write_text("not valid json {{{")
-    _write_legacy(legacy, "SLEEP")
-    report = reconcile_fsm_state(canonical_path=canonical, legacy_path=legacy)
-    assert report["drift"] is False
-    assert report["canonical"] is None
-    assert report["legacy"] == "SLEEP"
+    def test_no_correction_when_no_drift(self, state_dir):
+        c = _write_canonical(state_dir, "WAKE")
+        l = _write_legacy(state_dir, "WAKE")
+        r = reconcile_fsm_state(c, l, auto_correct=True)
+        assert r["drift"] is False
+        assert r["corrected"] is False
+
+    def test_corrects_drowsy_to_transitioning(self, state_dir):
+        c = _write_canonical(state_dir, "DROWSY")
+        l = _write_legacy(state_dir, "WAKE")
+        r = reconcile_fsm_state(c, l, auto_correct=True)
+        assert r["corrected"] is True
+        updated = json.loads(l.read_text())
+        assert updated["fsm_state"] == "TRANSITIONING"
+
+    def test_preserves_other_legacy_fields(self, state_dir):
+        c = _write_canonical(state_dir, "SLEEP")
+        l = state_dir / ".daemon-state.json"
+        l.write_text(json.dumps({
+            "fsm_state": "WAKE",
+            "daemon_started_at": "2026-01-01T00:00:00Z",
+            "custom_field": "preserved",
+        }))
+        r = reconcile_fsm_state(c, l, auto_correct=True)
+        assert r["corrected"] is True
+        updated = json.loads(l.read_text())
+        assert updated["fsm_state"] == "SLEEP"
+        assert updated["custom_field"] == "preserved"
+
+
+class TestCrashRecovery:
+    def test_missing_canonical_no_crash(self, state_dir):
+        l = _write_legacy(state_dir, "WAKE")
+        c = state_dir / "lifecycle_state.json"
+        r = reconcile_fsm_state(c, l)
+        assert r["canonical"] is None
+        assert r["drift"] is False
+
+    def test_missing_legacy_no_crash(self, state_dir):
+        c = _write_canonical(state_dir, "WAKE")
+        l = state_dir / ".daemon-state.json"
+        r = reconcile_fsm_state(c, l)
+        assert r["legacy"] is None
+        assert r["drift"] is False
+
+    def test_corrupt_canonical_no_crash(self, state_dir):
+        c = state_dir / "lifecycle_state.json"
+        c.write_text("not json{{{{")
+        l = _write_legacy(state_dir, "WAKE")
+        r = reconcile_fsm_state(c, l)
+        assert r["canonical"] is None
+        assert r["drift"] is False
+
+    def test_corrupt_legacy_no_crash(self, state_dir):
+        c = _write_canonical(state_dir, "WAKE")
+        l = state_dir / ".daemon-state.json"
+        l.write_text("corrupted bytes here")
+        r = reconcile_fsm_state(c, l)
+        assert r["legacy"] is None
+        assert r["drift"] is False
+
+    def test_both_missing(self, state_dir):
+        c = state_dir / "lifecycle_state.json"
+        l = state_dir / ".daemon-state.json"
+        r = reconcile_fsm_state(c, l)
+        assert r["canonical"] is None
+        assert r["legacy"] is None
+        assert r["drift"] is False

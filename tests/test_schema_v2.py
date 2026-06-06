@@ -1,6 +1,6 @@
 """Tests for MemoryRecord v2 schema extensions + edge-type enum.
 
-D-02a / / D-GUARD / D-STORAGE introduce:
+The v2 schema changes introduce:
 - MemoryRecord.language (ISO-639-1 required)
 - MemoryRecord.s5_trust_score (float [0,1], default 0.5, prep)
 - MemoryRecord.profile_modulation_gain (dict, runtime gain)
@@ -8,7 +8,7 @@ D-02a / / D-GUARD / D-STORAGE introduce:
 - 6 new edge types in EDGE_TYPES registry
 - Round-trip of all v2 fields through store.insert / store.get
 
-Constitutional: plan-02-01 adds these fields ADDITIVELY. Existing
+These fields are added ADDITIVELY. Existing
 fixtures with language="en" must keep working.
 """
 from __future__ import annotations
@@ -114,7 +114,7 @@ def test_memory_record_has_s5_trust_score():
 
 
 def test_memory_record_s5_trust_score_default_is_0_5():
-    """D-22 neutral prior: default is 0.5."""
+    """neutral prior: default is 0.5."""
     from iai_mcp.types import MemoryRecord
     from iai_mcp.embed import Embedder
     _dim = Embedder.DEFAULT_DIM if hasattr(Embedder, "DEFAULT_DIM") else 384
@@ -178,7 +178,7 @@ def test_memory_record_schema_version_accepts_1_for_migration():
 
 
 def test_memory_record_schema_version_rejects_other_values():
-    # schema_version=3 is now valid (encryption marker)
+    #: schema_version=3 is now valid (encryption marker)
     # and schema_version=4 is the new current (TEM factorization).
     # Anything outside SCHEMA_VERSION_ACCEPTED is still rejected.
     with pytest.raises(ValueError):
@@ -190,8 +190,8 @@ def test_memory_record_schema_version_rejects_other_values():
 # ------------------------------------------------------------------- edges
 
 
-def test_edge_types_registry_has_9_members():
-    """(hebbian, contradicts) + 6 types + 1 (hebbian_structure)."""
+def test_edge_types_registry_has_11_members():
+    """(hebbian, contradicts) + 6 types + 1 (hebbian_structure) + 1 (pattern_separation_seed) + 1 (hebbian_cluster_replay)."""
     from iai_mcp.store import EDGE_TYPES
 
     expected = {
@@ -205,6 +205,10 @@ def test_edge_types_registry_has_9_members():
         "profile_modulates",
         # TEM factorization Hebbian LTP on structure edges.
         "hebbian_structure",
+        # DG/CA3 pre-insert link layer; FSRS-decays like hebbian.
+        "pattern_separation_seed",
+        # cSPW-R cluster-replay temporal Hebbian seed; FSRS-decays like hebbian.
+        "hebbian_cluster_replay",
     }
     assert EDGE_TYPES == frozenset(expected)
 
@@ -310,7 +314,7 @@ def test_record_to_from_row_preserves_schema_version(tmp_path):
 
 def test_legacy_record_reads_default_v1_defaults(tmp_path):
     """Read-side backward compatibility: a record row without language columns
-    (pre-Phase-2) should load with language=\"en\" and schema_version=1 defaults.
+    (pre-) should load with language=\"en\" and schema_version=1 defaults.
 
     This matters during migration: code reads both v1 and v2 rows.
     We simulate a v1 record by inserting through a "legacy" path that uses

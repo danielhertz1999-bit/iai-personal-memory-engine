@@ -1,4 +1,4 @@
-"""E2E register-relaxation smoke test.
+"""AUTIST-13 Task 3 — E2E register-relaxation smoke test.
 
 Simulates an 8-week rising-formality trajectory and runs run_weekly_pass on
 expanding 5-point windows. Verifies that:
@@ -7,7 +7,7 @@ expanding 5-point windows. Verifies that:
 - A control (flat 0.5 trajectory) produces NO detections and leaves the knob untouched.
 
 Real longitudinal validation (post-session-~30) is deferred to a later phase
-(see 03-03-SUMMARY.md §Deferred Items). This test covers the synthetic E2E
+(see 03-03- §Deferred Items). This test covers the synthetic E2E
 per D-AUTIST13-04.
 """
 from __future__ import annotations

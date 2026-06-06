@@ -1,30 +1,18 @@
-"""regression fence — rank stability + C5 invariant.
+"""Regression fence — rank stability + literal-preservation invariant.
 
-Scoped to the DIAGNOSTIC-NOTE.md dominant-effect verdict:
+The dominant accuracy effect is provenance-write amplification, so this file
+covers the three tests that fence it and the invariants that must survive the
+provenance-batching fix.
 
-    Dominant effect: (c) provenance-write amplification
+- Test 1 (rank stability) locks the invariant so future regressions (any
+  change that restores the N+1 append pattern) are caught in CI regardless of
+  host memory — on memory-pressed hosts the per-hit loop tips into swap thrash
+  and perturbs ranks.
+- Test 2 (top-60 pinned coverage).
+- Test 3 (literal preservation).
 
-Effect (a) and (b) each contributed 0% to accuracy on the reference host, so
-this test file covers the three tests that directly fence effect (c) and the
-C5/ invariants that must survive the Task 2 batching fix. Test 4 (L0
-crowding) from the plan is NOT included because the 05-01 verdict disconfirmed
-effect (b) on this host.
-
-Expected state PRE-Task 2 fix on THIS host (16 GB+):
-- Test 1 (rank stability) likely PASSES on a fresh store with baseline recall
-  — the 05-01 diagnostic showed accuracy=1.0 on this host even with the per-hit
-  provenance loop. Test 1's rank-stability fence is still load-bearing because
-  on memory-pressed hosts (pressplay 8 GB) the same per-hit loop tips into
-  swap thrash and perturbs ranks. Test 1 locks the invariant in place so that
-  future regressions (any change that restores the N+1 append pattern, e.g.
-  accidental revert) are caught in CI regardless of host memory.
-- Test 2 (top-60 pinned coverage) PASSES (the bench numbers matched at 1.0).
-- Test 3 (literal preservation) PASSES (C5 invariant is already enforced).
-
-Expected state POST-Task 2 fix: all three tests PASS.
-
-Constitutional invariants covered:
-- C5 literal preservation (Test 3)
+Invariants covered:
+- literal preservation (Test 3)
 - provenance creation (Test 1 auxiliary assertion — batched write still
   produces exactly k_hits new provenance entries per recall call)
 - verbatim recall at runbook profile (Test 2)
@@ -76,7 +64,7 @@ def test_topk_rank_identical_across_sequential_queries(tmp_path):
     literal_surface) tuple is byte-identical across every call.
 
     If the per-hit `store.append_provenance(...)` loop inside `recall()`
-    perturbs the LanceDB vector index mid-run (the pressplay failure mode),
+    perturbs the vector index mid-run (the low-memory failure mode),
     rank drift will cause this assertion to fail.
 
     Auxiliary assertion: for each of 20 sequential recalls, the pinned
@@ -88,7 +76,7 @@ def test_topk_rank_identical_across_sequential_queries(tmp_path):
     dim = store.embed_dim
     cue = [1.0] * dim
 
-    # retrieve.recall now defaults to mode='verbatim'
+    #: retrieve.recall now defaults to mode='verbatim'
     # (conservative North-Star fallback). The fixture pinned records are
     # tier='semantic' (per bench/verbatim._make_pinned), which verbatim mode
     # filters out — leaving zero hits. The rank-stability invariant
@@ -125,7 +113,7 @@ def test_topk_rank_identical_across_sequential_queries(tmp_path):
             f"rank drift at iteration {i}: top-k set changed between sequential "
             f"recalls with identical cue. Baseline={baseline_ids}, current={current}. "
             f"This indicates effect (c) provenance-write amplification is perturbing "
-            f"the LanceDB vector index."
+            f"the vector index."
         )
 
     # auxiliary: every pinned record should have >= 20 provenance entries
@@ -138,14 +126,14 @@ def test_topk_rank_identical_across_sequential_queries(tmp_path):
         # Allow tolerance for batch write ordering, but each pinned must have
         # >= 20 entries (20 recalls * 1 hit each).
         assert len(updated.provenance) >= 20, (
-            f" violation: pinned {rec.id} has "
+            f"MEM-05 violation: pinned {rec.id} has "
             f"{len(updated.provenance)} provenance entries after 20 recalls "
             f"(expected >= 20)."
         )
 
 
 def test_topk_contains_all_pinned_at_runbook_profile(tmp_path):
-    """ gate at the runbook profile (n=50 pinned, k=60, 200 noise).
+    """gate at the runbook profile (n=50 pinned, k=60, 200 noise).
 
     At k=60 with 50 pinned + 200 noise, every pinned should be in the top-60.
     This is the in-process mirror of `bench/verbatim.py --n 50 --gap 5
@@ -156,7 +144,7 @@ def test_topk_contains_all_pinned_at_runbook_profile(tmp_path):
     dim = store.embed_dim
     cue = [1.0] * dim
 
-    # pin mode='concept' so tier='semantic' pinned records
+    #: pin mode='concept' so tier='semantic' pinned records
     # survive the candidate filter (verbatim mode would drop them).
     resp = recall(
         store=store,
@@ -172,7 +160,7 @@ def test_topk_contains_all_pinned_at_runbook_profile(tmp_path):
     pinned_ids = {r.id for r in pinned}
     missing = pinned_ids - hit_ids
     assert not missing, (
-        f" violation at runbook profile: "
+        f"At runbook profile: "
         f"{len(missing)}/{len(pinned_ids)} pinned records missing from top-60. "
         f"Missing surface (first 3): "
         f"{sorted(str(m)[:8] for m in list(missing)[:3])}"
@@ -180,7 +168,7 @@ def test_topk_contains_all_pinned_at_runbook_profile(tmp_path):
 
 
 def test_no_literal_surface_mutation(tmp_path):
-    """C5 invariant: literal_surface is byte-identical pre/post recalls.
+    """literal_surface is byte-identical pre/post recalls.
 
     Belt-and-suspenders against any future change that would write to
     `literal_surface` during the recall path. The batching fix (Task 2) does
@@ -195,7 +183,7 @@ def test_no_literal_surface_mutation(tmp_path):
     pre = {r.id: store.get(r.id).literal_surface for r in pinned}
 
     # 20 sequential recalls.
-    # mode='concept' so tier='semantic' pinned records
+    #: mode='concept' so tier='semantic' pinned records
     # survive the candidate filter.
     for i in range(20):
         recall(
@@ -214,6 +202,6 @@ def test_no_literal_surface_mutation(tmp_path):
     assert pre.keys() == post.keys()
     for rid in pre:
         assert pre[rid] == post[rid], (
-            f"C5 violation: literal_surface of record {rid} mutated "
+            f"C5 MEM-01 violation: literal_surface of record {rid} mutated "
             f"by recall path. Before={pre[rid]!r}, after={post[rid]!r}."
         )

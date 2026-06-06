@@ -1,8 +1,8 @@
-"""trajectory live-vs-synthetic smoke test.
+"""Trajectory live-vs-synthetic smoke test.
 
 Proof that M2/M4/M6 numbers are actually coming from emitted events --
-the live values must differ measurably from the pre-plan synthetic
-constants (which were all 0.0). M1/M3/M5 are pre-Phase-3 live and
+the live values must differ measurably from the synthetic placeholder
+constants (which were all 0.0). M1/M3/M5 are static helpers and
 must remain unchanged in shape.
 """
 from __future__ import annotations
@@ -97,7 +97,7 @@ def test_m6_live_differs_from_synthetic_when_session_starts_repeat(tmp_path):
 
 
 def test_m1_m3_m5_remain_pre_phase3_live(tmp_path):
-    """M1/M3/M5 are pre-Phase-3 live; their behaviour must be unchanged.
+    """M1/M3/M5 are static helpers; their behaviour must be unchanged.
 
     Seed one curiosity_question + one session_start_tokens + one
     curiosity_silent_log; assert the helpers still return real values.

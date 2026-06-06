@@ -1,9 +1,9 @@
-"""Tests for iai-mcp audit CLI .
+"""Tests for the iai-mcp audit CLI.
 
 `iai-mcp audit [--since WEEKS] [--severity SEV]` renders an identity-event
-audit log, TZ-aware timestamps, and REDACTED shield match counts (D-30
-threat T-02-05-02: leaking matched patterns in CLI output would hand the
-attacker a dictionary of what the shield is watching for).
+audit log, TZ-aware timestamps, and REDACTED shield match counts (leaking
+matched patterns in CLI output would hand the attacker a dictionary of what
+the shield is watching for).
 """
 from __future__ import annotations
 
@@ -37,6 +37,7 @@ def test_cli_audit_renders_events(tmp_path, capsys, monkeypatch):
         data={"anchor_id": "abc", "new_record_id": "def"},
         severity="info", session_id="s1",
     )
+    store.close()
     code = cli_main(["audit"])
     assert code == 0
     out = capsys.readouterr().out
@@ -55,6 +56,7 @@ def test_cli_audit_since_weeks(tmp_path, capsys, monkeypatch):
         data={"anchor_id": "abc"},
         severity="info", session_id="s1",
     )
+    store.close()
     code = cli_main(["audit", "--since=2"])
     assert code == 0
 
@@ -73,6 +75,7 @@ def test_cli_audit_severity_filter_warning_only(tmp_path, capsys, monkeypatch):
         data={"first_value": 0.1, "last_value": 0.5},
         severity="warning", session_id="s2",
     )
+    store.close()
     code = cli_main(["audit", "--severity=warning"])
     assert code == 0
     out = capsys.readouterr().out
@@ -96,6 +99,7 @@ def test_cli_audit_shows_shield_rejections_redacted(tmp_path, capsys, monkeypatc
         },
         severity="critical", session_id="s1",
     )
+    store.close()
     code = cli_main(["audit"])
     assert code == 0
     out = capsys.readouterr().out
@@ -121,6 +125,7 @@ def test_cli_audit_shield_subcommand(tmp_path, capsys, monkeypatch):
         severity="critical", session_id="s1",
     )
     # Exercise the subcommand; no crash is the contract.
+    store.close()
     code = cli_main(["audit", "shield", "--since=7"])
     assert code == 0
 
@@ -136,6 +141,7 @@ def test_cli_audit_drift_subcommand(tmp_path, capsys, monkeypatch):
             data={"metric": "m4", "value": v},
             severity="info", session_id=f"s{i}",
         )
+    store.close()
     code = cli_main(["audit", "drift"])
     assert code == 0
     out = capsys.readouterr().out
@@ -157,6 +163,7 @@ def test_cli_audit_identity_subcommand(tmp_path, capsys, monkeypatch):
         data={"tier": "hard_block", "matched": ["forget"], "action": "reject"},
         severity="critical", session_id="s2",
     )
+    store.close()
     code = cli_main(["audit", "identity"])
     assert code == 0
     out = capsys.readouterr().out

@@ -1,22 +1,19 @@
-"""-03: assert _knobs_applied audit-trail block on recall.
+"""Assert the _knobs_applied audit-trail block on recall.
 
-Closes (RE-ASSERTED per CONTEXT D-08).
-
-CONTEXT contract:
+Contract:
   (a) Calling the production recall path (core.dispatch — NOT apply_profile
       standalone) with default profile produces a response with
       _knobs_applied listing 11 entries (8 helper + 2 upstream-gains +
       1 wake_depth seed).
-  (b) Setting dunn_quadrant to a non-default value produces a
+  (b) Setting AUTIST-03 dunn_quadrant to a non-default value produces a
       _knobs_applied entry whose provenance contains 'profile.py' —
       proves upstream-gains accumulator is wired all the way to response.
   (c) The accumulator value is deterministic.
 
-BLOCKER 3 fix (CONTEXT D-04, 2026-04-30): the production-path test exercises
-core.dispatch (or end-to-end MCP), NOT apply_profile standalone — to prove
-the upstream-gains accumulator is wired through pipeline.recall_for_response
-to the response. A passing apply_profile-only test would be a false GREEN
-(V2-07 anti-pattern recurring inside the phase chartered to eliminate it).
+The production-path test exercises core.dispatch (or end-to-end MCP), NOT
+apply_profile standalone — to prove the upstream-gains accumulator is wired
+through pipeline.recall_for_response to the response. A passing
+apply_profile-only test would not exercise that wiring.
 """
 from __future__ import annotations
 
@@ -34,7 +31,7 @@ from iai_mcp.types import EMBED_DIM, MemoryRecord
 
 
 def _hit(literal: str = "h", suggestions: list[str] | None = None) -> dict:
-    """Build a synthetic hit dict matching _hit_to_json shape (core.py:712-719)."""
+    """Build a synthetic hit dict matching the _hit_to_json shape."""
     return {
         "record_id": "00000000-0000-0000-0000-000000000001",
         "score": 0.5,
@@ -54,7 +51,7 @@ def _resp(hits: list[dict], **extra) -> dict:
 
 
 def test_knobs_applied_present_after_apply_profile() -> None:
-    """CONTEXT every recall response carries _knobs_applied."""
+    """Every recall response carries _knobs_applied."""
     response = _resp([_hit()])
     profile = default_state()
     apply_profile(response, profile)
@@ -79,7 +76,7 @@ def test_knobs_applied_provenance_shape() -> None:
 
 
 def test_knobs_applied_deterministic() -> None:
-    """CONTEXT test (c): same call → same _knobs_applied dict."""
+    """Same call → same _knobs_applied dict."""
     response_1 = _resp([_hit()])
     response_2 = _resp([_hit()])
     profile = default_state()
@@ -90,7 +87,7 @@ def test_knobs_applied_deterministic() -> None:
 
 def test_knobs_applied_preserves_upstream_seeded_entries() -> None:
     """apply_profile MUST extend, never overwrite — preserves entries
-    seeded by core.dispatch (BLOCKER 3 binding). The dispatch loop only
+    seeded by core.dispatch. The dispatch loop only
     adds entries; pre-existing entries (AUTIST-03, AUTIST-09, MCP-12) stay.
     """
     response = _resp(
@@ -150,13 +147,13 @@ def test_knobs_applied_no_op_marker_for_scene_construction_off() -> None:
 
 
 def test_helper_to_knob_id_has_11_verified_entries() -> None:
-    """contract: HELPER_TO_KNOB_ID has exactly 11 verified
+    """HELPER_TO_KNOB_ID has exactly 11 verified
     entries — 8 helper-keyed (the wired AUTIST helpers) + 2 upstream-gains
     (dunn_quadrant, interest_boost) + 1 session-start (wake_depth).
 
     NO entries for removed knobs (AUTIST-02 sensory_channel_weights,
-    event_vs_time_cue, alexithymia_accommodation,
-    double_empathy) — those were deleted in Wave 1 .
+    AUTIST-08 event_vs_time_cue, AUTIST-11 alexithymia_accommodation,
+    AUTIST-12 double_empathy) — those knobs were deleted.
     Re-introducing them here = silent regression.
     """
     assert len(HELPER_TO_KNOB_ID) == 11, (
@@ -165,12 +162,12 @@ def test_helper_to_knob_id_has_11_verified_entries() -> None:
         f"got {len(HELPER_TO_KNOB_ID)}: {HELPER_TO_KNOB_ID}"
     )
     knob_ids = set(HELPER_TO_KNOB_ID.values())
-    # 10 AUTIST + 1 = 11 unique knob IDs.
+    # 10 AUTIST + 1 MCP-12 = 11 unique knob IDs.
     assert len(knob_ids) == 11, knob_ids
     # No removed knobs.
     for removed in ("AUTIST-02", "AUTIST-08", "AUTIST-11", "AUTIST-12"):
         assert removed not in knob_ids, (
-            f"{removed} was removed in ; do not re-add"
+            f"{removed} was removed in Plan 07.12-02; do not re-add"
         )
     # Required knob IDs are present.
     expected_autist = {f"AUTIST-{i:02d}" for i in (1, 3, 4, 5, 6, 7, 9, 10, 13, 14)}
@@ -178,15 +175,15 @@ def test_helper_to_knob_id_has_11_verified_entries() -> None:
     assert "MCP-12" in knob_ids
 
 
-# ---- Profile gains accumulator (Action 4a contract) -----------------------
+# ---- Profile gains accumulator -----------------------
 
 
 def test_profile_modulation_records_into_accumulator() -> None:
     """profile_modulation_for_record(record, state, knobs_applied=acc) writes
-    / / provenance strings into acc when the
+    AUTIST-01 / AUTIST-03 / AUTIST-09 provenance strings into acc when the
     corresponding gain branch fires. Provenance MUST contain 'profile.py'
     (proves upstream-gains accumulator is wired in profile.py, not stubbed
-    elsewhere — BLOCKER 3 fix).
+    elsewhere).
     """
     now = datetime.now(timezone.utc)
     rec = MemoryRecord(
@@ -221,7 +218,7 @@ def test_profile_modulation_records_into_accumulator() -> None:
     assert "AUTIST-01" in accumulator, accumulator
     assert "AUTIST-09" in accumulator, accumulator
     assert "AUTIST-03" in accumulator, accumulator
-    # BLOCKER 3 binding: provenance MUST anchor in profile.py.
+    # Provenance MUST anchor in profile.py.
     assert "profile.py" in accumulator["AUTIST-01"], accumulator["AUTIST-01"]
     assert "profile.py" in accumulator["AUTIST-03"], accumulator["AUTIST-03"]
     assert "profile.py" in accumulator["AUTIST-09"], accumulator["AUTIST-09"]
@@ -260,11 +257,11 @@ def test_profile_modulation_back_compat_without_kwarg() -> None:
     assert "interest_boost" in gains
 
 
-# ---- Integration: production core.dispatch path (BLOCKER 3 binary gate) ---
+# ---- Integration: production core.dispatch path ---
 
 
 def _seed_one_record(store, text: str = "reference content") -> None:
-    """Canonical seed pattern from tests/test_first_turn_recall.py:18-41."""
+    """Canonical seed pattern shared with the first-turn recall test."""
     now = datetime.now(timezone.utc)
     rec = MemoryRecord(
         id=uuid4(),
@@ -293,17 +290,17 @@ def _seed_one_record(store, text: str = "reference content") -> None:
 def _call_production_dispatch_path(tmp_path, monkeypatch) -> dict:
     """Exercise the PRODUCTION recall path end-to-end via core.dispatch.
 
-    Per BLOCKER 3: this MUST hit core.dispatch with a non-empty store so the
-    recall_for_response branch (line 227) runs and the upstream-gains
-    accumulator fires. An empty store would route to retrieve.recall (line
-    194) which does NOT enter profile_modulation_for_record.
+    This MUST hit core.dispatch with a non-empty store so the
+    recall_for_response branch runs and the upstream-gains accumulator
+    fires. An empty store would route to retrieve.recall, which does NOT
+    enter profile_modulation_for_record.
 
     The fixture sets profile_state values that exercise the upstream gains
-    so / / entries are recorded with
+    so AUTIST-03 / AUTIST-09 / AUTIST-01 entries are recorded with
     profile.py provenance:
-      - dunn_quadrant="seeking" → fires
-      - interest_boost=0.5 → fires
-      - monotropism_depth has no matching tag → not from profile,
+      - dunn_quadrant="seeking" → AUTIST-03 fires
+      - interest_boost=0.5 → AUTIST-09 fires
+      - monotropism_depth has no matching tag → AUTIST-01 not from profile,
         but the apply_profile dispatch loop still records it from the
         helper.
     """
@@ -346,14 +343,13 @@ def _call_production_dispatch_path(tmp_path, monkeypatch) -> dict:
 
 
 def test_knobs_applied_via_production_dispatch_path(tmp_path, monkeypatch) -> None:
-    """BLOCKER 3 acceptance criterion: production recall path (core.dispatch)
-    populates _knobs_applied with 11 entries, including / AUTIST-09
-    with provenance pointing into profile.py and with provenance
+    """The production recall path (core.dispatch)
+    populates _knobs_applied with 11 entries, including AUTIST-03 / AUTIST-09
+    with provenance pointing into profile.py and MCP-12 with provenance
     pointing into session.py.
 
-    A passing apply_profile-only test would be a false GREEN — the
-    upstream-gains accumulator could be stubbed and we would never know.
-    This test exercises the production wiring end-to-end.
+    A passing apply_profile-only test would not catch a stubbed upstream-gains
+    accumulator. This test exercises the production wiring end-to-end.
     """
     response = _call_production_dispatch_path(tmp_path, monkeypatch)
 
@@ -367,8 +363,7 @@ def test_knobs_applied_via_production_dispatch_path(tmp_path, monkeypatch) -> No
     # the upstream-gains entries fire too.
     assert len(ka) == 11, ka
 
-    # BLOCKER 3 binary acceptance — the upstream-gains entries MUST be
-    # present and anchored in profile.py.
+    # The upstream-gains entries MUST be present and anchored in profile.py.
     for required in ("AUTIST-03", "AUTIST-09", "MCP-12"):
         assert required in ka, (required, sorted(ka.keys()))
     assert "profile.py" in ka["AUTIST-03"], ka["AUTIST-03"]

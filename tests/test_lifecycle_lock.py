@@ -1,4 +1,4 @@
-"""Task 1.1 -- LifecycleLock unit tests.
+"""LifecycleLock unit tests.
 
 Locks the single-machine assumption:
 
@@ -323,7 +323,7 @@ def test_read_returns_none_for_invalid_schema(tmp_path: Path) -> None:
 
 
 def test_acquire_writes_mode_0600(tmp_path: Path) -> None:
-    """The lockfile must be user-readable only (T-04-07 mitigation)."""
+    """The lockfile must be user-readable only."""
     lock_path = tmp_path / ".locked"
     lock = LifecycleLock(lock_path)
     lock.acquire()

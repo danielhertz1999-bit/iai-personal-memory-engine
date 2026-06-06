@@ -1,4 +1,4 @@
-"""Tests for iai-mcp trajectory CLI.
+"""Tests for iai-mcp trajectory CLI (Task 3).
 
 The `trajectory` subcommand aggregates M1..M6 events via
 trajectory.aggregate_trajectory and prints one summary line per metric.
@@ -40,7 +40,7 @@ def test_trajectory_renders_m1_to_m6(tmp_path, capsys, monkeypatch):
     code = cli_main(["trajectory"])
     assert code == 0
     out = capsys.readouterr().out
-    # Every metric mentioned (M1 ... M6 uppercase).
+    # Every metric mentioned (M1... M6 uppercase).
     for m in ("M1", "M2", "M3", "M4", "M5", "M6"):
         assert m in out
 

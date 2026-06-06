@@ -1,10 +1,10 @@
-"""Tests for iai_mcp.s4 -- on-read consistency + monotropic proactive .
+"""Tests for iai_mcp.s4 -- on-read consistency + monotropic proactive.
 
-Constitutional coverage:
-- D-17(e): on_read_check runs inside recall_for_response, not as a global scan.
-- D-17(f): monotropic_proactive_check is gated by profile.monotropism_depth[domain]
+Coverage:
+- (e): on_read_check runs inside recall_for_response, not as a global scan.
+- (f): monotropic_proactive_check is gated by profile.monotropism_depth[domain]
   > 0.7 AND new_record.detail_level >= 4 AND within-domain only.
-- D-STORAGE: every detected contradiction writes a `s4_contradiction` event.
+- Every detected contradiction writes a `s4_contradiction` event.
 - Negative assertion: there is NO `daily_scan` or `session_exit_sweep` function.
 - RecallResponse.hints is populated on recall_for_response when contradictions exist.
 
@@ -72,7 +72,7 @@ def _hit_for(rec: MemoryRecord, score: float = 0.9) -> MemoryHit:
 # ------------------------------------------------------ constants + contract
 
 def test_s4_module_defines_rho_097():
-    """ρ_s4 vigilance constant is 0.97 per D-17(e)."""
+    """ρ_s4 vigilance constant is 0.97 per (e)."""
     from iai_mcp import s4
 
     assert s4.S4_VIGILANCE_RHO == 0.97
@@ -93,7 +93,7 @@ def test_s4_exports_monotropic_proactive_check():
 
 
 def test_global_daily_scan_not_implemented():
-    """D-17 forbids global daily scan (Ashby) and session-exit sweep (Anderson)."""
+    """forbids global daily scan () and session-exit sweep (Anderson)."""
     from iai_mcp import s4
 
     # Grep-verifiable: neither function must exist at module level.

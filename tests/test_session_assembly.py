@@ -1,15 +1,14 @@
-"""Tests for the session-start assembler (, , ).
+"""Tests for the session-start assembler.
 
-the DEFAULT wake_depth flipped to `minimal` (lazy <=30
-tok payload). Tests that assert Phase-1 eager-dump behaviour now pass
-``profile_state={"wake_depth": "standard"}`` explicitly to continue
-exercising the back-compat legacy path.
+The DEFAULT wake_depth is `minimal` (lazy <=30 tok payload). Tests that
+assert eager-dump behaviour now pass ``profile_state={"wake_depth":
+"standard"}`` explicitly to continue exercising the eager path.
 
-Covers:
+Scope:
 - Graceful empty-store path (total_cached_tokens == 0, l0 == "").
-- L0 identity rendering -- "IAI-MCP" appears in payload.l0 when seeded.
+- L0 identity rendering -- the configured identity appears in payload.l0 when seeded.
 - Total cached budget respected (<= 2000 tok) on realistic pinned content.
-- L2 community cap at 7 ( Yeo-like).
+- L2 community cap at 7 (Yeo-like).
 - Rich-club segment truncation at 1500-tok budget.
 - core.py `session_start_payload` dispatch wiring.
 """
@@ -17,6 +16,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
+
+import pytest
 
 from iai_mcp.community import CommunityAssignment
 from iai_mcp.core import _seed_l0_identity, dispatch
@@ -33,8 +34,8 @@ from iai_mcp.store import MemoryStore
 from iai_mcp.types import EMBED_DIM, MemoryRecord
 
 
-# D5-02: Phase-1 eager behaviour lives behind wake_depth="standard"
-# now that the default flipped to "minimal". Legacy tests opt in explicitly.
+# Eager behaviour lives behind wake_depth="standard" now that the default
+# flipped to "minimal". Tests that need the eager path opt in explicitly.
 _STANDARD = {"wake_depth": "standard"}
 
 
@@ -83,8 +84,8 @@ def _pinned_record(
 def test_empty_store_graceful(tmp_path):
     """Empty store -> all segments empty, token totals zero on cached.
 
-    assert on the standard (Phase-1) path — minimal mode would
-    emit pointer handles even on empty stores, which is by design.
+    Asserts on the standard path — minimal mode would emit pointer
+    handles even on empty stores, which is by design.
     """
     store = MemoryStore(path=tmp_path)
     payload = assemble_session_start(
@@ -102,14 +103,21 @@ def test_empty_store_graceful(tmp_path):
 # ---------------------------------------------------------- identity
 
 
-def test_l0_renders_identity(tmp_path):
-    """a seeded L0 record puts 'IAI-MCP' into the L0 segment (standard mode)."""
+def test_l0_renders_identity(tmp_path, monkeypatch):
+    """A seeded L0 record renders the configured identity into the L0 segment."""
+    import json
+
+    # Seed a generic identity config; the seed reader resolves IAI_MCP_STORE,
+    # so point it at the same dir the store is constructed at.
+    monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
+    (tmp_path / "config.json").write_text(json.dumps(
+        {"identity": {"name": "alice", "languages": "en", "role": "developer"}}))
     store = MemoryStore(path=tmp_path)
     _l0_record(store)
     payload = assemble_session_start(
         store, CommunityAssignment(), [], profile_state=_STANDARD,
     )
-    assert "IAI-MCP" in payload.l0
+    assert "alice" in payload.l0
 
 
 def test_l0_uses_fixed_uuid(tmp_path):
@@ -161,11 +169,11 @@ def test_l1_caps_at_max_records(tmp_path):
     assert len(l1_lines) <= 10
 
 
-# -------------------------------------------------- Yeo-like cap
+# -------------------------------------------------- CONN-01 Yeo-like cap
 
 
 def test_l2_capped_at_seven(tmp_path):
-    """: L2 summaries never exceed 7 regardless of input community count."""
+    """CONN-01: L2 summaries never exceed 7 regardless of input community count."""
     store = MemoryStore(path=tmp_path)
     # Create 10 fake communities each with one member record.
     assignment = CommunityAssignment()
@@ -220,21 +228,28 @@ def test_session_start_payload_dispatch_empty(tmp_path):
     assert result["total_cached_tokens"] == 0
 
 
-def test_session_start_payload_dispatch_with_l0(tmp_path):
-    """Once L0 is seeded, dispatch returns identity content.
+def test_session_start_payload_dispatch_with_l0(tmp_path, monkeypatch):
+    """Once L0 is seeded, dispatch returns the configured identity content.
 
-    D5-10: per-process wake_depth stays at the 'minimal' default,
-    so we temporarily flip it to 'standard' for this back-compat assertion
-    and restore afterwards. Thread-safety is not a concern for unit tests.
+    Per-process wake_depth stays at the 'minimal' default, so we temporarily
+    flip it to 'standard' for this assertion and restore afterwards.
+    Thread-safety is not a concern for unit tests.
     """
+    import json
     import iai_mcp.core as core
+
+    # Seed a generic identity config; the seed reader resolves IAI_MCP_STORE,
+    # so point it at the same dir the store is constructed at.
+    monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
+    (tmp_path / "config.json").write_text(json.dumps(
+        {"identity": {"name": "alice", "languages": "en", "role": "developer"}}))
     original = core._profile_state.get("wake_depth", "minimal")
     core._profile_state["wake_depth"] = "standard"
     try:
         store = MemoryStore(path=tmp_path)
         _seed_l0_identity(store)
         result = dispatch(store, "session_start_payload", {})
-        assert "IAI-MCP" in result["l0"]
+        assert "alice" in result["l0"]
         assert result["breakpoint_marker"] == "--<cache-breakpoint>--"
     finally:
         core._profile_state["wake_depth"] = original
@@ -246,3 +261,72 @@ def test_payload_type_is_session_start_payload(tmp_path):
     payload = assemble_session_start(store, CommunityAssignment(), [])
     assert isinstance(payload, SessionStartPayload)
     assert payload.breakpoint_marker == "--<cache-breakpoint>--"
+
+
+# ---------------------------------------------------------------------------
+# recent_thread includes pending live events (standard/deep only)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def iai_home_assembly(tmp_path, monkeypatch):
+    """Redirect HOME + store so read_pending_live_events resolves to tmp."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path / ".iai-mcp"))
+    monkeypatch.setenv("IAI_DAEMON_SOCKET_PATH", str(tmp_path / "test.sock"))
+    yield tmp_path
+
+
+def test_recent_thread_includes_live_events_standard(iai_home_assembly):
+    """REQ-1: standard wake_depth includes a pending live turn in recent_thread.
+
+    The pending live turn is NOT in the store.  The _recent_thread_segment
+    called from the standard/deep assembly path must merge it.
+    """
+    store = MemoryStore(path=iai_home_assembly)
+
+    session = "assembly-live-session-60"
+    live_text = "pending live turn for session assembly standard test content"
+
+    from iai_mcp.capture import write_deferred_event
+    write_deferred_event(session, "user", live_text)
+
+    payload = assemble_session_start(
+        store, CommunityAssignment(), [],
+        session_id=session,
+        profile_state={"wake_depth": "standard"},
+    )
+    # The recent_thread field must include the pending live turn's content
+    assert live_text in (payload.recent_thread or ""), (
+        f"standard payload recent_thread must include pending live turn; "
+        f"got: {payload.recent_thread!r}"
+    )
+
+
+def test_recent_thread_skips_live_scan_on_minimal(iai_home_assembly, monkeypatch):
+    """REQ-6: wake_depth=minimal NEVER calls read_pending_live_events.
+
+    Monkeypatches a sentinel to verify the helper is not invoked on the
+    minimal path (structural skip: minimal early-returns before line 542).
+    """
+    store = MemoryStore(path=iai_home_assembly)
+
+    call_count = [0]
+
+    import iai_mcp.capture as _cap_mod
+    original_fn = _cap_mod.read_pending_live_events
+
+    def spy_fn(*args, **kwargs):
+        call_count[0] += 1
+        return original_fn(*args, **kwargs)
+
+    monkeypatch.setattr(_cap_mod, "read_pending_live_events", spy_fn)
+
+    payload = assemble_session_start(
+        store, CommunityAssignment(), [],
+        profile_state={"wake_depth": "minimal"},
+    )
+    assert call_count[0] == 0, (
+        f"read_pending_live_events must NOT be called on minimal wake_depth; "
+        f"called {call_count[0]} times"
+    )

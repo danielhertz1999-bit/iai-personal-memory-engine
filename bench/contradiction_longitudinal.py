@@ -4,16 +4,16 @@
 **Do not run on the construction host by default** — this module is meant for a
 dedicated bench machine with an isolated ``IAI_MCP_STORE`` and optional GPU.
 
-Pre-registered pass criteria:
+Pre-registered pass criteria (from CONTEXT_PEER_REVIEW v3):
 - **Metric B (post-flip):** cues issued after session ``t_0`` (contradiction +
   consolidation window simulated) must rank the *current* winning fact above
   flat cosine-only retrieval on the same store slice.
 - **Metric A (historical verbatim):** probes asking for superseded wording must
-  still surface the archived surface (verbatim MEM-06), not the post-flip fact alone.
+  still surface the archived surface (verbatim), not the post-flip fact alone.
 - **Regression gate:** pipeline score on B must beat cosine baseline; A must not
   collapse below a configured verbatim hit threshold.
 
-This file loads :file:`fixtures/contradiction_longitudinal.jsonl` (synthetic JSONL
+This file loads:file:`fixtures/contradiction_longitudinal.jsonl` (synthetic JSONL
 rows: ``session``, ``text``, optional ``probe`` / ``expects``) and documents the
 evaluation harness contract. A full implementation wires:
 

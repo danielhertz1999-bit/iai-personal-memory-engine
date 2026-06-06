@@ -1,17 +1,17 @@
-"""Tests for core._inject_overnight_digest , updated for
-the deterministic contract.
+"""Tests for core._inject_overnight_digest -- Task 3,
+updated for Plan deterministic contract.
 
 Covers 5 behaviours:
 1. First memory_recall of the day (>18h since last shown) gets the rich
    overnight_digest payload.
 2. Second recall within <18h still includes the key, populated with the
-   zeroed default (was "key absent" pre-fix).
+   zeroed default (Plan: was "key absent" pre-fix).
 3. Empty state / no pending digest -> key present with zeroed default
-   (was "key absent" pre-fix).
-4. Rich digest is cleared from state after one delivery (D-24 once-per-window).
+   (Plan: was "key absent" pre-fix).
+4. Rich digest is cleared from state after one delivery (once-per-window).
 5. Exception in get_pending_digest does NOT break memory_recall (silent fail);
    response still carries the zeroed-default overnight_digest key
-   (was "key absent" pre-fix).
+   (Plan: was "key absent" pre-fix).
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 
-# Shared zeroed default for the deterministic contract.
+# Plan: shared zeroed default for the deterministic contract.
 # Mirrors core._EMPTY_OVERNIGHT_DIGEST field-for-field; both must move
 # together if the schema is ever extended.
 _EMPTY_DIGEST_EXPECTED = {
@@ -51,7 +51,7 @@ def isolated_state(tmp_path, monkeypatch):
     return state_path
 
 
-# D-23 digest shape -- every required field populated.
+# digest shape -- every required field populated.
 _FULL_DIGEST = {
     "rem_cycles_completed": 4,
     "episodes_processed": 10,
@@ -87,7 +87,7 @@ def test_first_recall_gets_digest(isolated_state):
 
     assert "overnight_digest" in response
     dig = response["overnight_digest"]
-    # D-23 required fields surface.
+    # required fields surface.
     assert dig["rem_cycles_completed"] == 4
     assert dig["episodes_processed"] == 10
     assert dig["schemas_induced_tier0"] == 3
@@ -105,7 +105,7 @@ def test_first_recall_gets_digest(isolated_state):
 
 
 def test_not_twice(isolated_state):
-    """D-24: the same digest must not appear twice inside the 18h window."""
+    """the same digest must not appear twice inside the 18h window."""
     from iai_mcp.core import _inject_overnight_digest
     from iai_mcp.daemon_state import save_state
 
@@ -118,7 +118,7 @@ def test_not_twice(isolated_state):
 
     response: dict = {"hits": []}
     _inject_overnight_digest(response)
-    # Deterministic contract -- inside the 18h window the
+    # Plan: deterministic contract -- inside the 18h window the
     # key is still present but holds the zeroed default (rich payload
     # remains gated to once-per-window).
     assert "overnight_digest" in response
@@ -137,7 +137,7 @@ def test_no_digest_when_none_pending(isolated_state):
     save_state({})  # empty state
     response: dict = {"hits": []}
     _inject_overnight_digest(response)
-    # Deterministic contract -- empty state yields the
+    # Plan: deterministic contract -- empty state yields the
     # zeroed default, not an absent key.
     assert "overnight_digest" in response
     assert response["overnight_digest"] == _EMPTY_DIGEST_EXPECTED
@@ -149,7 +149,7 @@ def test_no_digest_when_none_pending(isolated_state):
 
 
 def test_digest_cleared_after_delivery(isolated_state):
-    """D-24: after surfacing the digest, state must no longer carry
+    """after surfacing the digest, state must no longer carry
     pending_digest so a subsequent recall (even after another 18h) does not
     re-show the stale digest."""
     from iai_mcp.core import _inject_overnight_digest
@@ -195,7 +195,7 @@ def test_exception_is_silent(isolated_state, monkeypatch):
     # Must not raise.
     core._inject_overnight_digest(response)
     assert response.get("existing") is True
-    # Deterministic contract -- even on silent-fail in
+    # Plan: deterministic contract -- even on silent-fail in
     # the digest pipeline the key is still present, set to the zeroed
     # default before the silent-fail event is written.
     assert "overnight_digest" in response

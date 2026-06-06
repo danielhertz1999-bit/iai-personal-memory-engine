@@ -1,18 +1,17 @@
-"""baseline parity tests.
+"""Baseline parity tests.
 
-R7 acceptance per SPEC.md:
-- retrieve.recall accepts mode kwarg (default 'verbatim' per D-14).
+Acceptance:
+- retrieve.recall accepts a mode kwarg (default 'verbatim').
 - mode='verbatim' applies the same tier filter + schema exclusion as
   pipeline_recall verbatim mode.
 - core.dispatch falls back to retrieve.recall when build_runtime_graph
-  fails — the classified mode is preserved (verbatim default protects
-  the North-Star essential variable on the degraded path).
+  fails — the classified mode is preserved (the verbatim default protects
+  verbatim recall on the degraded path).
 - regression fence (test_recall_topk_stability) continues to pass.
 
-Constitutional framing — Ashby ultrastability:
-the North-Star verbatim ≥99% essential variable is defended even when the
-full pipeline is unreachable. The fallback path inherits the same contract
-on hits[] so the user never silently lands on a schema-dominated surface.
+The verbatim ≥99% target is preserved even when the full pipeline is
+unreachable. The fallback path inherits the same contract on hits[] so
+the user never silently lands on a schema-dominated surface.
 """
 from __future__ import annotations
 
@@ -97,7 +96,7 @@ def _seed_mixed_tier_store(tmp_path):
     same embedding so cosine ties to the cue."""
     from iai_mcp.store import MemoryStore
 
-    store = MemoryStore(path=tmp_path / "lancedb")
+    store = MemoryStore(path=tmp_path / "hippo")
     episodic_records = [_make_episodic(f"episodic verbatim text {i}") for i in range(3)]
     schema_records = [
         _make_schema(f"schema record {i}", pattern=f"test:r7:{i}")
@@ -111,12 +110,12 @@ def _seed_mixed_tier_store(tmp_path):
 
 
 # ============================================================================
-# R7 acceptance tests
+# Acceptance tests
 # ============================================================================
 
 
 def test_baseline_recall_default_mode_is_verbatim_per_d14():
-    """retrieve.recall mode kwarg default is 'verbatim' per D-14
+    """retrieve.recall mode kwarg default is 'verbatim' per
     (conservative North-Star fallback)."""
     import inspect
     from iai_mcp.retrieve import recall
@@ -124,20 +123,20 @@ def test_baseline_recall_default_mode_is_verbatim_per_d14():
     sig = inspect.signature(recall)
     assert "mode" in sig.parameters, "retrieve.recall must accept mode kwarg"
     assert sig.parameters["mode"].default == "verbatim", (
-        f"retrieve.recall default mode must be 'verbatim' per D-14, "
+        f"retrieve.recall default mode must be 'verbatim', "
         f"got {sig.parameters['mode'].default!r}"
     )
 
 
 def test_baseline_recall_verbatim_filters_to_episodic_only(tmp_path):
-    """Direct call: recall(store, ...) without mode kwarg returns hits
-    filtered to tier='episodic' (D-14 default) — schema records excluded."""
+    """Direct call: recall(store,...) without mode kwarg returns hits
+    filtered to tier='episodic' (default) — schema records excluded."""
     from iai_mcp.retrieve import recall
 
     store, episodic_records, schema_records = _seed_mixed_tier_store(tmp_path)
     cue = [1.0] + [0.0] * (EMBED_DIM - 1)
 
-    # No mode kwarg -> verbatim default per D-14.
+    # No mode kwarg -> verbatim default per.
     resp = recall(
         store=store, cue_embedding=cue, cue_text="probe",
         session_id="r7_default", k_hits=5, k_anti=2,
@@ -173,7 +172,7 @@ def test_baseline_recall_concept_mode_returns_all_tiers(tmp_path):
     assert resp.cue_mode == "concept"
     # All 5 records (3 episodic + 2 schema) tied at cosine=1.0; with k_hits=5
     # we should see all 5. Schema records ARE included on concept mode (the
-    # baseline does not filter; only the full pipeline applies R6 split).
+    # baseline does not filter; only the full pipeline applies the tier split).
     hit_ids = {h.record_id for h in resp.hits}
     schema_id_set = {r.id for r in schema_records}
     assert schema_id_set & hit_ids, (
@@ -183,7 +182,7 @@ def test_baseline_recall_concept_mode_returns_all_tiers(tmp_path):
 
 
 def test_dispatch_falls_back_to_baseline_on_graph_build_failure(tmp_path, monkeypatch):
-    """R7 acceptance: monkeypatch retrieve.build_runtime_graph to raise.
+    """Monkeypatch retrieve.build_runtime_graph to raise.
     dispatch(..., 'memory_recall', {...verbatim cue...}) must:
       (a) complete (not propagate the exception);
       (b) return a non-empty response;
@@ -224,9 +223,9 @@ def test_dispatch_falls_back_to_baseline_on_graph_build_failure(tmp_path, monkey
 
 def test_recall_topk_stability_smoke(tmp_path):
     """Smoke check: tests/test_recall_topk_stability.py still passes with the
-    mode='concept' explicit pin we added in Task 2 GREEN. The
-    actual lock is the dedicated test file; this test merely imports + runs
-    one of its representative invariants here as a sentinel.
+    explicit mode='concept' pin. The actual lock is the dedicated test file;
+    this test merely imports + runs one of its representative invariants here
+    as a sentinel.
     """
     # Direct import + smoke run of the canonical helper from the existing
     # regression-fence module. If the module can't import at all under the

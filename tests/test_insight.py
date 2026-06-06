@@ -1,16 +1,16 @@
-"""Tests for iai_mcp.insight -- (D-13 Option A lucid moment).
+"""Tests for iai_mcp.insight -- the lucid-moment overnight insight.
 
-Covers 12 behaviours :
-1. Exactly ONE invoke_host_once call per generate_overnight_insight invocation.
-2. Prompt text contains the Option A verbatim template fragments.
+Covers 12 behaviours:
+1. Exactly ONE invoke_claude_once call per generate_overnight_insight invocation.
+2. Prompt text contains the verbatim template fragments.
 3. Top-3 recent schemas pulled from schema.induce_schemas_tier0 by confidence.
 4. Top-1 surprise event from events query goes into the {surprise} slot.
 5. Happy path: semantic L1 MemoryRecord with tag='overnight_insight' is inserted.
 6. Budget pre-flight gate: can_spend False -> no subprocess call, ok=False.
-7. host_disabled_after_billing_event True -> no subprocess call, ok=False.
+7. claude_disabled_after_billing_event True -> no subprocess call, ok=False.
 8. Credentials gate fails -> no subprocess call, ok=False.
 9. Budget is recorded with (tokens_in + tokens_out) after successful call.
-10. cost_usd > 0 from invoke_host_once -> no record stored, ok=False.
+10. cost_usd > 0 from invoke_claude_once -> no record stored, ok=False.
 11. Empty store -> placeholder pattern/surprise used, Claude STILL called.
 12. write_event emits 'overnight_insight_generated' on success.
 """
@@ -38,7 +38,7 @@ def _fresh_store(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Shared mocks: fake invoke_host_once + credentials gate + isolated state
+# Shared mocks: fake invoke_claude_once + credentials gate + isolated state
 # ---------------------------------------------------------------------------
 
 
@@ -61,7 +61,7 @@ def creds_ok(monkeypatch):
 
 @pytest.fixture
 def mock_claude_ok(monkeypatch, creds_ok, isolated_state):
-    """Mock invoke_host_once -> ok payload; record captured prompts + call count."""
+    """Mock invoke_claude_once -> ok payload; record captured prompts + call count."""
     calls: list[dict] = []
 
     async def fake_invoke(prompt: str, *, model: str = "haiku"):
@@ -74,7 +74,7 @@ def mock_claude_ok(monkeypatch, creds_ok, isolated_state):
             "cost_usd": 0.0,
         }
 
-    monkeypatch.setattr("iai_mcp.insight.invoke_host_once", fake_invoke)
+    monkeypatch.setattr("iai_mcp.insight.invoke_claude_once", fake_invoke)
     return calls
 
 
@@ -107,7 +107,7 @@ def test_prompt_template(tmp_path, monkeypatch, mock_claude_ok):
     asyncio.run(generate_overnight_insight(store, "sess-A"))
 
     prompt = mock_claude_ok[0]["prompt"]
-    # Option A verbatim fragments.
+    # Verbatim template fragments.
     assert "3 locally-found patterns" in prompt
     assert "1 surprising episode" in prompt
     assert "unifying insight" in prompt
@@ -210,7 +210,7 @@ def test_record_tag(tmp_path, monkeypatch, mock_claude_ok):
 
 
 def test_budget_gate_blocks(tmp_path, monkeypatch, creds_ok, isolated_state):
-    from iai_mcp.host_cli import BUDGET_STATE_KEY, DAILY_QUOTA_BUDGET_PCT, ESTIMATED_DAILY_TOKEN_CEILING
+    from iai_mcp.claude_cli import BUDGET_STATE_KEY, DAILY_QUOTA_BUDGET_PCT, ESTIMATED_DAILY_TOKEN_CEILING
     from iai_mcp.daemon_state import save_state
     from iai_mcp.insight import generate_overnight_insight
 
@@ -222,7 +222,7 @@ def test_budget_gate_blocks(tmp_path, monkeypatch, creds_ok, isolated_state):
         calls.append(1)
         return {"ok": True, "data": {"result": "x"}, "tokens_in": 1, "tokens_out": 1, "cost_usd": 0.0}
 
-    monkeypatch.setattr("iai_mcp.insight.invoke_host_once", fake_invoke)
+    monkeypatch.setattr("iai_mcp.insight.invoke_claude_once", fake_invoke)
 
     # Saturate daily + weekly so can_spend returns False.
     daily_cap = int(DAILY_QUOTA_BUDGET_PCT * ESTIMATED_DAILY_TOKEN_CEILING)
@@ -230,8 +230,8 @@ def test_budget_gate_blocks(tmp_path, monkeypatch, creds_ok, isolated_state):
         "daily_used_tokens": daily_cap,
         "weekly_buffer_used_tokens": 10_000_000,
         "last_reset_date": datetime.now(timezone.utc).date().isoformat(),
-        "host_disabled": False,
-        "host_disabled_reason": None,
+        "claude_disabled": False,
+        "claude_disabled_reason": None,
     }})
 
     result = asyncio.run(generate_overnight_insight(store, "sess-A"))
@@ -245,8 +245,8 @@ def test_budget_gate_blocks(tmp_path, monkeypatch, creds_ok, isolated_state):
 # ---------------------------------------------------------------------------
 
 
-def test_host_disabled_blocks(tmp_path, monkeypatch, creds_ok, isolated_state):
-    from iai_mcp.host_cli import BUDGET_STATE_KEY
+def test_claude_disabled_blocks(tmp_path, monkeypatch, creds_ok, isolated_state):
+    from iai_mcp.claude_cli import BUDGET_STATE_KEY
     from iai_mcp.daemon_state import save_state
     from iai_mcp.insight import generate_overnight_insight
 
@@ -258,18 +258,18 @@ def test_host_disabled_blocks(tmp_path, monkeypatch, creds_ok, isolated_state):
         calls.append(1)
         return {"ok": True, "data": {"result": "x"}, "tokens_in": 1, "tokens_out": 1, "cost_usd": 0.0}
 
-    monkeypatch.setattr("iai_mcp.insight.invoke_host_once", fake_invoke)
+    monkeypatch.setattr("iai_mcp.insight.invoke_claude_once", fake_invoke)
     save_state({BUDGET_STATE_KEY: {
         "daily_used_tokens": 0,
         "weekly_buffer_used_tokens": 0,
         "last_reset_date": datetime.now(timezone.utc).date().isoformat(),
-        "host_disabled": True,
-        "host_disabled_reason": "api_billing_detected",
+        "claude_disabled": True,
+        "claude_disabled_reason": "api_billing_detected",
     }})
 
     result = asyncio.run(generate_overnight_insight(store, "sess-A"))
     assert result["ok"] is False
-    assert result["reason"] == "host_disabled_c3"
+    assert result["reason"] == "claude_disabled_c3"
     assert calls == []
 
 
@@ -288,7 +288,7 @@ def test_credentials_gate_blocks(tmp_path, monkeypatch, isolated_state):
         calls.append(1)
         return {"ok": True}
 
-    monkeypatch.setattr("iai_mcp.insight.invoke_host_once", fake_invoke)
+    monkeypatch.setattr("iai_mcp.insight.invoke_claude_once", fake_invoke)
     monkeypatch.setattr(
         "iai_mcp.insight.verify_credentials_subscription",
         lambda: {"ok": False, "reason": "not_subscription"},
@@ -306,7 +306,7 @@ def test_credentials_gate_blocks(tmp_path, monkeypatch, isolated_state):
 
 
 def test_budget_recorded(tmp_path, monkeypatch, mock_claude_ok, isolated_state):
-    from iai_mcp.host_cli import BUDGET_STATE_KEY
+    from iai_mcp.claude_cli import BUDGET_STATE_KEY
     from iai_mcp.daemon_state import load_state
     from iai_mcp.insight import generate_overnight_insight
 
@@ -340,7 +340,7 @@ def test_api_billing_detected_no_store(tmp_path, monkeypatch, creds_ok, isolated
             "tokens_out": 20,
         }
 
-    monkeypatch.setattr("iai_mcp.insight.invoke_host_once", fake_invoke)
+    monkeypatch.setattr("iai_mcp.insight.invoke_claude_once", fake_invoke)
 
     result = asyncio.run(generate_overnight_insight(store, "sess-A"))
     assert result["ok"] is False

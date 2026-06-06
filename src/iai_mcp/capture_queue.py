@@ -5,14 +5,14 @@ viable. Wrapper writes to ``~/.iai-mcp/pending/`` whenever the daemon socket
 is unreachable (Hibernation, mid-restart, crashed). On the next Wake transition
 the daemon drains the queue via ``ingest_pending(handler)`` -- the handler
 plugs into the existing ``iai_mcp.capture`` path so the verbatim contract
- is preserved end-to-end.
+(6) is preserved end-to-end.
 
 Storage layout under ``~/.iai-mcp/pending/``::
 
-    pending-<ulid>.json   -- one queued record (committed file)
+    pending-<ulid>.json -- one queued record (committed file)
     pending-<ulid>.json.tmp -- transient temp file before atomic rename
-    pending-<ulid>.lock   -- present only during in-flight ingest of <ulid>
-    .overflow-audit.log   -- JSONL append-only log of dropped-oldest events
+    pending-<ulid>.lock -- present only during in-flight ingest of <ulid>
+    .overflow-audit.log -- JSONL append-only log of dropped-oldest events
 
 Hard guarantees:
 
@@ -262,7 +262,7 @@ class CaptureQueue:
             ).encode("utf-8")
             os.write(fd, payload)
             os.fsync(fd)
-        except Exception:
+        except (OSError, TypeError, ValueError):
             # On any failure between open and rename, drop the temp file so
             # we don't accumulate orphans. If the unlink itself fails (very
             # unlikely on a file we just created) re-raise the original.

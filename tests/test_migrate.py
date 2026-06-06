@@ -1,20 +1,18 @@
-"""Tests for -> migration.
+"""Tests for v1 -> v2 legacy schema migration.
 
 Strategy: the new records table already accepts schema_version=1 rows via
 the back-compat read path. We seed a store with v1 records (schema_version=1,
 blank language, current-dim embedding) and assert migrate_v1_to_v2:
-- Backfills language via langdetect
-- Re-embeds with the configured embedder (bge-m3 by default)
+- Backfills language="en" on rows whose tag is empty (English-Only Brain)
+- Re-embeds with the configured embedder
 - Sets s5_trust_score=0.5 and profile_modulation_gain={}
 - Bumps schema_version=2
 - Emits a migration_v1_to_v2 event
 - Is idempotent
-- Preserves literal_surface byte-for-byte
+- Preserves literal_surface byte-for-byte (verbatim invariant)
 
-Because bge-m3 is 1024d and the store in these tests is 1024d by default,
-re-embedding keeps the same dim. We use IAI_MCP_EMBED_MODEL=bge-small-en-v1.5
-in a few tests where dim delta is not the property under test -- the
-migration still re-embeds, just to a 384d target.
+The store in these tests is 384d (bge-small-en-v1.5) by default; tests that
+care about dim delta call out IAI_MCP_EMBED_MODEL explicitly.
 """
 from __future__ import annotations
 
@@ -35,8 +33,8 @@ def _v1_record(
 ) -> MemoryRecord:
     """Construct a legacy-looking v1 record.
 
-    language="" + schema_version=1 simulates a Phase-1 row; __post_init__
-    requires non-empty language for , so we set it to a placeholder
+    language="" + schema_version=1 simulates a row; __post_init__
+    requires non-empty language for, so we set it to a placeholder
     during construction and then clear it via attribute assignment for the
     simulated-v1 state.
     """
@@ -87,20 +85,24 @@ def test_migrate_v1_to_v2_sets_defaults(tmp_path):
     assert migrated is not None
     assert migrated.s5_trust_score == 0.5
     assert migrated.profile_modulation_gain == {}
-    # SCHEMA_VERSION_CURRENT bumped from 2 -> 4 (TEM factorization).
+    #: SCHEMA_VERSION_CURRENT bumped from 2 -> 4 (TEM factorization).
     # migrate_v1_to_v2 still writes the current default; what matters is "no longer v1".
     from iai_mcp.types import SCHEMA_VERSION_CURRENT
     assert migrated.schema_version == SCHEMA_VERSION_CURRENT
     assert migrated.schema_version >= 2
 
 
-def test_migrate_v1_to_v2_detects_language(tmp_path):
+def test_migrate_v1_to_v2_defaults_language_to_en(tmp_path):
+    """Empty-language v1 rows get language='en' on migration (English-Only Brain)."""
     from iai_mcp.migrate import migrate_v1_to_v2
     from iai_mcp.store import MemoryStore
 
     store = MemoryStore(path=tmp_path)
-    en = _v1_record("This is a reasonable English sentence with enough words for detection.")
-    ru = _v1_record("Это осмысленное предложение на русском языке с достаточным количеством слов.")
+    en = _v1_record("This is a reasonable English sentence with enough words.")
+    # Non-English literal still gets 'en' because the English-Only Brain
+    # invariant says the surface (Claude) translates inbound on the way in;
+    # the brain never guesses language from stored bytes.
+    ru = _v1_record("Это осмысленное предложение с достаточным количеством слов.")
     store.insert(en)
     store.insert(ru)
 
@@ -109,7 +111,22 @@ def test_migrate_v1_to_v2_detects_language(tmp_path):
     en_mig = store.get(en.id)
     ru_mig = store.get(ru.id)
     assert en_mig.language == "en"
-    assert ru_mig.language == "ru"
+    assert ru_mig.language == "en"
+
+
+def test_migrate_v1_to_v2_preserves_existing_language_tag(tmp_path):
+    """A v1 row that already carries language='ru' keeps it through migration."""
+    from iai_mcp.migrate import migrate_v1_to_v2
+    from iai_mcp.store import MemoryStore
+
+    store = MemoryStore(path=tmp_path)
+    r = _v1_record("legacy row carrying an explicit non-en tag", language="ru")
+    store.insert(r)
+
+    migrate_v1_to_v2(store)
+
+    migrated = store.get(r.id)
+    assert migrated.language == "ru"
 
 
 def test_migrate_v1_to_v2_idempotent(tmp_path):
@@ -162,7 +179,7 @@ def test_migrate_writes_event(tmp_path):
 
 
 def test_migrate_preserves_literal_surface_verbatim(tmp_path):
-    """ constitutional: migration MUST NOT rewrite literal_surface."""
+    """constitutional: migration MUST NOT rewrite literal_surface."""
     from iai_mcp.migrate import migrate_v1_to_v2
     from iai_mcp.store import MemoryStore
 

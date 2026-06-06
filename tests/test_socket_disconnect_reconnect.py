@@ -1,6 +1,6 @@
 """V3-05 regression test: bridge reconnect race + socket-death window.
 
--01 / . Reproduces the race in `mcp-wrapper/src/bridge.ts`
+. Reproduces the race in `mcp-wrapper/src/bridge.ts`
 where a `bridge.call()` arriving in the gap between socket close and
 reconnect-completion would reject with `daemon_unreachable` even though
 the daemon is healthy. Pre-fix: the EventEmitter "close" handler fires
@@ -10,15 +10,15 @@ and short-circuits to rejection. Post-fix: `handleSocketDeath` writes
 its async work to a `reconnectPromise: Promise<void> | null` field and
 `call()` awaits it before checking socket state.
 
-Pattern: per PATTERNS.md B-01, this test lives Python-side
+Pattern: per B-01, this test lives Python-side
 (not in `mcp-wrapper/tests/integration/`) because `mcp-wrapper/` has no
 TS test runner configured. The wrapper-spawn helpers mirror
-`tests/test_mcp_tools.py:139-181` (`_spawn_wrapper`, `_initialize`,
+`tests/test_mcp_tools.py` (`_spawn_wrapper`, `_initialize`,
 `_mcp_call`).
 
 The harness uses a minimal Python unix-socket listener (the "fake
 daemon") rather than the real `iai_mcp.daemon` because the real
-daemon's cold start (~7-8s for bge-small embedder load + LanceDB open)
+daemon's cold start (~7-8s for bge-small embedder load + store open)
 exceeds the wrapper's `SOCKET_CONNECT_TIMEOUT_MS = 5000` reconnect
 budget — a realistic kill-and-respawn scenario can't reliably win the
 5s reconnect race even with warm caches. The fake daemon binds within
@@ -63,7 +63,7 @@ def built_wrapper() -> Path:
 # ---------------------------------------------------------------------------
 # Fake daemon: minimal JSON-RPC NDJSON listener.
 #
-# Real daemon cold-start (~7-8s for bge-small embedder load + LanceDB open)
+# Real daemon cold-start (~7-8s for bge-small embedder load + store open)
 # exceeds the wrapper's 5s reconnect timeout (SOCKET_CONNECT_TIMEOUT_MS in
 # mcp-wrapper/src/bridge.ts:18). To exercise the V3-05 race fix we need a
 # substitute listener that BINDS within milliseconds of being asked, so
@@ -243,7 +243,7 @@ def fake_daemon():
       handleSocketDeath path.
 
     Why a fake daemon and not the real one: the real daemon's cold start
-    (bge-small embedder load + LanceDB open) is ~7-8s on macOS, which
+    (bge-small embedder load + store open) is ~7-8s on macOS, which
     exceeds the wrapper's `SOCKET_CONNECT_TIMEOUT_MS = 5000` reconnect
     budget. To exercise the V3-05 fix in isolation we need a listener
     that is **always bound** so the wrapper's at-most-one reconnect
@@ -377,7 +377,7 @@ def test_call_during_socket_death_resolves_after_reconnect(
 
     Test harness uses a minimal Python unix-socket listener (not the
     real daemon) because the real daemon's cold start (~7-8s for
-    bge-small embedder load + LanceDB open) exceeds the wrapper's
+    bge-small embedder load + store open) exceeds the wrapper's
     `SOCKET_CONNECT_TIMEOUT_MS = 5000` reconnect budget. The fake
     daemon's listening socket is always bound; only the wrapper's
     accepted connection is forcibly closed via a stdin DROP command.

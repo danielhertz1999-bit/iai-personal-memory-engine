@@ -1,21 +1,21 @@
-"""-- bedtime wind-down detection (, //).
+"""-- bedtime wind-down detection.
 
 Dual-gate bedtime suggestion emitter:
-  Gate A: wind-down phrase regex match per language (, 8 languages)
-  Gate B: late in learned quiet window (inside OR within 30min of start, )
+  Gate A: wind-down phrase regex match per language (8 languages)
+  Gate B: late in learned quiet window (inside OR within 30min of start)
 
 When BOTH gates pass, `detect_wind_down` returns a small dict that `core.py`
 injects into `memory_recall` responses as `sleep_suggestion`. Claude (the
 LLM in the active session) decides social framing -- our code NEVER hardcodes
 user-facing phrasing.
 
-Constitutional guard:
-- C2: this module does NOT initiate sleep. It only suggests. The only path
+Guards:
+- This module does NOT initiate sleep. It only suggests. The only path
   that moves the daemon into SLEEP is `core.handle_initiate_sleep_mode`
   with `consent=True`. No auto-start in this file.
-- C5 / this module is read-only w.r.t. records. It reads `cue`
-  strings; it NEVER mutates `literal_surface`.
-- C6: no fcntl, no daemon state mutation. All logic is pure in-process.
+- This module is read-only w.r.t. records. It reads `cue` strings;
+  it NEVER mutates `literal_surface`.
+- No fcntl, no daemon state mutation. All logic is pure in-process.
 
 Patterns mirror `shield.py`'s 8-language dict style (same language set:
 en/ru/ja/ar/de/fr/es/zh per global-product mandate). Latin-script
@@ -212,7 +212,7 @@ def is_late_in_quiet_window(
     start_bucket, duration = window
     try:
         now_local = now.astimezone(tz)
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         # DST edge or bad tz -- fail closed (don't suggest bedtime on
         # malformed input).
         return False
@@ -246,7 +246,7 @@ def detect_wind_down(
     now: datetime,
     tz: ZoneInfo,
 ) -> Optional[dict]:
-    """ dual-gate bedtime detector.
+    """dual-gate bedtime detector.
 
     Returns a `sleep_suggestion` dict when BOTH gates pass:
       Gate A: wind-down phrase match (primary lang + EN fallback)

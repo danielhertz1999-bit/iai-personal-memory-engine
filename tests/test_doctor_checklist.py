@@ -1,16 +1,16 @@
-"""Wave 5 R9 acceptance — doctor 6-row PASS/FAIL checklist.
+"""Doctor 6-row PASS/FAIL checklist.
 
 Each individual failure scenario produces a FAIL on the matching check
-and the doctor exits with the documented code (D7-13: 0=all pass,
+and the doctor exits with the documented code (0=all pass,
 1=any FAIL no --apply, 2=--apply but FAIL persists).
 
-Checks (D7-11 ordering):
+Checks (in order):
   (a) daemon process alive       — daemon_pid in .daemon-state.json
-  (b) socket file fresh          — connect+status round-trip <250ms
+  (b) socket file fresh          — kernel-level connect() succeeds <1s
   (c) lock file healthy          — fcntl probe doesn't error
   (d) no orphan iai_mcp.core procs — psutil scan returns 0
   (e) daemon state file valid    — fsm_state ∈ {WAKE, SLEEPING, DREAMING}
-  (f) lancedb store readable     — MemoryStore() opens without error
+  (f) store readable             — MemoryStore() opens without error
 
 Tests use monkeypatching to construct each failure scenario in isolation
 without booting a real daemon (test_doctor_apply_recovery.py covers the
@@ -100,7 +100,7 @@ def test_clean_environment_yields_check_a_fail_exit_1(short_socket_paths, capsys
     captured = capsys.readouterr()
 
     assert rc == 1, f"expected 1 (FAIL no --apply), got {rc}"
-    assert "IAI-MCP Doctor" in captured.out
+    assert "iai doctor" in captured.out
     assert "(a) daemon process alive" in captured.out
     assert "ABSENT" in captured.out, "check (a) should say ABSENT when no daemon_pid"
 
@@ -118,7 +118,7 @@ def test_clean_environment_yields_check_a_fail_exit_1(short_socket_paths, capsys
 def test_individual_failure_modes(
     scenario, expected_fail_check, short_socket_paths, monkeypatch
 ):
-    """R9: each failure scenario produces a FAIL on the matching check.
+    """Each failure scenario produces a FAIL on the matching check.
 
     Cascading FAILs are allowed (e.g. dead daemon → check_a + check_b both
     fail) but the named expected_fail_check MUST appear in the FAIL list.
@@ -173,7 +173,7 @@ def test_individual_failure_modes(
 
 
 def test_print_checklist_format_six_rows(short_socket_paths, monkeypatch, capsys):
-    """R9: print_checklist always emits 6 PASS/FAIL rows with consistent header.
+    """print_checklist always emits 6 PASS/FAIL rows with consistent header.
 
     Forces all 6 checks to PASS via monkeypatching to verify the formatter
     handles a fully-green checklist (default scenario in the other tests
@@ -187,18 +187,18 @@ def test_print_checklist_format_six_rows(short_socket_paths, monkeypatch, capsys
         doctor.CheckResult("(c) lock file healthy", True, "acquirable"),
         doctor.CheckResult("(d) no orphan iai_mcp.core procs", True, "0 found"),
         doctor.CheckResult("(e) daemon state file valid", True, "fsm_state=WAKE"),
-        doctor.CheckResult("(f) lancedb store readable", True, "opens without error"),
+        doctor.CheckResult("(f) hippo storage readable", True, "Hippo storage opens without error"),
     ]
     doctor.print_checklist(forced_results)
     out = capsys.readouterr().out
 
-    assert "IAI-MCP Doctor" in out
+    assert "iai doctor" in out
     assert out.count("[PASS]") == 6
     assert out.count("[FAIL]") == 0
 
 
 def test_all_pass_returns_exit_0(short_socket_paths, monkeypatch, capsys):
-    """D7-13 exit 0: when run_diagnosis returns all PASS, cmd_doctor returns 0.
+    """Exit 0: when run_diagnosis returns all PASS, cmd_doctor returns 0.
 
     Monkeypatches run_diagnosis itself rather than constructing a passing
     world — the latter requires a real daemon subprocess (covered by
@@ -213,7 +213,7 @@ def test_all_pass_returns_exit_0(short_socket_paths, monkeypatch, capsys):
             "(c) lock file healthy",
             "(d) no orphan iai_mcp.core procs",
             "(e) daemon state file valid",
-            "(f) lancedb store readable",
+            "(f) hippo storage readable",
         )
     ]
     monkeypatch.setattr(doctor, "run_diagnosis", lambda: forced_pass)
@@ -227,7 +227,7 @@ def test_all_pass_returns_exit_0(short_socket_paths, monkeypatch, capsys):
 
 
 def test_apply_without_yes_warns_when_yes_alone(short_socket_paths, monkeypatch, capsys):
-    """R9 UX: --yes without --apply prints a warning to stderr but still
+    """UX: --yes without --apply prints a warning to stderr but still
     runs diagnosis (does not block the user).
     """
     from iai_mcp import doctor
@@ -244,7 +244,7 @@ def test_apply_without_yes_warns_when_yes_alone(short_socket_paths, monkeypatch,
 
 
 def test_exit_code_2_when_apply_cannot_fix(short_socket_paths, monkeypatch, capsys):
-    """D7-13: --apply runs all repair actions but final re-check still has
+    """--apply runs all repair actions but final re-check still has
     FAIL → exit 2.
 
     Construct a scenario where the FAIL is unfixable: corrupt fsm_state in
@@ -271,7 +271,7 @@ def test_exit_code_2_when_apply_cannot_fix(short_socket_paths, monkeypatch, caps
                 False,
                 "fsm_state='TOTALLY_BOGUS' not in [...]",
             ),
-            doctor.CheckResult("(f) lancedb store readable", True, "synthetic"),
+            doctor.CheckResult("(f) hippo storage readable", True, "synthetic"),
         ]
 
     monkeypatch.setattr(doctor, "run_diagnosis", _forced_fail_e_only)
@@ -314,3 +314,95 @@ def test_check_e_passes_when_state_file_absent(short_socket_paths):
     result = check_e_state_file_valid()
     assert result.passed is True
     assert "no state file" in result.detail
+
+
+def test_check_b_passes_against_silent_listening_socket(short_socket_paths):
+    """Check (b) PASSes when the socket accepts connections but never replies.
+
+    Regression for a past false-positive: the previous implementation
+    issued a {type: status} round-trip with a 250 ms wall, which false-FAILed
+    on a healthy daemon whose status reply path took 1-8 s. The fix is
+    connect-only: a successful kernel-level connect() means the socket is
+    fresh; daemon-responsiveness belongs to a separate diagnostic.
+
+    Reproduce by standing up a unix socket listener that accepts but never
+    sends a reply. The probe must PASS (connect succeeded), not FAIL on
+    a missing reply.
+    """
+    import socket as _socket
+    import threading
+    import time as _time
+
+    _, sock_path, _ = short_socket_paths
+    if sock_path.exists():
+        sock_path.unlink()
+
+    server = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    server.bind(str(sock_path))
+    server.listen(8)
+    # Accept-and-hold loop in a background thread: pulls one connection,
+    # then sits silent. The probe only needs the kernel accept() to succeed.
+    stop = threading.Event()
+    accepted: list = []
+
+    def _accept_loop():
+        while not stop.is_set():
+            try:
+                server.settimeout(0.05)
+                try:
+                    conn, _ = server.accept()
+                except (_socket.timeout, OSError):
+                    continue
+                accepted.append(conn)  # hold ref so it doesn't garbage-collect
+            except Exception:
+                break
+
+    th = threading.Thread(target=_accept_loop, daemon=True)
+    th.start()
+
+    try:
+        # Give the listen() backlog a moment to be ready.
+        _time.sleep(0.05)
+        from iai_mcp.doctor import check_b_socket_fresh
+
+        result = check_b_socket_fresh()
+        assert result.passed is True, (
+            f"check_b should PASS against a silent listening socket; "
+            f"got: {result.detail}"
+        )
+        assert "connected" in result.detail
+    finally:
+        stop.set()
+        try:
+            for c in accepted:
+                try:
+                    c.close()
+                except OSError:
+                    pass
+        finally:
+            try:
+                server.close()
+            except OSError:
+                pass
+        th.join(timeout=1.0)
+
+
+def test_check_b_fails_when_socket_is_regular_file(short_socket_paths):
+    """Check (b) FAILs when the socket path is a regular file (not a socket).
+
+    Mirrors the existing `stale_socket_unconnectable` parametrized scenario
+    but asserts the post-fix error string still surfaces "unreachable" so
+    `_plan_repair_actions` can map this FAIL to `unlink_stale_socket`.
+    """
+    _, sock_path, _ = short_socket_paths
+    if sock_path.exists():
+        sock_path.unlink()
+    sock_path.write_text("")  # regular file, not a socket
+
+    from iai_mcp.doctor import check_b_socket_fresh
+
+    result = check_b_socket_fresh()
+    assert result.passed is False
+    # Either ConnectionRefused or OSError errno=38 (ENOTSOCK) — both
+    # are "unreachable" per the post-fix error message contract.
+    assert "unreachable" in result.detail

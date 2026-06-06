@@ -1,18 +1,10 @@
 """AAAK index generator + English-Only storage enforcement.
 
-constitutional rule:
-    Storage is raw verbatim English always. AAAK is a RETRIEVAL VIEW only.
-
-(superseded):
-    Storage was briefly amended to raw verbatim in the user's original language.
-    Every MemoryRecord carries an ISO-639-1 `language` tag retained as a column
-    on legacy rows from that era.
-
-(2026-04-19) restored the English-Only Brain ( spirit):
-    The surface (Claude) translates inbound text to English; storage holds the
-    English form. The `language` column is retained for legacy compatibility;
-    new records default to "en". Embedding default is bge-small-en-v1.5 (384d,
-    English) per .
+The English-Only Brain invariant: the surface (Claude) translates inbound
+text to English on the way in; storage holds the English form. The
+`language` column on MemoryRecord is retained for legacy compatibility on
+older rows; new records default to "en". Embedding default is
+bge-small-en-v1.5 (384d, English).
 
 This module provides:
 
@@ -23,16 +15,15 @@ This module provides:
 - `parse_aaak_index(idx)` -- inverse of the generator, returning a
   {wing, room, entities, tags} dict. Round-trips the entities/tags lists.
 
-- `enforce_language_tagged(record, detect=False)` -- guard.
-  Raises ValueError if record.language is empty and detect is False. When
-  detect=True, runs langdetect on literal_surface; mutates record.language
-  with the detected code if confidence >= 0.7, else raises. Empty text with
-  detect=True defaults to "en" without raising.
+- `enforce_language_tagged(record)` -- constitutional guard that raises
+  ValueError if record.language is empty. The detect= parameter and any
+  pure-Python language-detection path were removed once the English-only
+  invariant became unconditional (Claude does the translation on the way
+  in, so the brain never needs to guess the language of stored text).
 
-- `enforce_english_raw(record)` -- shim retained for backward compat.
-  Delegates to enforce_language_tagged for records with a language tag set;
-  preserves Cyrillic/CJK rejection for records without one unless
-  `raw:<lang>` tag is present.
+- `enforce_english_raw(record)` -- legacy shim retained for backward compat.
+  Preserves the original script-based Cyrillic/CJK rejection for records
+  without a `raw:<lang>` tag.
 """
 from __future__ import annotations
 
@@ -42,15 +33,10 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from iai_mcp.types import MemoryRecord
 
-# constitutional: confidence threshold below which langdetect refuses.
-LANGDETECT_MIN_CONFIDENCE = 0.7
-
-
 # --------------------------------------------------------------- script regex
 # Covered: Cyrillic (Russian et al), Hiragana, Katakana, CJK Unified Ideographs.
-# Sufficient for (the three scripts the project explicitly documents
-# as needing `raw:<lang>` handling). Extend the alphabet list in only
-# if a genuine storage bug surfaces -- don't speculate.
+# Sufficient for the historical raw:<lang> opt-in path; extend the alphabet
+# list only if a genuine storage bug surfaces -- don't speculate.
 CYRILLIC = re.compile(r"[\u0400-\u04FF]")          # U+0400..U+04FF
 HIRAGANA_KATAKANA = re.compile(r"[\u3040-\u30FF]") # U+3040..U+30FF
 CJK = re.compile(r"[\u4E00-\u9FFF]")               # U+4E00..U+9FFF Unified Ideographs
@@ -73,8 +59,8 @@ def _wing_from_tier(tier: str) -> str:
 def _room_from_community(record: "MemoryRecord") -> str:
     """First 8 chars of community UUID; "unknown" if community not yet assigned.
 
-    assigns community_id; L0/L1 pinned records may still have
-    community_id=None (they're pinned by UUID, not graph position).
+    L0/L1 pinned records may still have community_id=None (they're pinned
+    by UUID, not graph position).
     """
     if record.community_id is None:
         return "unknown"
@@ -105,7 +91,7 @@ def _tagline(tags: list[str]) -> str:
 
 
 def generate_aaak_index(record: "MemoryRecord") -> str:
-    """Build the AAAK index string for a record (, ).
+    """Build the AAAK index string for a record.
 
     Format: `W:<wing>/R:<room>/E:<entities>/T:<tags>`
 
@@ -153,77 +139,44 @@ def parse_aaak_index(idx: str) -> dict[str, list[str]]:
     return out
 
 
-def enforce_language_tagged(
-    record: "MemoryRecord",
-    *,
-    detect: bool = False,
-) -> None:
-    """Constitutional: every Phase-2+ record MUST carry a language tag.
+def enforce_language_tagged(record: "MemoryRecord") -> None:
+    """Guard: every record MUST carry a non-empty language tag.
 
-    When record.language is a non-empty string, the guard passes unconditionally
-    (the column is retained for legacy compatibility; the English-Only Brain
-    pivot in means new records default to "en").
+    When `record.language` is a non-empty string, the guard passes
+    unconditionally (the column is retained for legacy compatibility on
+    older rows; new records default to "en" under the English-Only Brain
+    invariant).
 
-    When record.language is empty/missing and detect is False, raises
-    ValueError("constitutional violation: ...") because storage is
-    tag-addressable -- not defaulting to English.
-
-    When detect=True and language is empty:
-    - If literal_surface is empty/whitespace, sets language="en" and returns.
-    - Else runs langdetect; if top candidate has probability >= 0.7
-      (constitutional threshold), mutates record.language with the detected code.
-    - If langdetect fails or confidence < 0.7, raises ValueError.
-
-    The seed for langdetect's DetectorFactory is fixed at 42 so the same text
-    always produces the same language code across runs.
+    When `record.language` is empty/missing, raises ValueError. There is
+    no auto-detection path: the surface (Claude) translates inbound text
+    to English on the way in, so the brain never needs to guess the
+    language of stored text. Callers that need a default should set
+    `record.language = "en"` explicitly before calling this guard.
     """
     if record.language and isinstance(record.language, str) and record.language.strip():
         return  # already tagged; accept
 
-    if not detect:
-        raise ValueError(
-            "constitutional violation: record.language is required. "
-            "Pass detect=True to auto-detect via langdetect."
-        )
-
-    text = record.literal_surface or ""
-    if not text.strip():
-        record.language = "en"  # empty -> default en
-        return
-
-    try:
-        from langdetect import DetectorFactory, detect_langs
-        DetectorFactory.seed = 42  # determinism
-        candidates = detect_langs(text)
-    except Exception as e:
-        raise ValueError(
-            f"constitutional violation: langdetect failed on record text: {e}"
-        )
-
-    if not candidates or candidates[0].prob < LANGDETECT_MIN_CONFIDENCE:
-        top = candidates[0] if candidates else None
-        raise ValueError(
-            f"constitutional violation: langdetect confidence too low "
-            f"(<{LANGDETECT_MIN_CONFIDENCE}); top candidate={top}"
-        )
-
-    record.language = candidates[0].lang
+    raise ValueError(
+        "constitutional violation: record.language is required and must be "
+        "non-empty. Set record.language='en' (or the appropriate code on "
+        "legacy rows) before calling this guard."
+    )
 
 
 def enforce_english_raw(record: "MemoryRecord") -> None:
-    """shim -- preserves the original script-based guard.
+    """Legacy script-based guard retained for backward compatibility.
 
-    semantics (retained byte-for-byte for backward compatibility):
+    Semantics (preserved byte-for-byte for backward compatibility):
     - `raw:<lang>` tag present on record -> accept (explicit raw capture)
     - literal_surface contains Cyrillic / Hiragana / Katakana / CJK codepoints
-      and no `raw:<lang>` tag -> raise ValueError("constitutional ...")
+      and no `raw:<lang>` tag -> raise ValueError("constitutional...")
     - else -> accept
 
-    The guard is exposed as `enforce_language_tagged`. Downstream
-    plans that want native-language storage should import that directly
-    instead of this shim. This function is kept so the test fixtures
-    (tests/test_aaak.py, tests/test_provenance.py) continue to assert the
-    exact rejection behaviour they documented.
+    The modern guard is `enforce_language_tagged`; downstream callers that
+    just need a language-tag presence check should import that directly.
+    This shim is kept so the existing test fixtures (tests/test_aaak.py,
+    tests/test_provenance.py) continue to assert the exact rejection
+    behaviour they documented.
     """
     text = record.literal_surface or ""
     has_non_english = bool(
@@ -240,6 +193,6 @@ def enforce_english_raw(record: "MemoryRecord") -> None:
 
     raise ValueError(
         "constitutional violation: literal_surface contains non-English "
-        "characters; storage must be English raw verbatim . "
+        "characters; storage must be English raw verbatim. "
         "Add 'raw:<lang>' tag to declare explicit raw capture."
     )

@@ -1,4 +1,4 @@
-// Anthropic 1h-TTL prompt caching (TOK-01, D-10).
+// Anthropic 1h-TTL prompt caching.
 //
 // Single breakpoint at the stable/volatile boundary. The Python core's
 // `session_start_payload` returns the 4-segment cached prefix; this module
@@ -7,9 +7,9 @@
 //
 // cache_control TTL="1h" is the Anthropic prompt-caching extended-TTL option
 // released in Oct 2024 (enabled per-org; falls back to "5m" default when
-// unsupported). Rationale per D-10: session-start prefix rarely changes
+// unsupported). Rationale per: session-start prefix rarely changes
 // within an hour, so 1h TTL hits Anthropic's cache on every turn after the
-// first fresh-session write (OPS-02 8000-token premium absorbed once).
+// first fresh-session write (8000-token premium absorbed once).
 
 export interface CacheControl {
   readonly type: "ephemeral";
@@ -34,12 +34,12 @@ export interface SessionPayloadRaw {
 
 /** Attach a single `cache_control` breakpoint at the stable/volatile boundary.
  *
- *  Per TOK-01 we emit exactly one breakpoint: on the LAST block of `stable`.
- *  If `stable` is empty the function returns the volatile blocks unchanged --
- *  there is no sensible place to hang a breakpoint on an empty prefix and
- *  Anthropic's API would reject the request.
+ * Emits exactly one breakpoint: on the LAST block of `stable`.
+ * If `stable` is empty the function returns the volatile blocks unchanged --
+ * there is no sensible place to hang a breakpoint on an empty prefix and
+ * Anthropic's API would reject the request.
  *
- *  Returns a new array; inputs are not mutated. */
+ * Returns a new array; inputs are not mutated. */
 export function applyCacheBreakpoint(
   stable: ContentBlock[],
   volatile: ContentBlock[],
@@ -57,11 +57,11 @@ export function applyCacheBreakpoint(
 
 /** Build the cached system prompt from the Python session_start_payload.
  *
- *  Segments in order: L0 identity, L1 critical facts, L2 community summaries
- *  (one block per community), rich-club prefetch. Empty segments are skipped
- *  so the cache-key is stable across sessions where, say, L1 is empty.
+ * Segments in order: L0 identity, L1 critical facts, L2 community summaries
+ * (one block per community), rich-club prefetch. Empty segments are skipped
+ * so the cache-key is stable across sessions where, say, L1 is empty.
  *
- *  Returned blocks already have the cache_control breakpoint applied. */
+ * Returned blocks already have the cache_control breakpoint applied. */
 export function buildCachedSystemPrompt(
   payload: SessionPayloadRaw,
 ): ContentBlock[] {

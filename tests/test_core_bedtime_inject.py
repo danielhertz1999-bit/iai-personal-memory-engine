@@ -1,4 +1,4 @@
-"""Tests for core.py additions -- / .
+"""Tests for core.py additions --.
 
 Covers 8 behaviours:
 1. consent=False short-circuits: socket is NEVER opened (C2 guard)
@@ -163,7 +163,7 @@ async def _run_fake_server(
 def test_consent_false_short_circuits_no_socket_touch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """C2 invariant: consent=False must NEVER open the daemon socket."""
+    """consent=False must NEVER open the daemon socket."""
 
     async def _explode(*args, **kwargs):
         raise AssertionError(

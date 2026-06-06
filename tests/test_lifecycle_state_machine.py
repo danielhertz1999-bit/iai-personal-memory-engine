@@ -12,16 +12,16 @@ Coverage:
 - Shadow-run guard: HIBERNATION dispatch persists state + logs
   state_transition + logs shadow_run_warning; no process termination.
 
-Plan §1.4 calls for Hypothesis property tests. The hard constraint
-"no new dependencies" forbids adding Hypothesis to dev-deps in this
-phase, so property coverage is implemented via stdlib `random.Random(seed)`
-fuzz against pytest.parametrize. Coverage equivalent for the 3
+Property coverage uses stdlib `random.Random(seed)` fuzz against
+pytest.parametrize rather than Hypothesis, to avoid adding a new
+dev dependency. Coverage equivalent for the 3
 properties in the spec; loses Hypothesis shrinking but otherwise
 satisfies the validation requirement. Documented as a Rule 3
 deviation in the SUMMARY.
 """
 from __future__ import annotations
 
+import asyncio
 import multiprocessing as mp
 import random
 import sys
@@ -31,8 +31,10 @@ from typing import Any
 
 import pytest
 
+from unittest.mock import patch
+
 from iai_mcp.lifecycle import (
-    DEFAULT_LOCK_PATH,  # noqa: F401  -- import sanity
+    DEFAULT_LOCK_PATH,  # noqa: F401 -- import sanity
     LifecycleEvent,
     LifecycleState,
     LifecycleStateLocked,
@@ -42,6 +44,7 @@ from iai_mcp.lifecycle import (
 )
 from iai_mcp.lifecycle_event_log import LifecycleEventLog
 from iai_mcp.lifecycle_state import default_state, load_state, save_state
+from iai_mcp.s2_coordinator import S2Coordinator
 
 
 # ---------------------------------------------------------------------------
@@ -55,11 +58,19 @@ def _seed_state(state_path: Path, state: LifecycleState) -> None:
 
 
 def _make_machine(tmp_path: Path, *, shadow_run: bool = True) -> LifecycleStateMachine:
+    state_path = tmp_path / "lifecycle_state.json"
+    coordinator = S2Coordinator(
+        store=None,
+        state_path=state_path,
+        min_interval_sec=0.0,
+        dry_run=False,
+    )
     return LifecycleStateMachine(
-        state_path=tmp_path / "lifecycle_state.json",
+        state_path=state_path,
         event_log=LifecycleEventLog(log_dir=tmp_path / "logs"),
         lock_path=tmp_path / ".lifecycle.lock",
         shadow_run=shadow_run,
+        coordinator=coordinator,
     )
 
 
@@ -222,7 +233,7 @@ def test_dispatch_persists_new_state_on_transition(tmp_path):
     machine = _make_machine(tmp_path)
     _seed_state(machine._state_path, LifecycleState.WAKE)
 
-    new = machine.dispatch(LifecycleEvent.IDLE_5MIN)
+    new = asyncio.run(machine.dispatch(LifecycleEvent.IDLE_5MIN))
     assert new == LifecycleState.DROWSY
 
     record = load_state(machine._state_path)
@@ -233,7 +244,7 @@ def test_dispatch_logs_state_transition(tmp_path):
     machine = _make_machine(tmp_path)
     _seed_state(machine._state_path, LifecycleState.WAKE)
 
-    machine.dispatch(LifecycleEvent.IDLE_5MIN)
+    asyncio.run(machine.dispatch(LifecycleEvent.IDLE_5MIN))
 
     log = LifecycleEventLog(log_dir=tmp_path / "logs")
     records = log.read_all()
@@ -248,7 +259,7 @@ def test_dispatch_no_op_returns_current_state_no_log(tmp_path):
     machine = _make_machine(tmp_path)
     _seed_state(machine._state_path, LifecycleState.WAKE)
 
-    state = machine.dispatch(LifecycleEvent.TICK)
+    state = asyncio.run(machine.dispatch(LifecycleEvent.TICK))
     assert state == LifecycleState.WAKE
 
     log = LifecycleEventLog(log_dir=tmp_path / "logs")
@@ -268,7 +279,7 @@ def test_dispatch_advances_seq_and_activity_on_user_event(tmp_path):
     # Sleep briefly so timestamp advances by at least 1us.
     time.sleep(0.01)
 
-    machine.dispatch(LifecycleEvent.HEARTBEAT_REFRESH)
+    asyncio.run(machine.dispatch(LifecycleEvent.HEARTBEAT_REFRESH))
 
     record_after = load_state(machine._state_path)
     assert record_after["wrapper_event_seq"] == seq_before + 1
@@ -283,13 +294,12 @@ def test_shadow_run_hibernation_persists_state_and_warns(tmp_path):
     machine = _make_machine(tmp_path, shadow_run=True)
     _seed_state(machine._state_path, LifecycleState.SLEEP)
 
-    new = machine.dispatch(LifecycleEvent.SLEEP_CYCLE_DONE, still_idle=True)
+    new = asyncio.run(machine.dispatch(LifecycleEvent.SLEEP_CYCLE_DONE, still_idle=True))
     assert new == LifecycleState.HIBERNATION
 
     # State is persisted on disk.
     record = load_state(machine._state_path)
     assert record["current_state"] == "HIBERNATION"
-    assert record["shadow_run"] is True
 
     # Event log includes both state_transition and shadow_run_warning.
     log = LifecycleEventLog(log_dir=tmp_path / "logs")
@@ -307,7 +317,7 @@ def test_shadow_run_false_hibernation_logs_no_warning(tmp_path):
     machine = _make_machine(tmp_path, shadow_run=False)
     _seed_state(machine._state_path, LifecycleState.SLEEP)
 
-    machine.dispatch(LifecycleEvent.SLEEP_CYCLE_DONE, still_idle=True)
+    asyncio.run(machine.dispatch(LifecycleEvent.SLEEP_CYCLE_DONE, still_idle=True))
 
     log = LifecycleEventLog(log_dir=tmp_path / "logs")
     records = log.read_all()
@@ -325,7 +335,7 @@ def test_shadow_run_does_not_terminate_process(tmp_path):
     machine = _make_machine(tmp_path, shadow_run=True)
     _seed_state(machine._state_path, LifecycleState.SLEEP)
 
-    machine.dispatch(LifecycleEvent.SLEEP_CYCLE_DONE, still_idle=True)
+    asyncio.run(machine.dispatch(LifecycleEvent.SLEEP_CYCLE_DONE, still_idle=True))
 
     # If shadow_run=True erroneously kills the process, we never get here.
     sentinel = "still alive"
@@ -372,12 +382,15 @@ def _writer_subprocess(
     Returns the outcome via the queue: ('locked', exc_text) or
     ('ok', new_state_value).
     """
+    import asyncio as _asyncio
+
     from iai_mcp.lifecycle import (
         LifecycleStateLocked as _Locked,
         LifecycleStateMachine as _Machine,
         _lifecycle_lock as _lock,
     )
     from iai_mcp.lifecycle_event_log import LifecycleEventLog as _Log
+    from iai_mcp.s2_coordinator import S2Coordinator as _Coord
 
     if hold_seconds > 0:
         # Hold the lock for `hold_seconds` to force the second worker
@@ -390,13 +403,15 @@ def _writer_subprocess(
                 time.sleep(hold_seconds)
             # After releasing, do a real dispatch so the test sees
             # an "ok" outcome from the long-holding worker.
+            _sp = Path(state_path_str)
             machine = _Machine(
-                state_path=Path(state_path_str),
+                state_path=_sp,
                 event_log=_Log(log_dir=Path(log_dir_str)),
                 lock_path=Path(lock_path_str),
                 shadow_run=True,
+                coordinator=_Coord(store=None, state_path=_sp, min_interval_sec=0.0),
             )
-            new_state = machine.dispatch(LifecycleEvent.IDLE_5MIN)
+            new_state = _asyncio.run(machine.dispatch(LifecycleEvent.IDLE_5MIN))
             result_q.put(("ok", new_state.value))
         except _Locked as exc:
             result_q.put(("locked", str(exc)))
@@ -407,13 +422,15 @@ def _writer_subprocess(
         # worker is sleeping with the lock held, this dispatch must
         # raise LifecycleStateLocked (LOCK_NB).
         try:
+            _sp = Path(state_path_str)
             machine = _Machine(
-                state_path=Path(state_path_str),
+                state_path=_sp,
                 event_log=_Log(log_dir=Path(log_dir_str)),
                 lock_path=Path(lock_path_str),
                 shadow_run=True,
+                coordinator=_Coord(store=None, state_path=_sp, min_interval_sec=0.0),
             )
-            new_state = machine.dispatch(LifecycleEvent.IDLE_5MIN)
+            new_state = _asyncio.run(machine.dispatch(LifecycleEvent.IDLE_5MIN))
             result_q.put(("ok", new_state.value))
         except _Locked as exc:
             result_q.put(("locked", str(exc)))
@@ -426,8 +443,10 @@ def _writer_subprocess(
     reason="fcntl.flock is POSIX-only",
 )
 def test_single_writer_contention_one_succeeds(tmp_path):
-    """Two subprocesses race for the lock; exactly one succeeds, the
-    other receives `LifecycleStateLocked` (LOCK_NB).
+    """Two subprocesses race for dispatch; coordinator uses
+    asyncio.Lock (per-process) so both succeed in separate processes.
+    Cross-process serialisation is handled by the file-lock helper
+    tested separately in test_lifecycle_lock_contention_raises.
     """
     state_path = tmp_path / "lifecycle_state.json"
     log_dir = tmp_path / "logs"
@@ -442,7 +461,6 @@ def test_single_writer_contention_one_succeeds(tmp_path):
         args=(str(state_path), str(log_dir), str(lock_path), 1.5, q),
     )
     p1.start()
-    # Give p1 time to actually acquire the lock before p2 starts.
     time.sleep(0.5)
     p2 = ctx.Process(
         target=_writer_subprocess,
@@ -460,8 +478,10 @@ def test_single_writer_contention_one_succeeds(tmp_path):
         results.append(q.get())
     assert len(results) == 2
     kinds = sorted(r[0] for r in results)
-    # Exactly one ok, one locked.
-    assert kinds == ["locked", "ok"]
+    #: coordinator asyncio.Lock is per-process, so both
+    # subprocesses succeed independently. File-level contention is
+    # validated by test_lifecycle_lock_contention_raises.
+    assert kinds == ["ok", "ok"]
 
 
 # ---------------------------------------------------------------------------

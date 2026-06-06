@@ -1,19 +1,17 @@
-// Phase-1 (D-12) + Plan 02-04 (MCP-05/07/08) + Plan 03 (CONN-05/07 + AUTIST-13) tools.
-//
 // Tool shapes are JSON-schema dicts consumable by the MCP SDK's ListTools
-// handler. Descriptions are written for Claude's tool-discovery heuristics
-// (concise, task-oriented, reference the autistic-kernel defaults where they
-// affect behaviour).
+// handler. Descriptions are written for the host's tool-discovery heuristics
+// (concise, task-oriented, reference the kernel defaults where they affect
+// behaviour).
 //
-// Plan 02-04 adds 3 user-introspection tools:
-// - curiosity_pending  (MCP-07): list pending curiosity questions
-// - schema_list        (MCP-08): list induced schemas
-// - events_query       (MCP-05): user-visible events audit
+// Introspection tools:
+// - curiosity_pending: list pending curiosity questions
+// - schema_list: list induced schemas
+// - events_query: user-visible events audit
 //
-// Plan 03 adds 3 scientific-depth tools:
-// - memory_recall_structural (CONN-05): TEM role->filler structural recall
-// - topology                 (CONN-07): Ashby sigma diagnostic snapshot
-// - camouflaging_status      (AUTIST-13): ecological self-regulation status
+// Scientific-depth tools:
+// - memory_recall_structural: TEM role->filler structural recall
+// - topology: sigma diagnostic snapshot
+// - camouflaging_status: ecological self-regulation status
 //
 // Each tool carries sibling `annotations` and `outputSchema` fields.
 // These are INVISIBLE to the tests/test_tool_description_budget.py regex
@@ -22,6 +20,14 @@
 // without raising the 30-tok / 330-tok top-level cap.
 
 import type { PythonCoreBridge } from "./bridge.js";
+
+// Subprocess spawn for the bank-recall fallback path.
+import { spawn, type SpawnOptions } from "node:child_process";
+
+// Hit-count cap for the bank-fallback path. Decoupled from
+// args.budget_tokens by design — the bank tier is a degraded read-side
+// surface, not the rich-mode recall path.
+export const BANK_FALLBACK_LIMIT = 20;
 
 export const TOOL_NAMES = [
   "memory_recall",
@@ -36,6 +42,7 @@ export const TOOL_NAMES = [
   "events_query",
   "topology",
   "camouflaging_status",
+  "episodes_recent",
 ] as const;
 
 export type ToolName = (typeof TOOL_NAMES)[number];
@@ -461,7 +468,7 @@ export const toolSchemas: Record<ToolName, ToolSchema> = {
         structure_query: {
           type: "object",
           description:
-            "Optional role->filler map, e.g. {\"agent\": \"alice\"}. Each value is hashed to a filler hypervector. When omitted or empty, query HV is zero-filled and every row with structure_hv is scored (expensive at large N).",
+            "Optional role->filler map, e.g. {\"agent\": \"agent_name\"}. Each value is hashed to a filler hypervector. When omitted or empty, query HV is zero-filled and every row with structure_hv is scored (expensive at large N).",
           additionalProperties: { type: "string" },
         },
         budget_tokens: {
@@ -555,22 +562,387 @@ export const toolSchemas: Record<ToolName, ToolSchema> = {
       openWorldHint: false,
     },
   },
+  episodes_recent: {
+    name: "episodes_recent",
+    description:
+      "Returns the N most-recent user-turn records, time-desc. " +
+      "Optional session_id filter. GLOBAL across all projects.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        n: {
+          type: "integer",
+          description: "How many turns to return (default 10, max 1000).",
+        },
+        session_id: {
+          type: "string",
+          description: "Filter to a specific session UUID.",
+        },
+      },
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        turns: { type: "array", items: { type: "object" } },
+        count: { type: "integer" },
+      },
+    },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
 };
 
+// Returns true when an error originates from a dead daemon socket
+// (bridge.start() rejected or handleSocketDeath rejected bridge.call()).
+// Used by handleToolCall and invokeTool to discriminate daemon-down from
+// warm RPC errors so warm errors always propagate.
+function isDaemonDownError(err: unknown): boolean {
+  if (err instanceof Error) {
+    if (err.name === "DaemonUnreachableError") return true;
+    const msg = err.message;
+    if (
+      msg.includes("daemon_unreachable") ||
+      msg.includes("socket dead") ||
+      msg.includes("DaemonUnreachable") ||
+      msg.includes("ECONNREFUSED") ||
+      msg.includes("ENOENT") ||
+      msg.includes("connect ETIMEDOUT")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Spawn the `iai last --json` CLI subcommand and parse its stdout JSON.
+// Returns null on any subprocess / parse error. Mirrors runBankFallback
+// but targets the direct-store recency subcommand, NOT bank-recall.
+// Tags the result _source: "direct-store" so callers can verify the path.
+export async function runDirectRecency(
+  args: Record<string, unknown>,
+  spawnFn: typeof spawn = spawn,
+): Promise<Record<string, unknown> | null> {
+  const cli = process.env.IAI_MCP_CLI ?? "iai";
+  const n = String(args.n ?? 10);
+  const spawnArgs: string[] = ["last", "--json", "--n", n];
+  const sessionId = args.session_id;
+  if (sessionId && typeof sessionId === "string") {
+    spawnArgs.push("--session", sessionId);
+  }
+  return new Promise((resolve) => {
+    const opts: SpawnOptions = { stdio: ["ignore", "pipe", "pipe"] };
+    const proc = spawnFn(cli, spawnArgs, opts);
+    let stdout = "";
+    const stdoutStream = proc.stdout;
+    if (stdoutStream) {
+      stdoutStream.setEncoding("utf-8");
+      stdoutStream.on("data", (chunk: string) => { stdout += chunk; });
+    }
+    const t = setTimeout(() => {
+      try { proc.kill(); } catch { /* ignore */ }
+      resolve(null);
+    }, 5_000);
+    proc.on("error", () => {
+      clearTimeout(t);
+      resolve(null);
+    });
+    proc.on("close", (code: number | null) => {
+      clearTimeout(t);
+      if (code !== 0) {
+        resolve(null);
+        return;
+      }
+      try {
+        const parsed = JSON.parse(stdout) as Record<string, unknown>;
+        parsed["_source"] = "direct-store";
+        resolve(parsed);
+      } catch {
+        resolve(null);
+      }
+    });
+  });
+}
+
+// Spawn the `iai capture --json` CLI subcommand and parse its stdout JSON.
+// Returns null on any subprocess / parse error. Mirrors runDirectRecency
+// but targets the direct-write subcommand, NOT bank-recall.
+// Tags the result _source: "direct-store" so callers can verify the path.
+export async function runDirectWrite(
+  args: Record<string, unknown>,
+  spawnFn: typeof spawn = spawn,
+): Promise<Record<string, unknown> | null> {
+  const cli = process.env.IAI_MCP_CLI ?? "iai";
+  const literal = String(args.literal ?? args.text ?? "");
+  const spawnArgs: string[] = ["capture", "--json", literal];
+  const sessionId = args.session_id;
+  if (sessionId && typeof sessionId === "string") {
+    spawnArgs.push("--session-id", sessionId);
+  }
+  return new Promise((resolve) => {
+    const opts: SpawnOptions = { stdio: ["ignore", "pipe", "pipe"] };
+    const proc = spawnFn(cli, spawnArgs, opts);
+    let stdout = "";
+    const stdoutStream = proc.stdout;
+    if (stdoutStream) {
+      stdoutStream.setEncoding("utf-8");
+      stdoutStream.on("data", (chunk: string) => { stdout += chunk; });
+    }
+    const t = setTimeout(() => {
+      try { proc.kill(); } catch { /* ignore */ }
+      resolve(null);
+    }, 5_000);
+    proc.on("error", () => {
+      clearTimeout(t);
+      resolve(null);
+    });
+    proc.on("close", (code: number | null) => {
+      clearTimeout(t);
+      if (code !== 0) {
+        resolve(null);
+        return;
+      }
+      try {
+        const parsed = JSON.parse(stdout) as Record<string, unknown>;
+        parsed["_source"] = "direct-store";
+        resolve(parsed);
+      } catch {
+        // Non-JSON output (e.g. plain "captured id=..." line) — still success.
+        resolve({ _source: "direct-store", status: "inserted" });
+      }
+    });
+  });
+}
+
+// Spawn the `iai recall --json --limit <n> <cue>` CLI subcommand (degraded path).
+// Returns the parsed JSON payload tagged _source: "direct-store", or null on failure.
+// This is the FIRST daemon-down fallback for memory_recall (store-backed degraded);
+// bank is demoted to LAST resort and only used if this call returns null.
+export async function runDirectRecall(
+  args: Record<string, unknown>,
+  spawnFn: typeof spawn = spawn,
+): Promise<Record<string, unknown> | null> {
+  const cli = process.env.IAI_MCP_CLI ?? "iai";
+  const cue = String(args.cue ?? "");
+  if (!cue) return null;
+  const limit = String(
+    typeof args.limit === "number"
+      ? args.limit
+      : typeof args.budget_tokens === "number"
+        ? Math.max(1, Math.ceil(args.budget_tokens / 300))
+        : 10,
+  );
+  const spawnArgs: string[] = ["recall", "--json", "--limit", limit, cue];
+  return new Promise((resolve) => {
+    const opts: SpawnOptions = { stdio: ["ignore", "pipe", "pipe"] };
+    const proc = spawnFn(cli, spawnArgs, opts);
+    let stdout = "";
+    const stdoutStream = proc.stdout;
+    if (stdoutStream) {
+      stdoutStream.setEncoding("utf-8");
+      stdoutStream.on("data", (chunk: string) => { stdout += chunk; });
+    }
+    const t = setTimeout(() => {
+      try { proc.kill(); } catch { /* ignore */ }
+      resolve(null);
+    }, 5_000);
+    proc.on("error", () => {
+      clearTimeout(t);
+      resolve(null);
+    });
+    proc.on("close", (code: number | null) => {
+      clearTimeout(t);
+      if (code !== 0) {
+        resolve(null);
+        return;
+      }
+      try {
+        const parsed = JSON.parse(stdout) as Record<string, unknown>;
+        parsed["_source"] = "direct-store";
+        resolve(parsed);
+      } catch {
+        resolve(null);
+      }
+    });
+  });
+}
+
+// Shared startup-safe entrypoint for all tool calls.
+//
+// STRICT CATCH SCOPING: the try/catch wraps ONLY await bridge.start(). On a
+// start() rejection (dead daemon) the catch routes episodes_recent to the
+// direct-store CLI subcommand (never bank for recency). For memory_recall the
+// existing bank fallback applies; everything else rethrows.
+// On a successful start(), invokeTool() is called OUTSIDE the catch so any
+// warm RPC error (timeout, server error while daemon is up) propagates
+// normally — never misrouted to the daemon-down path.
+export async function handleToolCall(
+  bridge: PythonCoreBridge,
+  name: ToolName,
+  args: Record<string, unknown>,
+  spawnFn: typeof spawn = spawn,
+): Promise<unknown> {
+  // Try to bring the bridge up. On failure, route daemon-down tools to their
+  // direct-store fallback (start rejection = daemon unreachable).
+  try {
+    await bridge.start();
+  } catch (startErr) {
+    // bridge.start() rejected — daemon is unreachable before any tool call ran.
+    if (name === "episodes_recent") {
+      const direct = await runDirectRecency(args, spawnFn);
+      if (direct !== null) {
+        return direct;
+      }
+      throw startErr;
+    }
+    // memory_capture daemon-down routes to direct-write CLI subcommand
+    // (NOT bank — bank is read-only). This catch wraps ONLY bridge.start();
+    // a warm invokeTool error still propagates.
+    if (name === "memory_capture") {
+      const direct = await runDirectWrite(args, spawnFn);
+      if (direct !== null) {
+        return direct;
+      }
+      throw startErr;
+    }
+    // memory_recall daemon-down on start-rejection → direct store-backed
+    // degraded recall FIRST (store is ALWAYS readable); bank is LAST resort.
+    if (name === "memory_recall") {
+      const direct = await runDirectRecall(args, spawnFn);
+      if (direct !== null) {
+        return direct;
+      }
+      // Last resort: bank fallback (only if direct store open itself failed).
+      if (process.env.IAI_MCP_BANK_FALLBACK !== "0") {
+        const fallback = await runBankFallback(
+          String(args.cue ?? ""),
+          BANK_FALLBACK_LIMIT,
+          spawnFn,
+        );
+        if (fallback !== null) {
+          return fallback;
+        }
+      }
+    }
+    throw startErr;
+  }
+  // start() succeeded — call invokeTool OUTSIDE the catch so any warm
+  // invokeTool error propagates normally and is never misrouted.
+  return invokeTool(bridge, name, args, spawnFn);
+}
+
+// Spawn the iai-mcp CLI's bank-recall subcommand and parse its
+// stdout JSON. Returns null on any subprocess / parse error so
+// the caller can fall through to its original error path.
+// spawnFn is injectable for tests (mirrors lifecycle.ts patterns).
+export async function runBankFallback(
+  query: string,
+  limit: number,
+  spawnFn: typeof spawn = spawn,
+): Promise<Record<string, unknown> | null> {
+  const cli = process.env.IAI_MCP_CLI ?? "iai-mcp";
+  const args = [
+    "bank-recall",
+    "--query", query,
+    "--limit", String(limit),
+    "--json",
+  ];
+  return new Promise((resolve) => {
+    const opts: SpawnOptions = { stdio: ["ignore", "pipe", "pipe"] };
+    const proc = spawnFn(cli, args, opts);
+    let stdout = "";
+    const stdoutStream = proc.stdout;
+    if (stdoutStream) {
+      stdoutStream.setEncoding("utf-8");
+      stdoutStream.on("data", (chunk: string) => { stdout += chunk; });
+    }
+    const t = setTimeout(() => {
+      try { proc.kill(); } catch { /* ignore */ }
+      resolve(null);
+    }, 5_000);
+    proc.on("error", () => {
+      clearTimeout(t);
+      resolve(null);
+    });
+    proc.on("close", (code: number | null) => {
+      clearTimeout(t);
+      if (code !== 0) {
+        resolve(null);
+        return;
+      }
+      try {
+        const parsed = JSON.parse(stdout) as Record<string, unknown>;
+        parsed["_source"] = "bank-fallback";
+        resolve(parsed);
+      } catch {
+        resolve(null);
+      }
+    });
+  });
+}
+
+// spawnFn is injectable for unit-test argv interception (mirrors runBankFallback).
 export async function invokeTool(
   bridge: PythonCoreBridge,
   name: ToolName,
   args: Record<string, unknown>,
+  spawnFn: typeof spawn = spawn,
 ): Promise<unknown> {
   switch (name) {
-    case "memory_recall":
-      return bridge.call("memory_recall", args);
+    case "memory_recall": {
+      // Socket-dead fallback: spawn the CLI's bank-recall subcommand for a
+      // substring scan over the bank/processed + bank/recent artifacts when
+      // the daemon socket is unreachable. Opt-out via IAI_MCP_BANK_FALLBACK=0.
+      try {
+        return await bridge.call("memory_recall", args);
+      } catch (err) {
+        // daemon-down → direct store-backed degraded recall FIRST.
+        // Bank is demoted to LAST resort (only if direct store open fails).
+        const direct = await runDirectRecall(args, spawnFn);
+        if (direct !== null) {
+          return direct;
+        }
+        // Last resort: bank fallback. NOTE: BANK_FALLBACK_LIMIT is a
+        // hit-count cap, NOT a token budget. args.budget_tokens is the
+        // daemon-mode response-token budget; bank fallback uses a small
+        // constant cap.
+        if (process.env.IAI_MCP_BANK_FALLBACK !== "0") {
+          const fallback = await runBankFallback(
+            String(args.cue ?? ""),
+            BANK_FALLBACK_LIMIT,
+            spawnFn,
+          );
+          if (fallback !== null) {
+            return fallback;
+          }
+        }
+        // Both direct-store and bank failed — preserve original socket error.
+        throw err;
+      }
+    }
     case "memory_reinforce":
       return bridge.call("memory_reinforce", args);
     case "memory_contradict":
       return bridge.call("memory_contradict", args);
-    case "memory_capture":
-      return bridge.call("memory_capture", args);
+    case "memory_capture": {
+      // daemon-down fallthrough to the direct-write CLI subcommand.
+      // NEVER fall through to bank for a write (bank is read-only).
+      try {
+        return await bridge.call("memory_capture", args);
+      } catch (err) {
+        if (!isDaemonDownError(err)) {
+          throw err;  // warm error — propagate, never mask
+        }
+        const direct = await runDirectWrite(args, spawnFn);
+        if (direct !== null) {
+          return direct;
+        }
+        throw err;
+      }
+    }
     case "memory_consolidate":
       return bridge.call("memory_consolidate", args);
     case "profile_get_set": {
@@ -598,5 +970,31 @@ export async function invokeTool(
       return bridge.call("topology", args);
     case "camouflaging_status":
       return bridge.call("camouflaging_status", args);
+    case "episodes_recent": {
+      // daemon-down fallthrough to the direct-store CLI subcommand.
+      // NEVER bank for recency (bank cannot see drained store turns).
+      // isDaemonDownError discriminates socket-dead errors from warm RPC
+      // errors so a warm failure (timeout, server error with daemon up)
+      // propagates rather than being silently misrouted.
+      try {
+        return await bridge.call("episodes_recent", args);
+      } catch (err) {
+        if (!isDaemonDownError(err)) {
+          throw err;  // warm error — propagate, never mask
+        }
+        const direct = await runDirectRecency(args, spawnFn);
+        if (direct !== null) {
+          return direct;
+        }
+        throw err;
+      }
+    }
+    default: {
+      const _exhaustive: never = name;
+      throw new Error(
+        `Tool not implemented: ${_exhaustive as string}. ` +
+        `Available tools: ${TOOL_NAMES.join(", ")}`,
+      );
+    }
   }
 }

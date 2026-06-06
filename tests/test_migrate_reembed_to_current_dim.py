@@ -5,7 +5,7 @@ the target dim differs from the current records-table schema dim. Rebuild the
 table in a staging location and atomically swap.
 
 Invariants preserved (constitutional):
-- literal_surface byte-for-byte identical before and after.
+-: literal_surface byte-for-byte identical before and after.
 - All non-embedding fields preserved (tags, tier, language, schema_version,
   s5_trust_score, detail_level, pinned, never_*, stability, difficulty,
   last_reviewed, provenance, profile_modulation_gain, structure_hv).
@@ -109,7 +109,7 @@ def test_reembed_upgrades_dim_and_preserves_all_non_embedding_fields(tmp_path, m
     for rid in seeded_ids:
         post = store.get(rid)
         assert post is not None
-        assert post.literal_surface == pre[rid].literal_surface, "literal_surface byte-identical"
+        assert post.literal_surface == pre[rid].literal_surface, "MEM-01: literal_surface byte-identical"
         assert post.tier == pre[rid].tier
         assert post.tags == pre[rid].tags
         assert post.language == pre[rid].language

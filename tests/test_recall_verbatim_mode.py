@@ -1,6 +1,6 @@
-"""verbatim mode end-to-end tests.
+"""Verbatim mode end-to-end tests.
 
-R5 acceptance per SPEC.md:
+Acceptance:
 - Test seeds 5 verbatim episodic records (one matching the cue) + 10 schema hubs.
 - Verbatim cue: hits[0..2] contains the matching verbatim record.
 - All hits[] are tier='episodic'. No schemas.
@@ -10,11 +10,10 @@ R5 acceptance per SPEC.md:
 - Variance window: across 5 distinct verbatim cues + matching content,
   matching record at position 0..2 in 100% of runs.
 
-Plus Task 2 contract tests (mode kwarg, RecallResponse defaults).
+Plus contract tests for the mode kwarg and RecallResponse defaults.
 
-Constitutional framing — Mottron EPF + Bowler TSH + Murray monotropism:
-when the cue signals exact recall, return ONE hit (the bullseye), not 30.
-Verbatim mode = position-1 strict.
+When the cue signals exact recall, return one hit (the bullseye), not many;
+verbatim mode is position-1 strict.
 """
 from __future__ import annotations
 
@@ -172,7 +171,7 @@ VERBATIM_TEXTS = [
 
 
 def _seed_5_verbatim_plus_10_hubs(tmp_path):
-    """R5 acceptance fixture: 5 distinct verbatim records (each matching one
+    """Acceptance fixture: 5 distinct verbatim records (each matching one
     of VERBATIM_CUES at cos≈0.85) + 10 schema hubs (low cos, high degree).
 
     Returns:
@@ -182,7 +181,7 @@ def _seed_5_verbatim_plus_10_hubs(tmp_path):
     from iai_mcp.retrieve import build_runtime_graph
     from iai_mcp.store import MemoryStore
 
-    store = MemoryStore(path=tmp_path / "lancedb")
+    store = MemoryStore(path=tmp_path / "hippo")
     embedder = _ControlledEmbedder()
 
     # Pin each cue to a distinct base vector.
@@ -228,7 +227,7 @@ def _seed_5_verbatim_plus_10_hubs(tmp_path):
 
 
 # ============================================================================
-# Task 2 contract tests — RecallResponse defaults + signatures
+# Contract tests — RecallResponse defaults + signatures
 # ============================================================================
 
 
@@ -243,17 +242,17 @@ def test_recall_response_back_compat_defaults():
         activation_trace=[],
         budget_used=0,
     )
-    assert r.cue_mode == "concept", "cue_mode default must be 'concept' per D-03"
+    assert r.cue_mode == "concept", "cue_mode default must be 'concept'"
     assert r.patterns_observed == [], (
-        "patterns_observed default must be [] per back-compat"
+        "patterns_observed default must be [] (back-compat)"
     )
 
 
 def test_recall_for_response_signature_has_mode_kwarg_default_concept():
     """recall_for_response must accept mode kwarg, default 'concept'.
 
-    entry-point split: the production answer-packing entry
-    point inherits the pre-Phase-8 mode contract (default 'concept') so
+      entry-point split: the production answer-packing entry
+    point inherits the pre- mode contract (default 'concept') so
     cue-classifier-driven dispatch keeps working unchanged.
     """
     import inspect
@@ -268,20 +267,20 @@ def test_recall_for_response_signature_has_mode_kwarg_default_concept():
 
 
 def test_retrieve_recall_signature_has_mode_kwarg_default_verbatim():
-    """retrieve.recall must accept mode kwarg, default 'verbatim' per D-14."""
+    """retrieve.recall must accept mode kwarg, default 'verbatim' per."""
     import inspect
     from iai_mcp.retrieve import recall
 
     sig = inspect.signature(recall)
     assert "mode" in sig.parameters, "retrieve.recall must accept mode kwarg"
     assert sig.parameters["mode"].default == "verbatim", (
-        f"retrieve.recall mode default must be 'verbatim' per D-14, "
+        f"retrieve.recall mode default must be 'verbatim', "
         f"got {sig.parameters['mode'].default!r}"
     )
 
 
 # ============================================================================
-# Task 4 R5 acceptance tests — end-to-end verbatim mode
+# Acceptance tests — end-to-end verbatim mode
 # ============================================================================
 
 
@@ -336,10 +335,10 @@ def test_verbatim_mode_hits_are_episodic_only(tmp_path):
 
 
 def test_verbatim_mode_five_cue_variance_window_position_1_to_3(tmp_path):
-    """R5 variance gate: across 5 distinct verbatim cues + matching content,
+    """Variance gate: across 5 distinct verbatim cues + matching content,
     the matching record lands at position 0..2 in 100% of runs.
 
-    Position 0..2 = top-3 variance window (Mottron EPF + Bowler TSH).
+    Position 0..2 = top-3 variance window (EPF + TSH).
     Acceptance: ALL 5 cues must satisfy.
     """
     from iai_mcp.pipeline import recall_for_response
@@ -373,7 +372,7 @@ def test_verbatim_mode_five_cue_variance_window_position_1_to_3(tmp_path):
 
 
 def test_verbatim_mode_position_1_strict_on_diagnostic_cue(tmp_path):
-    """R5 strict gate (single cue): the matching verbatim is at hits[0]."""
+    """Strict gate (single cue): the matching verbatim is at hits[0]."""
     from iai_mcp.pipeline import recall_for_response
 
     (store, embedder, graph, assignment, rich_club,
@@ -447,20 +446,20 @@ def test_concept_mode_default_preserves_phase_5_baseline(tmp_path):
         session_id="r5_default",
     )
     assert resp_default.cue_mode == "concept", (
-        "recall_for_response default mode must be 'concept' per baseline"
+        "recall_for_response default mode must be 'concept'"
     )
 
 
 # ============================================================================
-# Task 4 — R5 dispatch end-to-end tests (5-cue variance window via dispatch)
+# Dispatch end-to-end tests (5-cue variance window via dispatch)
 # ============================================================================
 
 
 def test_dispatch_verbatim_5_cue_variance_window(tmp_path, monkeypatch):
-    """R5 dispatch end-to-end: for each of 5 distinct verbatim-style cues that
+    """Dispatch end-to-end: for each of 5 distinct verbatim-style cues that
     match a unique verbatim record, dispatch (verbatim cue -> classifier ->
     recall_for_response(mode='verbatim')) returns the matching record at position
-    0..2. ALL 5 cues must satisfy. Variance gate per SPEC R5 acceptance.
+    0..2. ALL 5 cues must satisfy the variance gate.
     """
     from iai_mcp import core
     from iai_mcp import embed as _embed_mod
@@ -497,7 +496,7 @@ def test_dispatch_verbatim_5_cue_variance_window(tmp_path, monkeypatch):
 
 
 def test_dispatch_verbatim_position_1_strict_diagnostic_cue(tmp_path, monkeypatch):
-    """R5 strict gate via dispatch: matching verbatim is at hits[0]."""
+    """Strict gate via dispatch: matching verbatim is at hits[0]."""
     from iai_mcp import core
     from iai_mcp import embed as _embed_mod
 

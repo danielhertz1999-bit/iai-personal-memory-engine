@@ -1,6 +1,6 @@
-"""Tests for active-inference retrieval gate (Task 2, ).
+"""Tests for the active-inference retrieval gate.
 
-D-26 contract: skip full pipeline_recall when expected free-energy reduction
+Contract: skip full pipeline_recall when expected free-energy reduction
 is less than 0.2 bits. Trivial cues (greetings, "thanks", very short strings)
 short-circuit to L0-only.
 """

@@ -1,7 +1,7 @@
-"""RED-state test scaffold. Tasks 2-5 turn these GREEN.
+"""Session-start payload assembly tests.
 
-Covers / / D5-02: wake_depth-branched session-start payload
-shape + token budget enforcement at each branch.
+Covers wake_depth-branched session-start payload shape + token budget
+enforcement at each branch.
 """
 from __future__ import annotations
 
@@ -74,7 +74,7 @@ def _seed_a_few_pinned(store: MemoryStore, n: int = 3) -> None:
 
 # ---------------------------------------------------------------- minimal mode
 def test_minimal_payload_le_30_tokens(tmp_path):
-    """: minimal wake_depth yields ≤30 raw tok across new pointer fields."""
+    """Minimal wake_depth yields ≤30 raw tok across new pointer fields."""
     store = MemoryStore(path=tmp_path)
     _seed_l0_identity(store)
     from iai_mcp import profile
@@ -153,8 +153,15 @@ def test_minimal_payload_wake_depth_echoed(tmp_path):
 
 
 # ---------------------------------------------------------------- standard mode
-def test_standard_payload_preserves_phase1_behavior(tmp_path):
-    """D5-10: wake_depth=standard reproduces Phase-1 1388-tok payload shape."""
+def test_standard_payload_preserves_phase1_behavior(tmp_path, monkeypatch):
+    """wake_depth=standard reproduces the standard 1388-tok payload shape."""
+    import json
+
+    # Seed a generic identity config; the seed reader resolves IAI_MCP_STORE,
+    # so point it at the same dir the store is constructed at.
+    monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
+    (tmp_path / "config.json").write_text(json.dumps(
+        {"identity": {"name": "alice", "languages": "en", "role": "developer"}}))
     store = MemoryStore(path=tmp_path)
     _seed_l0_identity(store)
     _seed_a_few_pinned(store, 3)
@@ -166,7 +173,8 @@ def test_standard_payload_preserves_phase1_behavior(tmp_path):
         store, _empty_assignment(), [], session_id="s1",
         profile_state=state,
     )
-    assert "IAI-MCP" in payload.l0, f"standard L0 should contain IAI-MCP: {payload.l0!r}"
+    # A configured identity renders into the standard-mode L0.
+    assert "alice" in payload.l0, f"standard L0 should contain the identity: {payload.l0!r}"
     assert payload.wake_depth == "standard"
 
 

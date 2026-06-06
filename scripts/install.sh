@@ -2,15 +2,15 @@
 # scripts/install.sh — first-time setup for collaborators.
 #
 # Usage (from repo root or anywhere inside the clone):
-#   bash scripts/install.sh
+# bash scripts/install.sh
 #
 # Does:
-#   1. creates .venv if missing
-#   2. installs iai-mcp editable into the venv
-#   3. builds the TS MCP wrapper
-#   4. symlinks ~/.local/bin/iai-mcp -> .venv/bin/iai-mcp so the CLI is
-#      callable from anywhere without activating the venv
-#   5. optionally installs the sleep daemon (launchd on macOS, systemd on Linux)
+# 1. creates.venv if missing
+# 2. installs iai-mcp editable into the venv
+# 3. builds the TS MCP wrapper
+# 4. symlinks ~/.local/bin/iai-mcp ->.venv/bin/iai-mcp so the CLI is
+# callable from anywhere without activating the venv
+# 5. optionally installs the sleep daemon (launchd on macOS, systemd on Linux)
 #
 # Idempotent. Safe to re-run.
 
@@ -30,7 +30,7 @@ die()  { printf '\n\033[0;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 #
 # IAI_TEST_SKIP_BUILD=1 short-circuits the whole bootstrap so the LaunchAgent
 # section (6) can be exercised in isolation by tests/test_install_uninstall.py
-# (Plan 07.1-03 Task 3) without spending ~30s on venv + npm.
+# (Task 3) without spending ~30s on venv + npm.
 # ---------------------------------------------------------------------------
 if [[ "${IAI_TEST_SKIP_BUILD:-0}" == "1" ]]; then
     step "build skip (IAI_TEST_SKIP_BUILD=1)"
@@ -129,15 +129,15 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 6. LaunchAgent registration (Phase 7.1 — socket-activated singleton)
+# 6. LaunchAgent registration (— socket-activated singleton)
 #
-# Section 6 (Phase 7.1) — socket-activated LaunchAgent. REPLACES the eager
-# RunAtLoad=true plist that Plan 04-05 `iai-mcp daemon install` writes.
+# Section 6 — socket-activated LaunchAgent. REPLACES the eager
+# RunAtLoad=true plist that `iai-mcp daemon install` writes.
 # The two flows compete for ~/Library/LaunchAgents/com.iai-mcp.daemon.plist;
-# whichever ran most recently wins. Phase 7.1 install.sh always wins because
+# whichever ran most recently wins. install.sh always wins because
 # it overwrites + reloads on every invocation (idempotent by design).
 # ---------------------------------------------------------------------------
-step "LaunchAgent registration (Phase 7.1)"
+step "LaunchAgent registration"
 if [[ "$(uname)" != "Darwin" ]]; then
     warn "non-Darwin OS — skipping LaunchAgent registration"
 elif [[ "${DRY_RUN:-0}" == "1" ]]; then

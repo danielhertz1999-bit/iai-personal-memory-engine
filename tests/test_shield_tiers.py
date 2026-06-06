@@ -1,4 +1,4 @@
-"""Tests for shield tier integration with guarded_insert .
+"""Tests for shield tier integration with guarded_insert.
 
 Tier determination logic in `guarded_insert`:
 - HARD_BLOCK: record.pinned OR record.s5_trust_score >= 0.9
@@ -6,7 +6,7 @@ Tier determination logic in `guarded_insert`:
 - LOG_ONLY: everything else (content records)
 
 On detection:
-- HARD_BLOCK -> return (False, "shield: ...") + write shield_rejection event
+- HARD_BLOCK -> return (False, "shield:...") + write shield_rejection event
 - FLAG_FOR_REVIEW -> proceed + write shield_flag event
 - LOG_ONLY -> proceed + write shield_log event (info severity)
 
@@ -83,7 +83,7 @@ def _build_record(
 
 
 def test_guarded_insert_hard_block_rejects_injection_on_pinned(tmp_path):
-    """Pinned record with injection text -> (False, 'shield: ...')."""
+    """Pinned record with injection text -> (False, 'shield:...')."""
     from iai_mcp.store import MemoryStore
     from iai_mcp.write import guarded_insert
 

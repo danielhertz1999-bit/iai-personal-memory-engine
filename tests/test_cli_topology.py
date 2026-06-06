@@ -1,4 +1,4 @@
-""" RED: iai-mcp topology CLI.
+"""RED: iai-mcp topology CLI.
 
 The `topology` subcommand prints one key:value line per metric:
     C: <float>

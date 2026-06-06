@@ -1,4 +1,4 @@
-"""Tests for schema_instance_of edge semantics.
+"""Tests for schema_instance_of edge semantics (Task 3).
 
 schema_instance_of edges:
 - Point from an evidence episode record to a schema hub record.

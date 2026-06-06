@@ -1,4 +1,4 @@
-"""Tests for the Phase-1 benchmark harnesses (, /02/04).
+"""Tests for the benchmark harnesses (02/04).
 
 All tests inject `count_tokens_fn` where applicable so no live Anthropic API
 calls happen in CI. The actual Anthropic integration is exercised only when

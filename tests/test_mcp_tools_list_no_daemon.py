@@ -1,5 +1,4 @@
-"""Regression test for the `mcp-tools-list-empty-cache` debug session
-(2026-05-02).
+"""Regression test for the empty tools/list cache when the daemon is down.
 
 Symptom (pre-fix): when the iai-mcp daemon socket was slow to bind (or
 not bound at all), the wrapper's top-level `await bridge.start()` blocked
@@ -211,9 +210,10 @@ def test_tools_list_returns_without_daemon(
             "events_query",
             "topology",
             "camouflaging_status",
+            "episodes_recent",
         }
         assert names == expected, (
-            f"tools/list returned {len(names)} tools, expected 12: "
+            f"tools/list returned {len(names)} tools, expected 13: "
             f"missing={expected - names}, extra={names - expected}"
         )
         # Total handshake + tools/list in well under the MCP client's

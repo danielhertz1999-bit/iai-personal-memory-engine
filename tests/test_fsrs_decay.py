@@ -4,8 +4,7 @@ Behaviour:
 - hebbian edges with last updated > 90d ago and weight < ε after decay are pruned.
 - hebbian edges above ε are updated with the decayed weight.
 - NON-hebbian edges (contradicts, invariant_anchor, consolidated_from, etc.)
-  are NEVER pruned by the sweep. This is load-bearing for S5 identity protection
- : invariant anchors must survive decay.
+  are NEVER pruned by the sweep. This is load-bearing for S5 identity protection: invariant anchors must survive decay.
 - never_decay records are unaffected on the records side (__post_init__
   already enforces this on detail_level>=3; decay loop here targets edges only).
 - DECAY_EPSILON defaults to 0.01.

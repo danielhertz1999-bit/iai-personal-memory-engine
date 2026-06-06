@@ -77,7 +77,7 @@ def _make_record(store: MemoryStore, text: str, seed: int) -> MemoryRecord:
 
 @pytest.fixture
 def seeded_store(tmp_path: Path) -> MemoryStore:
-    store = MemoryStore(path=tmp_path / "lancedb")
+    store = MemoryStore(path=tmp_path / "hippo")
     store.root = tmp_path
     # Seed enough records to produce a non-trivial graph so betweenness > 0
     # on at least some nodes.
@@ -96,14 +96,16 @@ def seeded_store(tmp_path: Path) -> MemoryStore:
 
 
 def test_C1_every_node_has_centrality_attr(seeded_store):
-    """After build_runtime_graph, every node carries a 'centrality' float attr."""
+    """After build_runtime_graph, every node carries a centrality float sidecar."""
     graph, _a, _rc = retrieve.build_runtime_graph(seeded_store)
-    assert len(graph._nx.nodes) > 0
-    for nid in graph._nx.nodes:
-        node = graph._nx.nodes[nid]
-        assert "centrality" in node, f"node {nid} missing centrality attr"
-        assert isinstance(node["centrality"], float), (
-            f"centrality on {nid} must be float, got {type(node['centrality'])}"
+    listed = list(graph.iter_nodes())
+    assert len(listed) > 0
+    for nid in listed:
+        payload = graph.get_payload(nid)
+        assert "centrality" in payload, f"node {nid} missing centrality sidecar"
+        assert isinstance(payload["centrality"], float), (
+            f"centrality on {nid} must be float, "
+            f"got {type(payload['centrality'])}"
         )
 
 
@@ -114,10 +116,9 @@ def test_C2_cache_round_trips_centrality(seeded_store):
     """save + try_load preserves per-node centrality exactly."""
     graph, assignment, rich_club = retrieve.build_runtime_graph(seeded_store)
 
-    # Snapshot centrality from the live graph.
+    # Snapshot centrality from the live graph via the sidecar API.
     live_cent = {
-        nid: float(graph._nx.nodes[nid]["centrality"])
-        for nid in graph._nx.nodes
+        str(nid): graph.get_centrality(nid) for nid in graph.iter_nodes()
     }
 
     # Force a fresh save by invalidating then re-running build.
@@ -128,7 +129,7 @@ def test_C2_cache_round_trips_centrality(seeded_store):
     # with centrality baked in.
     cached = runtime_graph_cache.try_load(seeded_store)
     assert cached is not None, "cache should be populated after build"
-    # try_load returns 4-tuple (max_degree appended).
+    #: try_load returns 4-tuple (max_degree appended).
     _assignment, _rich_club, node_payload, _max_degree = cached
     assert node_payload is not None and len(node_payload) > 0
 
@@ -166,10 +167,12 @@ def test_C3_missing_centrality_fallback_inline(seeded_store):
             return v.tolist()
 
     graph, assignment, rich_club = retrieve.build_runtime_graph(seeded_store)
-    # Strip centrality from all nodes — simulates a pre-05-13 graph shape
+    # Strip centrality from all sidecars — simulates a pre-05-13 graph shape
     # or a race in _graph_sync_hook.
-    for nid in list(graph._nx.nodes):
-        graph._nx.nodes[nid].pop("centrality", None)
+    for nid in list(graph.iter_nodes()):
+        sidecar = graph._node_payload.get(str(nid))
+        if sidecar and "centrality" in sidecar:
+            del sidecar["centrality"]
 
     resp = pipeline.recall_for_response(
         store=seeded_store, graph=graph, assignment=assignment,
@@ -185,19 +188,22 @@ def test_C3_missing_centrality_fallback_inline(seeded_store):
 
 
 def test_C4_cache_version_bumped_to_05_13_v1():
-    """CACHE_VERSION moved forward over the cache-shape evolution (05-12-v1
-    -> 05-13-v1 -> 06-02-v1 -> 07-09-v3, with W3 / wrapping
-    the file in AES-256-GCM). Legacy files invalidate cleanly on version
-    mismatch (and the legacy plaintext-shape "06-02-v1" lazy-migrates to
-    the encrypted shape on first warm-start under 07.9).
+    """CACHE_VERSION moves forward over cache-shape evolution:
+    05-12-v1 -> 05-13-v1 -> 06-02-v1 -> 07-09-v3 -> 62-04-v4 -> 62-02-v5.
+
+    Latest bump (62-02-v5): RecallIndex overlay layer + generation-epoch
+    fuse added to the on-disk format; key shape changed requiring a version
+    bump. Legacy plaintext "06-02-v1" caches still lazy-migrate to encrypted
+    format on first warm-start under the current version. All pre-62-02-v5
+    caches are rejected cleanly.
     """
-    assert runtime_graph_cache.CACHE_VERSION == "07-09-v3"
+    assert runtime_graph_cache.CACHE_VERSION == "62-02-v5"
 
 
 def test_C4_legacy_cache_invalidated(seeded_store, tmp_path: Path):
     """A cache file written with CACHE_VERSION=05-12-v1 must NOT load.
 
-    W3: the on-disk format is now AES-256-GCM-wrapped. Decrypt
+     W3: the on-disk format is now AES-256-GCM-wrapped. Decrypt
     the file, mutate cache_version, re-encrypt, then assert try_load
     rejects the stale version cleanly.
     """

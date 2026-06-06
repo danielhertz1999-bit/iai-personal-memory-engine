@@ -1,22 +1,22 @@
-"""compact <iai:HHHHHHHHHHHHHHHH> handle tests.
+"""Task 1 — compact <iai:HHHHHHHHHHHHHHHH> handle tests.
 
 Replaces the three legacy pointer fields at wake_depth=minimal with one
 blake2s-derived 16-hex opaque handle. The payload dataclass still
 carries the legacy fields for back-compat callers, but under
 ``minimal`` they are left empty so only the compact handle contributes
-to ``total_cached_tokens`` (<=16 raw, below the legacy external reference of 17).
+to ``total_cached_tokens`` (<=16 raw, below claude-mem's 17).
 
 Covered contracts:
 
-    Test 1  dataclass field present at minimal with non-empty value
-    Test 2  encode_compact_handle is deterministic (same inputs -> same digest)
-    Test 3  decode_compact_handle returns the original parts (LRU hit)
-    Test 4  decode of an unknown (cold-cache) handle returns None
-    Test 5  decode of a malformed handle returns None
-    Test 6  standard / deep branches ALSO populate compact_handle (back-compat opt-in)
-    Test 7  minimal payload warm token count <= 16 raw via bench.tokens._approx_tokens
-    Test 8  constitutional: no profile-knob names may leak via the compact handle surface
-    Test 9  minimal branch leaves the three legacy pointer fields empty
+    Test 1 dataclass field present at minimal with non-empty value
+    Test 2 encode_compact_handle is deterministic (same inputs -> same digest)
+    Test 3 decode_compact_handle returns the original parts (LRU hit)
+    Test 4 decode of an unknown (cold-cache) handle returns None
+    Test 5 decode of a malformed handle returns None
+    Test 6 standard / deep branches ALSO populate compact_handle (back-compat opt-in)
+    Test 7 minimal payload warm token count <= 16 raw via bench.tokens._approx_tokens
+    Test 8 constitutional: no profile-knob names may leak via the compact handle surface
+    Test 9 minimal branch leaves the three legacy pointer fields empty
     Test 10 _resolve_compact_handle_to_pointers rebuilds the legacy triple verbatim
 """
 from __future__ import annotations
@@ -70,7 +70,7 @@ def _fresh_store(tmp_path: Path):
     """Hermetic MemoryStore anchored in a fresh tmp directory."""
     from iai_mcp.store import MemoryStore
 
-    return MemoryStore(path=tmp_path / "lancedb")
+    return MemoryStore(path=tmp_path / "hippo")
 
 
 def _assemble_with_wake_depth(store, wake_depth):
@@ -84,7 +84,7 @@ def _assemble_with_wake_depth(store, wake_depth):
         store,
         assignment,
         rc,
-        session_id=uuid4(),
+        session_id=str(uuid4()),
         profile_state={"wake_depth": wake_depth},
     )
 
@@ -186,8 +186,8 @@ def test_minimal_payload_cached_tokens_within_budget(_fresh_store):
 
 
 def test_compact_handle_is_hex_only_no_knob_leak():
-    """Constitutional: profile-knob names must NOT surface through the
-    session-start prefix ( grep guard). The compact handle is
+    """Profile-knob names must NOT surface through the
+    session-start prefix. The compact handle is
     ``<iai:{16 hex chars}>`` by construction so any knob name would have to
     smuggle itself through the hash digest, which is cryptographically
     impossible to engineer for arbitrary ASCII substrings."""

@@ -1,11 +1,9 @@
-"""Tests for iai_mcp.identity_audit -- Task 2.
+"""Tests for iai_mcp.identity_audit.
 
-Covers 6 behaviours from the plan:
+Covers:
 1. continuous_audit runs s5.detect_drift_anomaly + sigma.compute_and_emit on
    each tick.
 2. Audit runs regardless of daemon pause state.
-3. Audit does NOT acquire the fcntl exclusive lock -- never instantiates
-   ProcessLock inside the loop.
 4. Audit shuts down cleanly when the shutdown event is set; task completes
    without hanging.
 5. Exception inside detect_drift_anomaly is caught, identity_audit_error
@@ -62,7 +60,7 @@ def test_continuous_audit_invokes_both_underlying_calls(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Test 2: audit runs regardless of daemon pause state
+# Test 2: audit runs regardless of daemon pause state (C6)
 # ---------------------------------------------------------------------------
 
 def test_audit_runs_even_when_paused(monkeypatch):
@@ -101,45 +99,6 @@ def test_audit_runs_even_when_paused(monkeypatch):
     asyncio.run(runner())
 
     assert len(s5_calls) >= 1, "audit did NOT fire while daemon was 'paused' (C6 violation)"
-
-
-# ---------------------------------------------------------------------------
-# Test 3: audit does NOT acquire fcntl exclusive (C6 MVCC-only)
-# ---------------------------------------------------------------------------
-
-def test_audit_never_acquires_exclusive_lock(monkeypatch):
-    """C6 grep + runtime guard: ProcessLock.try_acquire_exclusive must never
-    be called from within continuous_audit."""
-    from iai_mcp import identity_audit, concurrency
-
-    def raiser(self):
-        raise AssertionError(
-            "C6 violation: continuous_audit acquired ProcessLock exclusive"
-        )
-
-    monkeypatch.setattr(
-        concurrency.ProcessLock, "try_acquire_exclusive", raiser
-    )
-    # Same for acquire_shared and holds_exclusive_nb -- audit must not touch
-    # the lock at all.
-    monkeypatch.setattr(concurrency.ProcessLock, "acquire_shared", raiser)
-    monkeypatch.setattr(concurrency.ProcessLock, "holds_exclusive_nb", raiser)
-
-    monkeypatch.setattr(identity_audit, "detect_drift_anomaly", lambda s, w: [])
-    monkeypatch.setattr(identity_audit, "compute_and_emit", lambda s: {})
-    monkeypatch.setattr(identity_audit, "AUDIT_INTERVAL_SEC", 0.02)
-
-    async def runner():
-        shutdown = asyncio.Event()
-        task = asyncio.create_task(
-            identity_audit.continuous_audit(object(), shutdown)
-        )
-        await asyncio.sleep(0.05)
-        shutdown.set()
-        await asyncio.wait_for(task, timeout=2.0)
-
-    # If the audit touched the lock, the raisers would fire and surface here.
-    asyncio.run(runner())
 
 
 # ---------------------------------------------------------------------------

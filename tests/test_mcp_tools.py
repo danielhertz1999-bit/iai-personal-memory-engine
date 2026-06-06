@@ -1,19 +1,14 @@
 """End-to-end integration tests for the TypeScript MCP wrapper.
 
 Spawns the built wrapper as a subprocess, sends MCP-shaped JSON-RPC requests,
-and verifies the wrapper exposes the 5 Phase-1 tools and round-trips the
-autistic-kernel profile defaults (D-12, D-11).
+and verifies the wrapper exposes the 5 tools and round-trips the
+autistic-kernel profile defaults.
 
-deviation Rule 3 update: pre-7.1 the spawned wrapper would
-self-spawn the Python daemon on first connect (the spawn-fallback chain
-in bridge.ts that 07.1-04 deleted). Tests in this file relied on either
-that fallback OR the user's live production daemon. wrappers
-are pure connectors — if no daemon is up, they throw
-DaemonUnreachableError and exit non-zero. Tests now pre-start an
-isolated tmp daemon (manual `python -m iai_mcp.daemon` per D7.1-09
-backward compat) via the `daemon_sock` module fixture and pass the
-socket path to the wrapper through IAI_DAEMON_SOCKET_PATH so the test
-never touches the user's real ~/.iai-mcp.
+Wrappers are pure connectors — if no daemon is up, they throw
+DaemonUnreachableError and exit non-zero. Tests pre-start an
+isolated tmp daemon (`python -m iai_mcp.daemon`) via the `daemon_sock`
+module fixture and pass the socket path to the wrapper through
+IAI_DAEMON_SOCKET_PATH so the test stays isolated from any on-disk store.
 """
 from __future__ import annotations
 
@@ -52,14 +47,13 @@ def built_wrapper() -> Path:
 def daemon_sock() -> "Path":
     """Pre-start an isolated tmp daemon for the wrapper to connect to.
 
-     removed the wrapper-side spawn-fallback;
-    wrappers now ONLY connect to an existing daemon socket. In
-    production launchd handles daemon spawn via socket activation; in
-    tests we use the manual-run code path (no LISTEN_FDS env)
-    per D7.1-09 backward compat.
+    The wrapper has no spawn-fallback; wrappers ONLY connect to an
+    existing daemon socket. In production launchd handles daemon spawn
+    via socket activation; in tests we use the manual-run code path
+    (no LISTEN_FDS env).
 
     Module-scoped to amortize the ~3-10s daemon cold-start (bge-small
-    embedder load + LanceDB open) across all 3 tests in this file.
+    embedder load + store open) across all 3 tests in this file.
     """
     sock_dir = Path(f"/tmp/iai-mcp-tools-{os.getpid()}")
     sock_dir.mkdir(parents=True, exist_ok=True)
@@ -146,7 +140,7 @@ def _mcp_call(proc: subprocess.Popen, method: str, params: dict, rpc_id: int) ->
 def _spawn_wrapper(built_wrapper: Path, daemon_sock: Path | None = None) -> subprocess.Popen:
     env = os.environ.copy()
     env["IAI_MCP_PYTHON"] = sys.executable
-    # route the wrapper to the test daemon socket (HIGH-4
+    #: route the wrapper to the test daemon socket (HIGH-4
     # lock at bridge.ts module top reads IAI_DAEMON_SOCKET_PATH from
     # process.env on each spawn).
     if daemon_sock is not None:
@@ -184,7 +178,7 @@ def _initialize(proc: subprocess.Popen, rpc_id: int = 1) -> None:
 
 
 def test_wrapper_lists_twelve_tools(built_wrapper: Path, daemon_sock: Path) -> None:
-    """Hot surface: 5 Phase-1 + 3 + 3 + 1 = 12 tools."""
+    """Hot surface: 5 + 3 + 3 + 1 + 1 = 13 tools."""
     proc = _spawn_wrapper(built_wrapper, daemon_sock)
     try:
         _initialize(proc, 1)
@@ -202,12 +196,14 @@ def test_wrapper_lists_twelve_tools(built_wrapper: Path, daemon_sock: Path) -> N
             "curiosity_pending",
             "schema_list",
             "events_query",
-            # additions
+            # structural / topology additions
             "memory_recall_structural",
             "topology",
             "camouflaging_status",
-            # addition (ambient WRITE-side capture)
+            # ambient WRITE-side capture
             "memory_capture",
+            # episodes_recent addition
+            "episodes_recent",
         }
     finally:
         proc.terminate()
@@ -234,7 +230,7 @@ def test_wrapper_profile_get_returns_live_knobs(built_wrapper: Path, daemon_sock
         assert payload["live"]["masking_off"] is True
         assert payload["live"]["task_support"] == "cued_recognition"
         assert payload["live"]["scene_construction_scaffold"] is True
-        # : 10 autistic-kernel + wake_depth = 11 live (AUTIST-02/08/11/12 removed).
+        #: 10 autistic-kernel + wake_depth = 11 live (AUTIST-02/08/11/12 removed).
         assert len(payload["live"]) == 11
         assert len(payload["deferred"]) == 0
     finally:

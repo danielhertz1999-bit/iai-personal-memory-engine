@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  socket-activated LaunchAgent template (R1, D7.1-01).
+  Socket-activated LaunchAgent template.
   Rendered by scripts/install.sh: substitutes {PYTHON_PATH} + {HOME},
   writes to ~/Library/LaunchAgents/com.iai-mcp.daemon.plist, then
   `launchctl load -w` registers it.
@@ -11,7 +11,7 @@
 
   RunAtLoad=false + Sockets.Listener = TRUE socket activation: launchd
   pre-binds the unix socket and spawns iai_mcp.daemon ONLY on first
-  connection. KeepAlive.SuccessfulExit=false preserves Phase 7's idle
+  connection. KeepAlive.SuccessfulExit=false preserves the idle
   shutdown semantics (no respawn after clean idle exit).
 -->
 <plist version="1.0">

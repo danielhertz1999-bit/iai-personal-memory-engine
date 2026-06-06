@@ -1,4 +1,4 @@
-"""Cleaned-dataset adapter for LongMemEval-S — D-02.
+"""Cleaned-dataset adapter for LongMemEval-S.
 
 Mempalace's reference benchmark uses ``xiaowu0162/longmemeval-cleaned``
 (commit-pinned via ``huggingface_hub.repo_info()``). This adapter mirrors
@@ -8,15 +8,14 @@ purely via the ``--dataset {cleaned, raw}`` CLI flag.
 
 ## boundary
 
-This adapter is NEW (Phase 9 Task 1). The raw adapter at
-``bench/adapters/longmemeval.py`` is byte-identical to its v2 state — Phase
-9 does NOT modify the v1/v2 baseline path. ``--dataset raw`` continues to
+This adapter is NEW (Task 1). The raw adapter at
+``bench/adapters/longmemeval.py`` is byte-identical to its v2 state — does NOT modify the v1/v2 baseline path. ``--dataset raw`` continues to
 load the raw revision ``2ec2a557f339...``; ``--dataset cleaned`` (the new
 v3 default) routes to this module.
 
 ## Pinning discipline
 
-Phase 9 LOCKED: pin via ``huggingface_hub.repo_info(...)``, NEVER
+  LOCKED: pin via ``huggingface_hub.repo_info(...)``, NEVER
 hardcode a magic string. The cleaned dataset's HEAD SHA is auto-discovered
 on first instantiation and stored on ``self.revision`` so v3 output JSON
 records exactly which dataset variant was measured. On reproducer runs,
@@ -29,12 +28,12 @@ removed bad evidence; field names preserved). Each row in
 ``longmemeval_s_cleaned.json`` is:
 
     {
-      "question_id":          str,
-      "question_type":        str,
-      "question":             str,
+      "question_id": str,
+      "question_type": str,
+      "question": str,
       "haystack_session_ids": list[str],
-      "haystack_sessions":    list[list[{"role","content"}]],
-      "answer_session_ids":   list[str],
+      "haystack_sessions": list[list[{"role","content"}]],
+      "answer_session_ids": list[str],
     }
 
 The adapter emits one ``LMESession`` per haystack session with the eval

@@ -1,9 +1,9 @@
-"""Tests for D-GUARD (BudgetLedger + RateLimitLedger + should_call_llm).
+"""Tests for the LLM guard (BudgetLedger + RateLimitLedger + should_call_llm).
 
-Covers:
+Exercises:
 - BudgetLedger daily/monthly caps + rollover
 - RateLimitLedger cooldown window
-- should_call_llm 7-step ladder ordering per CONTEXT.md D-GUARD
+- should_call_llm 7-step ladder ordering
 - Persistence across store reopen
 """
 from __future__ import annotations
@@ -84,7 +84,7 @@ def test_budget_ledger_monthly_used(tmp_path):
 
 
 def test_budget_ledger_persists_across_reopen(tmp_path):
-    """Ledger-backed by LanceDB -> survives store close/reopen (D-GUARD repudiation)."""
+    """Ledger-backed by the store -> survives store close/reopen (repudiation-resistance check)."""
     from iai_mcp.guard import BudgetLedger
     from iai_mcp.store import MemoryStore
 
@@ -161,7 +161,7 @@ def test_should_call_llm_no_api_key(tmp_path):
 
 
 def test_should_call_llm_daily_cap_hit(tmp_path):
-    """Step 3: daily cap exhausted -> (False, ... daily cap ...)."""
+    """Step 3: daily cap exhausted -> (False,... daily cap...)."""
     from iai_mcp.guard import BudgetLedger, RateLimitLedger, should_call_llm
     from iai_mcp.store import MemoryStore
 

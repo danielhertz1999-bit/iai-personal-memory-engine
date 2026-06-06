@@ -1,9 +1,9 @@
-"""Wave 2 R1 acceptance: every dispatch method reachable over socket.
+"""Acceptance: every dispatch method reachable over socket.
 
-Boots SocketServer (NEW per D7-07) against a tmp_path-isolated
+Boots SocketServer against a tmp_path-isolated
 ~/.iai-mcp/.daemon.sock equivalent and asserts that JSON-RPC 2.0 envelopes
 sent over the unix socket return the same response shape as the stdio path
-(R1, R6 backward-compat by construction).
+(backward-compat by construction).
 
 Reuses the short_socket_paths fixture pattern from test_daemon_dispatcher.py
 (AF_UNIX 104-byte cap mitigation via /tmp/iai-disp-<pid>-<n>/d.sock).
@@ -26,33 +26,33 @@ import pytest
 
 @pytest.fixture
 def short_socket_paths(tmp_path, monkeypatch):
-    """Redirect LOCK_PATH + SOCKET_PATH + STATE_PATH to tmp_path.
+    """Redirect SOCKET_PATH + STATE_PATH to tmp_path.
 
     AF_UNIX on macOS caps socket paths at ~104 bytes; pytest's tmp_path can
     be too long under xdist. Use a short /tmp/iai-<pid>-<n>/ fallback for
     the socket. The state file lives under tmp_path (regular filesystem).
 
-    Per D7-14: also point IAI_MCP_STORE at a tmp dir so MemoryStore()
-    constructed inside the test gets an isolated lancedb root.
+    Also points IAI_MCP_STORE at a tmp dir so MemoryStore() constructed inside
+    the test gets an isolated store root.
     """
     from iai_mcp import concurrency, daemon_state
 
-    lock_path = tmp_path / ".lock"
     sock_dir = Path(f"/tmp/iai-srvdisp-{os.getpid()}-{id(tmp_path)}")
     sock_dir.mkdir(parents=True, exist_ok=True)
     sock_path = sock_dir / "d.sock"
     state_path = tmp_path / ".daemon-state.json"
 
-    monkeypatch.setattr(concurrency, "LOCK_PATH", lock_path)
     monkeypatch.setattr(concurrency, "SOCKET_PATH", sock_path)
     monkeypatch.setattr(daemon_state, "STATE_PATH", state_path)
-    # Per D7-14 isolate the lancedb store under tmp_path.
-    store_root = tmp_path / "lancedb_root"
+    # Isolate the store under tmp_path.
+    store_root = tmp_path / "store_root"
     store_root.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("IAI_MCP_STORE", str(store_root))
 
     try:
-        yield lock_path, sock_path, state_path
+        # First tuple slot is retained for back-compat with the
+        # `_, sock_path, _` unpacking used across the test bodies.
+        yield None, sock_path, state_path
     finally:
         try:
             if sock_path.exists():
@@ -66,7 +66,7 @@ def short_socket_paths(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# JSON-RPC helpers (reused by sibling Wave 2 test files)
+# JSON-RPC helpers (reused by sibling socket test files)
 # ---------------------------------------------------------------------------
 
 
@@ -78,10 +78,10 @@ async def _send_jsonrpc(
     *,
     timeout: float = 10.0,
 ) -> dict:
-    """Per D7-01: send one JSON-RPC 2.0 envelope, read one response line.
+    """Send one JSON-RPC 2.0 envelope, read one response line.
 
     Each call opens a fresh unix-stream connection (matches the per-connection
-    multiplexing pattern from D7-02; the daemon gives every client its own
+    multiplexing pattern; the daemon gives every client its own
     coroutine).
     """
     reader, writer = await asyncio.wait_for(
@@ -137,7 +137,7 @@ async def _with_socket_server(sock_path: Path, store, coro_fn):
     srv = SocketServer(store, idle_secs=99999)
     server_task = asyncio.create_task(srv.serve(socket_path=sock_path))
 
-    # Wait for bind (mirrors test_daemon_dispatcher.py:108-117).
+    # Wait for bind (mirrors test_daemon_dispatcher.py).
     for _ in range(250):
         if sock_path.exists():
             break
@@ -162,12 +162,12 @@ async def _with_socket_server(sock_path: Path, store, coro_fn):
 
 
 # ---------------------------------------------------------------------------
-# R1 acceptance tests
+# Acceptance tests
 # ---------------------------------------------------------------------------
 
 
 def test_memory_recall_routed_over_socket(short_socket_paths):
-    """R1: memory_recall via socket returns the same shape as stdio path."""
+    """memory_recall via socket returns the same shape as stdio path."""
     _, sock_path, _ = short_socket_paths
     from iai_mcp.store import MemoryStore
 
@@ -176,7 +176,7 @@ def test_memory_recall_routed_over_socket(short_socket_paths):
     async def _runner(sock_path, store):
         return await _send_jsonrpc(
             sock_path, "memory_recall",
-            {"cue": "test done", "budget_tokens": 400},
+            {"cue": "phase 7 done", "budget_tokens": 400},
             req_id=1,
         )
 
@@ -189,7 +189,7 @@ def test_memory_recall_routed_over_socket(short_socket_paths):
 
 
 def test_session_start_payload_routed(short_socket_paths):
-    """R1: session_start_payload via socket returns the assembler's dict."""
+    """session_start_payload via socket returns the assembler's dict."""
     _, sock_path, _ = short_socket_paths
     from iai_mcp.store import MemoryStore
 
@@ -213,11 +213,11 @@ def test_session_start_payload_routed(short_socket_paths):
 
 
 def test_profile_get_routed(short_socket_paths):
-    """R1: profile_get via socket returns the 11-knob registry dict.
+    """profile_get via socket returns the 11-knob registry dict.
 
     Note: tools.ts wraps this as 'profile_get_set' with operation='get'/'set';
     core.dispatch only knows 'profile_get' and 'profile_set' as primitives.
-    Tests against the core surface (D7-08: socket_server.py imports core.dispatch).
+    Tests against the core surface (socket_server.py imports core.dispatch).
     """
     _, sock_path, _ = short_socket_paths
     from iai_mcp.store import MemoryStore
@@ -240,14 +240,14 @@ def test_profile_get_routed(short_socket_paths):
     assert isinstance(result, dict), result
     # profile.profile_get(None, ...) returns
     #   {'live': {<10 AUTIST + wake_depth>}, 'deferred': {}, 'total_knobs': 11}
-    # per src/iai_mcp/profile.py (removed AUTIST-02/08/11/12).
-    # keeps literal_preservation live.
+    # per src/iai_mcp/profile.py (AUTIST-02/08/11/12 were removed).
+    # literal_preservation stays live.
     assert "live" in result, result
     assert "literal_preservation" in result["live"], result
 
 
 def test_topology_routed(short_socket_paths):
-    """R1: topology via socket returns the sigma snapshot or insufficient_data."""
+    """topology via socket returns the sigma snapshot or insufficient_data."""
     _, sock_path, _ = short_socket_paths
     from iai_mcp.store import MemoryStore
 
@@ -269,7 +269,7 @@ def test_topology_routed(short_socket_paths):
 
 
 def test_invalid_jsonrpc_returns_minus_32600(short_socket_paths):
-    """R1: malformed envelope (jsonrpc='1.0') returns ERR_INVALID_REQUEST."""
+    """malformed envelope (jsonrpc='1.0') returns ERR_INVALID_REQUEST."""
     _, sock_path, _ = short_socket_paths
     from iai_mcp.store import MemoryStore
 
@@ -291,9 +291,9 @@ def test_invalid_jsonrpc_returns_minus_32600(short_socket_paths):
 
 
 def test_unknown_method_returns_minus_32601(short_socket_paths):
-    """V3-03 fix: unknown method raises UnknownMethodError -> JSON-RPC -32601.
+    """Unknown method raises UnknownMethodError -> JSON-RPC -32601.
 
-    Pre-Phase-07.13: dispatch returned {"error": f"unknown method {method!r}"}
+    Previously dispatch returned {"error": f"unknown method {method!r}"}
     inside the result envelope. Post-fix: dispatch raises UnknownMethodError;
     socket_server.handle catches it and emits {error: {code: -32601, ...}}.
     """
@@ -312,16 +312,16 @@ def test_unknown_method_returns_minus_32601(short_socket_paths):
     assert resp["jsonrpc"] == "2.0", resp
     assert resp["id"] == 5, resp
     assert "error" in resp, resp
-    assert "result" not in resp, resp                       # V3-03 tightening
+    assert "result" not in resp, resp                       # error envelope only
     assert resp["error"]["code"] == -32601, resp
     assert "not_a_real_method" in resp["error"]["message"], resp
 
 
 def test_missing_required_param_returns_minus_32602(short_socket_paths):
-    """V3-04 fix: missing required param (e.g. memory_recall without 'cue')
+    """Missing required param (e.g. memory_recall without 'cue')
     raises KeyError inside dispatch -> JSON-RPC -32602 ERR_INVALID_PARAMS.
 
-    Pre-Phase-07.13: KeyError was mapped to -32601 ERR_METHOD_NOT_FOUND
+    Previously KeyError was mapped to -32601 ERR_METHOD_NOT_FOUND
     (wrong code; "method not found" implies the route doesn't exist).
     Post-fix: KeyError maps to -32602 with message 'missing required
     param: <key>'.
@@ -332,7 +332,7 @@ def test_missing_required_param_returns_minus_32602(short_socket_paths):
     store = MemoryStore()
 
     async def _runner(sock_path, store):
-        # memory_recall consumes params["cue"] (required path) at core.py:213/249/273.
+        # memory_recall consumes params["cue"] (required path) in core.py.
         # Sending an empty params dict triggers KeyError on the first cue access.
         return await _send_jsonrpc(
             sock_path, "memory_recall", {}, req_id=6,
@@ -351,7 +351,7 @@ def test_missing_required_param_returns_minus_32602(short_socket_paths):
 
 
 def test_id_echoed_unchanged(short_socket_paths):
-    """D7-02: response.id matches request.id verbatim across types."""
+    """response.id matches request.id verbatim across types."""
     _, sock_path, _ = short_socket_paths
     from iai_mcp.store import MemoryStore
 
@@ -377,7 +377,7 @@ def test_id_echoed_unchanged(short_socket_paths):
 
 
 def test_unknown_method_does_not_crash_server(short_socket_paths):
-    """R1: an unknown method must not crash the server; the next call still works."""
+    """an unknown method must not crash the server; the next call still works."""
     _, sock_path, _ = short_socket_paths
     from iai_mcp.store import MemoryStore
 
@@ -404,7 +404,7 @@ def test_unknown_method_does_not_crash_server(short_socket_paths):
 
 
 def test_parse_error_returns_minus_32700(short_socket_paths):
-    """D7-01: malformed JSON → ERR_PARSE_ERROR with id=None per JSON-RPC 2.0 spec."""
+    """malformed JSON → ERR_PARSE_ERROR with id=None per JSON-RPC 2.0 spec."""
     _, sock_path, _ = short_socket_paths
     from iai_mcp.store import MemoryStore
 
@@ -422,7 +422,7 @@ def test_parse_error_returns_minus_32700(short_socket_paths):
 
 
 def test_empty_params_defaults_to_empty_dict(short_socket_paths):
-    """D7-01: omitted params field → dispatch sees an empty dict, no crash."""
+    """omitted params field → dispatch sees an empty dict, no crash."""
     _, sock_path, _ = short_socket_paths
     from iai_mcp.store import MemoryStore
 

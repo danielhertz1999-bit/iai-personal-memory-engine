@@ -1,4 +1,4 @@
-"""Task 1.2 -- capture_queue.py test suite.
+"""capture_queue.py test suite.
 
 Covers atomic append (incl. crash simulation), 50-thread concurrent
 append, idempotent ingest with mid-handler crash, lock-skip semantics,

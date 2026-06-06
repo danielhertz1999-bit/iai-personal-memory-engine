@@ -1,9 +1,9 @@
 blank_issues_enabled: false
 contact_links:
   - name: Documentation
-    url: https://github.com/CodeAbra/iai-mcp#readme
+    url: https://github.com/CodeAbra/iai-memory-engine#readme
     about: Check the README for installation, configuration, and troubleshooting.
   - name: Security report
-    url: https://github.com/CodeAbra/iai-mcp/security/advisories/new
+    url: https://github.com/CodeAbra/iai-memory-engine/security/advisories/new
     about: Report a security issue privately via GitHub Security Advisories.
 

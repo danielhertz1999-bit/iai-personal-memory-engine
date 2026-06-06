@@ -1,18 +1,17 @@
-"""Tests for R1 — schema-pattern dedup in persist_schema.
+"""Tests for schema-pattern dedup in persist_schema.
 
-Locked decisions covered (06-CONTEXT.md):
+Behaviour covered:
 - persist_schema dedups by tag `pattern:{candidate.pattern}` against
   existing tier="semantic" records; reinforces schema_instance_of edges
   onto the keeper instead of inserting a duplicate row.
 - new event kind `schema_reinforced` with payload
   `{schema_id, pattern, evidence_added, total_evidence}`; severity "info";
   source_ids `[keeper_id, *new_evidence_ids[:5]]`.
-- single test file, pytest convention (`tmp_path` LanceDB root).
+- single test file, pytest convention (`tmp_path` store root).
 
-R1 acceptance (06-SPEC.md): N persist_schema calls for the same pattern
-collapse to ONE schema record, with the keeper's incoming
-`schema_instance_of` edge count equal to the cumulative distinct evidence
-count across all calls.
+N persist_schema calls for the same pattern collapse to ONE schema record,
+with the keeper's incoming `schema_instance_of` edge count equal to the
+cumulative distinct evidence count across all calls.
 """
 from __future__ import annotations
 
@@ -84,17 +83,17 @@ def _patch_embedder(monkeypatch):
     yield
 
 
-# ---------------------------------------------------------------- Task 1: events taxonomy + write-event smoke
+# ---------------------------------------------------------------- events taxonomy + write-event smoke
 
 
 def test_events_module_docstring_lists_schema_reinforced():
-    """events.py module docstring documents the new `schema_reinforced` kind."""
+    """events.py module docstring documents the `schema_reinforced` kind."""
     import iai_mcp.events as events_mod
 
     doc = events_mod.__doc__ or ""
     assert "schema_reinforced" in doc, (
-        "events.py module docstring missing `schema_reinforced` taxonomy entry "
-        ". Add a additions block after the "
+        "events.py module docstring missing `schema_reinforced` taxonomy entry. "
+        "Add an additions block after the AUTIST-13 "
         "section listing the new event kind, payload schema, and source_ids note."
     )
 
@@ -130,7 +129,7 @@ def test_write_event_accepts_schema_reinforced_kind(tmp_path):
     assert payload["schema_id"] == str(keeper_id)
 
 
-# ---------------------------------------------------------------- Task 2: persist_schema dedup branch (R1)
+# ---------------------------------------------------------------- persist_schema dedup branch
 
 
 def _seed_evidence(store: MemoryStore, n: int) -> list[MemoryRecord]:
@@ -147,7 +146,7 @@ def _seed_evidence(store: MemoryStore, n: int) -> list[MemoryRecord]:
 
 
 def test_persist_schema_dedups_same_pattern(tmp_path):
-    """R1: 10 persist_schema calls for the same pattern produce ONE schema record."""
+    """10 persist_schema calls for the same pattern produce ONE schema record."""
     from iai_mcp.schema import SchemaCandidate, persist_schema
 
     store = MemoryStore(path=tmp_path)
@@ -175,7 +174,7 @@ def test_persist_schema_dedups_same_pattern(tmp_path):
 
 
 def test_persist_schema_reinforces_edges_on_dedup(tmp_path):
-    """R1: schema_instance_of edge count to keeper == cumulative evidence count."""
+    """schema_instance_of edge count to keeper == cumulative evidence count."""
     from iai_mcp.schema import SchemaCandidate, persist_schema
 
     store = MemoryStore(path=tmp_path)
@@ -222,7 +221,7 @@ def test_persist_schema_reinforces_edges_on_dedup(tmp_path):
 
 
 def test_persist_schema_emits_schema_reinforced_event(tmp_path):
-    """R1 + 9 reinforced events + 1 induction event after 10 calls."""
+    """9 reinforced events + 1 induction event after 10 calls."""
     from iai_mcp.schema import SchemaCandidate, persist_schema
 
     store = MemoryStore(path=tmp_path)
@@ -271,7 +270,7 @@ def test_persist_schema_emits_schema_reinforced_event(tmp_path):
 
 
 def test_persist_schema_returns_keeper_id(tmp_path):
-    """R1: persist_schema returns the SAME UUID across N calls for same pattern."""
+    """persist_schema returns the SAME UUID across N calls for same pattern."""
     from iai_mcp.schema import SchemaCandidate, persist_schema
 
     store = MemoryStore(path=tmp_path)
@@ -296,7 +295,7 @@ def test_persist_schema_returns_keeper_id(tmp_path):
 
 
 def test_persist_schema_does_not_collapse_distinct_patterns(tmp_path):
-    """R1 negative: distinct patterns produce distinct schema records."""
+    """Negative case: distinct patterns produce distinct schema records."""
     from iai_mcp.schema import SchemaCandidate, persist_schema
 
     store = MemoryStore(path=tmp_path)

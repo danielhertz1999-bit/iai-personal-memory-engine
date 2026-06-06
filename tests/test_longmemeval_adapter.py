@@ -2,16 +2,16 @@
 
 Covers the LongMemEvalAdapter surface that bench/longmemeval_blind.py drives:
 
-    Test 1  load_dataset(split="S") returns an iterable of LMESession with
+    Test 1 load_dataset(split="S") returns an iterable of LMESession with
             non-zero len (skipped if HuggingFace cache is unavailable; falls
             back to an inline fixture for the pure-offline CI case).
-    Test 2  session_to_inserts maps each turn to a MemoryRecord with
+    Test 2 session_to_inserts maps each turn to a MemoryRecord with
             tier='episodic' and literal_surface == turn['content'].
-    Test 3  query_to_recall calls retrieve.recall with cue_text=query['query']
+    Test 3 query_to_recall calls retrieve.recall with cue_text=query['query']
             (verified via mock.patch on retrieve.recall).
-    Test 4  score_r_at_k on a hand-labeled mini-set (3 retrieved, 2 relevant,
+    Test 4 score_r_at_k on a hand-labeled mini-set (3 retrieved, 2 relevant,
             k=5) returns the expected float.
-    Test 5  score_r_at_k with an empty relevant list returns 1.0 (convention;
+    Test 5 score_r_at_k with an empty relevant list returns 1.0 (convention;
             avoids div-by-zero).
 
 Notes (scope discipline):
@@ -130,7 +130,7 @@ def test_query_to_recall_calls_retrieve_recall_with_cue_text():
     # Tolerate both kw and positional; the plan contract is "cue_text = query['query']".
     cue_text = kwargs.get("cue_text")
     if cue_text is None:
-        # positional fall-back: (store, cue_embedding, cue_text, session_id, ...)
+        # positional fall-back: (store, cue_embedding, cue_text, session_id,...)
         cue_text = m_recall.call_args.args[2]
     assert cue_text == "what did I say about coffee?"
     assert retrieved_ids == [h.record_id for h in fake_hits]

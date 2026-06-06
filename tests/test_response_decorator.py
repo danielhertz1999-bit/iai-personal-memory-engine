@@ -1,4 +1,4 @@
-"""Tests for the apply_profile decorator ( / D5-04).
+"""Tests for the apply_profile decorator.
 
 Covers server-side apply_profile decorator that transforms the response dict
 per the 11 profile knobs — per-knob silent-fail, knob names never cross the
@@ -15,11 +15,10 @@ def test_apply_profile_is_noop_on_default_state():
     """Default profile state → only the _knobs_applied telemetry
     block is added; no other surprising field additions to response.
 
-    -03 (CONTEXT ): apply_profile now emits a
-    response['_knobs_applied'] audit-trail block on every call. This is the
-    one and only top-level field apply_profile is allowed to add. Pre-07.12-03
-    the contract was "no additions"; post-07.12-03 the contract is "exactly
-    one addition: _knobs_applied (a dict)".
+    apply_profile emits a response['_knobs_applied'] audit-trail block on
+    every call. This is the one and only top-level field apply_profile is
+    allowed to add: the contract is "exactly one addition: _knobs_applied
+    (a dict)".
     """
     from iai_mcp import profile
     from iai_mcp.response_decorator import apply_profile
@@ -33,7 +32,7 @@ def test_apply_profile_is_noop_on_default_state():
     added = set(out.keys()) - before_keys
     assert added == {"_knobs_applied"}, (
         f"apply_profile added unexpected keys on default state: {added}; "
-        f"expected exactly {{'_knobs_applied'}} per "
+        f"expected exactly {{'_knobs_applied'}} per Plan 07.12-03"
     )
     assert isinstance(out["_knobs_applied"], dict), out["_knobs_applied"]
 
@@ -118,8 +117,8 @@ def test_pre_existing_keys_untouched_on_exception():
 
     # Override an internal helper if present — we only require apply_profile
     # to swallow any helper's exception.
-    # : switched probe target from the deleted _apply_verbosity_level
-    # orphan to _apply_dunn_quadrant (a still-live helper).
+    #: switched probe target from the deleted _apply_verbosity_level
+    # orphan to _apply_dunn_quadrant (a still-live AUTIST-03 helper).
     original = None
     helper_name = "_apply_dunn_quadrant"
     if hasattr(response_decorator, helper_name):

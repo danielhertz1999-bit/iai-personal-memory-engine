@@ -1,16 +1,16 @@
-"""W5 — cached AESGCM cipher property on MemoryStore.
+"""Cached AESGCM cipher property on MemoryStore.
 
-RED phase: these tests fail until ``MemoryStore`` exposes:
+``MemoryStore`` exposes:
 
   * ``_cached_aesgcm`` — ``@functools.cached_property`` returning a single
     ``AESGCM(self._key())`` instance per store lifetime.
   * ``_invalidate_aesgcm_cache()`` — drops the cached attribute so that the
     next ``_cached_aesgcm`` access materialises a fresh cipher (future
-    key-rotation hook per CONTEXT.md D-18).
+    key-rotation hook).
   * ``_decrypt_for_record`` rewritten to use the cached cipher instead of
     constructing ``AESGCM(key)`` per call.
 
-Covered contracts (CONTEXT.md W5 slice):
+Covered contracts:
 
   Cache identity & reuse:
     1. ``_cached_aesgcm`` is reused across N decrypts: patch
@@ -28,7 +28,7 @@ Covered contracts (CONTEXT.md W5 slice):
     4. ``_invalidate_aesgcm_cache()`` clears the cached attribute and a
        subsequent decrypt still works (re-materialisation is correct).
 
-  Per-record nonce safety (D-03 contract — cache reuse safe ONLY if
+  Per-record nonce safety (contract — cache reuse safe ONLY if
   every call uses a different nonce):
     5. Three records with the SAME plaintext encrypt to three different
        ciphertexts (random per-record nonce) and decrypt back identically
@@ -40,7 +40,7 @@ Covered contracts (CONTEXT.md W5 slice):
        value passes it through unchanged AND the cache stays absent
        from ``store.__dict__``.
 
-plan-checker B-1 lesson: every test uses a real ``MemoryRecord``
+Every test uses a real ``MemoryRecord``
 dataclass via ``_make()`` — never a plain dict against attribute-access code.
 """
 from __future__ import annotations
@@ -85,7 +85,7 @@ def _make(
     detail: int = 2,
     language: str = "en",
 ) -> MemoryRecord:
-    """Real-dataclass fixture (NEVER a plain dict — plan-checker B-1)."""
+    """Real-dataclass fixture (NEVER a plain dict)."""
     return MemoryRecord(
         id=uuid4(),
         tier=tier,
@@ -111,8 +111,8 @@ def _make(
 
 @pytest.fixture
 def store(tmp_path: Path) -> MemoryStore:
-    """Fresh MemoryStore in tmp_path/lancedb (one per test, no cross-test bleed)."""
-    return MemoryStore(path=tmp_path / "lancedb")
+    """Fresh MemoryStore in tmp_path/hippo (one per test, no cross-test bleed)."""
+    return MemoryStore(path=tmp_path / "hippo")
 
 
 # --------------------------------------------------------------------------- cache reuse
@@ -132,15 +132,11 @@ def test_decrypt_for_record_uses_cached_aesgcm(
     (literal_surface, provenance_json, profile_modulation_gain_json) = up to
     15 decrypt calls, but the patched constructor must be called AT MOST ONCE
     across all of them (single cached cipher per store lifetime).
-
-    Pre-Task-2 ``main`` state has no ``AESGCM`` attribute on
-    ``iai_mcp.store``; ``monkeypatch.setattr`` raises ``AttributeError`` and
-    the test fails — exactly the RED contract.
     """
     aesgcm_mock = MagicMock(wraps=_RealAESGCM)
     monkeypatch.setattr("iai_mcp.store.AESGCM", aesgcm_mock)
 
-    store_local = MemoryStore(path=tmp_path / "lancedb")
+    store_local = MemoryStore(path=tmp_path / "hippo")
     for i in range(5):
         store_local.insert(_make(text=f"record-{i}"))
 
@@ -152,7 +148,7 @@ def test_decrypt_for_record_uses_cached_aesgcm(
     records = store_local.all_records()
     assert len(records) == 5
 
-    # CONTEXT.md W5 slice: AESGCM(key) called exactly once across N decrypts.
+    # AESGCM(key) called exactly once across N decrypts.
     assert aesgcm_mock.call_count <= 1, (
         f"expected cached AESGCM (≤1 construction across N decrypts); "
         f"got {aesgcm_mock.call_count} constructions"
@@ -238,7 +234,7 @@ def test_invalidate_aesgcm_cache_clears(store: MemoryStore) -> None:
 
 
 def test_aesgcm_cache_handles_unique_per_record_nonce(store: MemoryStore) -> None:
-    """D-03 contract: cipher reuse is safe ONLY if every call uses a distinct
+    """contract: cipher reuse is safe ONLY if every call uses a distinct
     nonce. ``encrypt_field`` generates a fresh random nonce per call, so three
     records with the SAME plaintext yield three different ciphertexts that all
     decrypt back to the same string through the cached cipher.

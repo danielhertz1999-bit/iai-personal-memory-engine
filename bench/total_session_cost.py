@@ -1,6 +1,6 @@
-"""OPS-12 / total session cost bench.
+"""Total session cost bench.
 
-Runs a fixed 10-turn representative script per D5-08 (see 05-CONTEXT.md)
+Runs a fixed 10-turn representative script
 and counts the total tokens Claude would pay for the full session with
 IAI-MCP wired in. The 10 turns cover the axes the real-user workload
 touches most: verbatim recall, interleaved code-edit chat (no recall),
@@ -16,8 +16,8 @@ JSON output (one line to stdout):
       "mode": "anthropic-count-tokens"|"tiktoken-cl100k-proxy"|
               "heuristic-char4"|"injected",
       "refs": {"mempalace": int?, "claude_mem": int?},
-      "passed": bool,                 # True iff every supplied ref >= IAI
-      "script_name": "D5-08-v1"
+      "passed": bool, # True iff every supplied ref >= IAI
+      "script_name": "-v1"
     }
 
 Exit codes:
@@ -28,20 +28,19 @@ CLI:
     python -m bench.total_session_cost --wake-depth standard
     python -m bench.total_session_cost --ref-mempalace 7000 --ref-claude-mem 5000
 
-**Framing note (D5-08):** this bench is a *simulated* 10-turn script —
+**Framing note:** this bench is a *simulated* 10-turn script —
 it reproduces the token composition (system overhead + tool descriptions
 + tool-call payloads + tool-result bodies) a real MCP runtime would emit
 for the turn kinds. Real runtime adds network JSON-RPC envelope
 overhead (~30-50 tok/turn); the simulation excludes that. Downstream
 reports MUST disclose this caveat alongside the row.
 
-Reference-adapter notes: per PATTERNS.md Discovery #5, bench/adapters/
+Reference-adapter notes: per Discovery #5, bench/adapters/
 mempalace_*.py and claude_mem_*.py do not exist on this machine. The
 comparative gate is driven by explicit ref numbers via CLI flags so the
 bench is usable without live adapters; when unknown, refs default to
-None and passed=True is the degenerate answer. the published bench report
-carries the honest "mempalace/claude-mem refs not measured" disclosure
-for rows where a measurement was not taken.
+None and passed=True is the degenerate answer. Rows where a measurement
+was not taken are disclosed as "mempalace/claude-mem refs not measured".
 """
 from __future__ import annotations
 
@@ -52,6 +51,18 @@ import shutil
 import subprocess
 import sys
 from typing import Callable
+
+# Resolve iai_mcp.* (via src) AND bench.* (via worktree root) to THIS
+# worktree, not the parent venv's editable install. Idempotent: each
+# `sys.path.insert` is guarded by an "if not already present" check.
+import sys
+from pathlib import Path
+_SRC_PATH = str(Path(__file__).resolve().parent.parent / "src")
+_ROOT_PATH = str(Path(__file__).resolve().parent.parent)
+if _SRC_PATH not in sys.path:
+    sys.path.insert(0, _SRC_PATH)
+if _ROOT_PATH not in sys.path:
+    sys.path.insert(0, _ROOT_PATH)
 
 # Reuse bench/tokens.py's 3-tier counter helpers — single source of truth
 # for what "tiktoken-cl100k-proxy" and friends mean.
@@ -68,14 +79,13 @@ from bench.tokens import (
 # the 10-turn script through the target tool's CLI, sums the response tokens
 # via the injected counter, and returns the total. On ANY failure
 # (tool absent, timeout, non-zero exit, empty stdout) the adapter returns
-# ``None`` and emits ``{"event": "bench_adapter_unavailable", ...}`` to
+# ``None`` and emits ``{"event": "bench_adapter_unavailable",...}`` to
 # stderr. Callers MUST treat None as "honest disclosure, no measurement"
 # rather than a hard bench failure.
 #
-# Security note (T-05-06-04): turn text is a constant from _SCRIPT, never
-# from user input, and ``subprocess.run(argv_list, shell=False)`` avoids
-# any shell-injection surface. The 30s per-turn timeout bounds the DoS
-# risk (T-05-06-03).
+# Security: turn text is a constant from _SCRIPT, never from user input,
+# and ``subprocess.run(argv_list, shell=False)`` avoids any shell-injection
+# surface. The 30s per-turn timeout bounds the DoS risk.
 
 _ADAPTER_TIMEOUT_SECONDS = 30
 
@@ -144,9 +154,9 @@ def _run_mempalace_adapter(
     script: list[dict],
     counter: Callable[[str], int],
 ) -> int | None:
-    """M-07 live reference: run each turn through ``mempalace search`` and
+    """Live reference: run each turn through ``mempalace search`` and
     sum the stdout token counts. Returns ``None`` when mempalace is absent
-    or any subprocess call fails. Honest-disclosure contract per Plan 05-06.
+    or any subprocess call fails.
     """
     return _run_subprocess_adapter(
         tool_name="mempalace",
@@ -163,7 +173,7 @@ def _run_claude_mem_adapter(
 ) -> int | None:
     """Forward-compat mirror of the mempalace adapter. On machines where
     ``claude-mem`` is not installed this returns ``None`` + stderr event;
-    when it IS installed (future pressplay cross-validation run) the same
+    when it IS installed (future second-machine cross-validation run) the same
     code path measures it without another plan iteration."""
     return _run_subprocess_adapter(
         tool_name="claude-mem",
@@ -174,7 +184,7 @@ def _run_claude_mem_adapter(
     )
 
 
-# ---------------------------------------------------------------- D5-08 script
+# ---------------------------------------------------------------- script
 #
 # Fixed 10-turn representative script. Each turn has a `kind` (used to
 # compose a realistic tool-result body) and an `input` (the cue text).
@@ -186,7 +196,7 @@ SCRIPT_NAME = "D5-08-v1"
 _SCRIPT: list[dict] = [
     {
         "kind": "recall",
-        "input": "Tell me the decisions we made about architecture",
+        "input": "Tell me the decisions we made about Phase 5 architecture",
     },
     {
         "kind": "chat",
@@ -198,11 +208,11 @@ _SCRIPT: list[dict] = [
     },
     {
         "kind": "recall_cross_community",
-        "input": "What is the connection between and the autistic kernel?",
+        "input": "What is the connection between OPS-13 and the autistic kernel?",
     },
     {
         "kind": "save",
-        "input": "Decision locked: use cachetools TTLCache for LRU",
+        "input": "Decision locked: use cachetools TTLCache for Phase 5 LRU",
     },
     {
         "kind": "introspect",
@@ -214,7 +224,7 @@ _SCRIPT: list[dict] = [
     },
     {
         "kind": "recall",
-        "input": "Alice said something about pressplay cross-validation",
+        "input": "Alice said something about second-machine cross-validation",
     },
     {
         "kind": "reinforce",
@@ -227,10 +237,9 @@ _SCRIPT: list[dict] = [
 ]
 
 
-# Tool-description overhead mirrors the TOK-15 audit result
-# (134 raw tok total for the 11 registered tools; see 05-03-SUMMARY.md).
-# We reproduce the POST-audit text verbatim so the bench reflects the
-# actual current overhead Claude sees on each turn.
+# Tool-description overhead: 134 raw tokens total for the 11 registered
+# tools. We reproduce the current tool-description text verbatim so the
+# bench reflects the actual overhead Claude sees on each turn.
 _POST_TOK15_TOOL_DESCRIPTIONS = "\n".join([
     "Recall verbatim memories matching cue. Returns hits + anti_hits.",
     "Structural recall over role->filler bindings. Returns hits.",
@@ -296,13 +305,13 @@ def _select_counter(
 def _session_start_overhead_tokens(wake_depth: str) -> int:
     """Session-start payload size charged to turn 1 per wake_depth mode.
 
-    Numbers sourced from measurements (05-03-SUMMARY.md table):
-      - minimal  : 24 tok (lazy pointers only)
-      - standard : 1388 tok (eager Phase-1 L0+L1+L2+rich_club)
-      - deep     : ~2000 tok (rich_club budget lifted per D5-02)
+    Measured token counts:
+      - minimal: 24 tok (lazy pointers only)
+      - standard: 1388 tok (eager L0+L1+L2+rich_club)
+      - deep: ~2000 tok (rich_club budget lifted)
 
-    Rounded to the cache metric exactly so the numbers are
-    consistent with M-01's reported warm session-start row.
+    Rounded to cache-metric boundaries so the numbers are
+    consistent with the warm session-start measurements.
     """
     if wake_depth == "minimal":
         return 24
@@ -379,7 +388,7 @@ def run_total_session_cost(
         if cm_measured is not None:
             refs["claude_mem_measured"] = int(cm_measured)
 
-    # Manual refs. Back-compat with when no live measurement is
+    # Manual refs. Back-compat with: when no live measurement is
     # present, the manual int lands under the legacy "mempalace" / "claude_mem"
     # key so pre-existing downstream consumers (and tests) keep working.
     if mempalace_ref is not None:
@@ -419,17 +428,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="bench.total_session_cost",
         description=(
-            "OPS-12 / total session cost bench. Fixed 10-turn "
-            "representative script (D5-08); measures IAI-MCP token cost "
-            "at wake_depth minimal|standard|deep and optionally compares "
-            "to supplied mempalace / claude-mem reference totals."
+            "Total session cost bench. Fixed 10-turn representative script; "
+            "measures IAI-MCP token cost at wake_depth minimal|standard|deep "
+            "and optionally compares to supplied mempalace / claude-mem "
+            "reference totals."
         ),
     )
     parser.add_argument(
         "--wake-depth",
         choices=("minimal", "standard", "deep"),
         default="minimal",
-        help="session-start payload size (default minimal per D5-02)",
+        help="session-start payload size (default minimal)",
     )
     parser.add_argument(
         "--ref-mempalace",

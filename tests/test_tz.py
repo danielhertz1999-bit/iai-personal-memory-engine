@@ -47,7 +47,7 @@ def test_detect_tz_matches_system_or_utc_fallback():
     from iai_mcp.tz import detect_tz
 
     key = detect_tz()
-    # On macOS/Linux the system tz usually has a .key; on minimal containers
+    # On macOS/Linux the system tz usually has a.key; on minimal containers
     # the fallback is "UTC". Either is acceptable.
     assert key == "UTC" or "/" in key
 

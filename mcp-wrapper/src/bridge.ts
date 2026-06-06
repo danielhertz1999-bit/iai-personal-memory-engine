@@ -1,23 +1,23 @@
-// Phase 7.1 — pure-connector bridge. NO spawn capability.
+// Pure-connector bridge. NO spawn capability.
 // The daemon is launchd-managed (see scripts/install.sh).
 // Wrapper connects to ~/.iai-mcp/.daemon.sock with 5s timeout.
 // On connect failure, throws DaemonUnreachableError — does NOT
-// attempt to spawn a daemon (eliminating Phase 7's TOCTOU race).
+// attempt to spawn a daemon (eliminating a spawn TOCTOU race).
 
 import * as crypto from "node:crypto";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
-// HIGH-4 LOCKED (Plan 07-04 Task 1 Step A): env override is mandatory so
-// tests can isolate via tmp socket paths. The daemon-side honors the same
-// env (Plan 07-02 added it to socket_server.py:serve()).
-const DAEMON_SOCKET_PATH =
-  process.env.IAI_DAEMON_SOCKET_PATH
-  ?? path.join(os.homedir(), ".iai-mcp", ".daemon.sock");
+// The env override is mandatory so tests can isolate via tmp socket
+// paths. The daemon side honors the same env var.
+function getDaemonSocketPath(): string {
+  return process.env.IAI_DAEMON_SOCKET_PATH
+    ?? path.join(os.homedir(), ".iai-mcp", ".daemon.sock");
+}
 const SOCKET_CONNECT_TIMEOUT_MS = 5000;
 // 5s — covers launchd socket-activation cold-start (~3s embedder load
-// + ~1s LanceDB open + buffer). launchd accepts the connection
+// + ~1s store open + buffer). launchd accepts the connection
 // immediately and queues the read until the daemon is ready, so a
 // single 5s timeout is sufficient even on a true cold start.
 // JSON-RPC 2.0 custom server-error code (-32099..-32000 reserved by spec for
@@ -25,9 +25,8 @@ const SOCKET_CONNECT_TIMEOUT_MS = 5000;
 const ERR_DAEMON_UNREACHABLE = -32002;
 
 /**
- * Phase 7.1 — clean error class thrown when the daemon socket is not
- * reachable at start(). Replaces the pre-7.1 `daemon_spawn_failed`
- * generic Error. The error message points the user at the launchd
+ * Clean error class thrown when the daemon socket is not
+ * reachable at start(). The error message points the user at the launchd
  * recovery commands. `code` matches the existing
  * `ERR_DAEMON_UNREACHABLE` JSON-RPC server-error constant so downstream
  * consumers (handleSocketDeath in-flight rejects, `iai-mcp doctor`)
@@ -73,8 +72,7 @@ export class PythonCoreBridge {
   // close and reconnect-completion does NOT reject daemon_unreachable
   // when the daemon is actually healthy.
   private reconnectPromise: Promise<void> | null = null;
-  // mcp-tools-list-empty-cache fix (2026-05-02): serializes concurrent
-  // start() calls. Without this, the deferred-bridge-start ordering in
+  // Serializes concurrent start() calls. Without this, the deferred-bridge-start ordering in
   // index.ts (multiple paths can trigger start: oninitialized,
   // CallToolRequest handler, top-level fire-and-forget) would each
   // observe `this.sock === null` and race independent connectWithTimeout
@@ -94,7 +92,7 @@ export class PythonCoreBridge {
   ) {}
 
   /**
-   * Phase 7.1 — pure-connector start(). Socket-only; NO spawn capability.
+   * — pure-connector start(). Socket-only; NO spawn capability.
    * Idempotent: a second call while a socket is alive is a no-op.
    *
    * Tries to connect to ~/.iai-mcp/.daemon.sock with a 5s timeout
@@ -103,15 +101,14 @@ export class PythonCoreBridge {
    *
    * The daemon's lifecycle is owned by launchd (see
    * scripts/com.iai-mcp.daemon.plist.template); the wrapper does not
-   * spawn it under any condition (eliminates Phase 7's TOCTOU race when
+   * spawn it under any condition (eliminates 's TOCTOU race when
    * N≥3 wrappers cold-start concurrently).
    *
-   * mcp-tools-list-empty-cache fix (2026-05-02): start() is now safe to
-   * call concurrently from multiple async paths (top-level boot fire,
-   * server.oninitialized chain, CallToolRequest lazy-await). The first
-   * caller drives the actual socket connect; the rest await the shared
-   * `startPromise` and observe the same outcome. On reject the latch
-   * is cleared so a future call() can retry once the daemon is up.
+   * start() is safe to call concurrently from multiple async paths (top-level
+   * boot fire, server.oninitialized chain, CallToolRequest lazy-await). The
+   * first caller drives the actual socket connect; the rest await the shared
+   * `startPromise` and observe the same outcome. On reject the latch is
+   * cleared so a future call() can retry once the daemon is up.
    */
   async start(): Promise<void> {
     if (this.sock) return;  // already connected; idempotent
@@ -138,7 +135,7 @@ export class PythonCoreBridge {
     let sock: net.Socket;
     try {
       sock = await this.connectWithTimeout(
-        DAEMON_SOCKET_PATH,
+        getDaemonSocketPath(),
         SOCKET_CONNECT_TIMEOUT_MS,
       );
     } catch (e) {
@@ -248,14 +245,14 @@ export class PythonCoreBridge {
 
   /**
    * R5 fail-loud: socket close/error rejects ALL pending Promises with
-   * `daemon_unreachable` (-32002). D7-04 / SPEC R5: ONE reconnect attempt
+   * `daemon_unreachable` (-32002). / SPEC R5: ONE reconnect attempt
    * (catches launchd KeepAlive respawn windows). After that attempt the
    * bridge stays degraded — every subsequent call returns
    * `daemon_unreachable` until the wrapper itself restarts.
    */
   private handleSocketDeath(why: string): void {
     // Synchronous: every pending request fails LOUD immediately so callers
-    // see daemon_unreachable instead of hanging forever (D7-04 / SPEC R5).
+    // see daemon_unreachable instead of hanging forever (SPEC R5).
     const err = new Error(`daemon_unreachable: socket ${why} (code ${ERR_DAEMON_UNREACHABLE})`);
     for (const [, p] of this.pending) p.reject(err);
     this.pending.clear();
@@ -291,7 +288,7 @@ export class PythonCoreBridge {
         // Manually do socket-first connect (without resetting the latch
         // that start() does) so a SECOND mid-call death stays degraded.
         this.sock = await this.connectWithTimeout(
-          DAEMON_SOCKET_PATH,
+          getDaemonSocketPath(),
           SOCKET_CONNECT_TIMEOUT_MS,
         );
         this.attachSocketHandlers();
@@ -346,9 +343,9 @@ export class PythonCoreBridge {
    * Public API: close the socket but leave the daemon running.
    * Used by index.ts SIGTERM/SIGINT handlers.
    *
-   * After Phase 7 the wrapper does NOT own the daemon's lifecycle —
+   * After the wrapper does NOT own the daemon's lifecycle —
    * disconnecting a wrapper must NOT kill the singleton, otherwise other
-   * wrappers (other MCP hosts, sub-agents) would lose their
+   * wrappers (Cursor, terminal Claude, sub-agents) would lose their
    * shared brain.
    */
   disconnect(): void {
@@ -368,7 +365,7 @@ export class PythonCoreBridge {
     this.pending.clear();
   }
 
-  // Visible for tests: smoke endpoint replacing the pre-Phase-7
+  // Visible for tests: smoke endpoint replacing the pre-
   // isRunning() that checked for a child process.
   isConnected(): boolean {
     return this.sock !== null;
@@ -377,9 +374,8 @@ export class PythonCoreBridge {
 
 
 // ---------------------------------------------------------------------------
-// Plan 05-04 TOK-14 / D5-05 — session_open emit over the daemon unix socket.
-// UNCHANGED by Phase 7 (Plan 07-04). Same socket path; brief separate
-// connection that fires a one-shot HIPPEA pre-warm hint then closes.
+// session_open emit over the daemon unix socket.
+// Brief separate connection that fires a one-shot pre-warm hint then closes.
 // ---------------------------------------------------------------------------
 
 
@@ -410,15 +406,15 @@ export function newSessionId(): string {
  * Fire-and-forget NDJSON `session_open` message to the daemon socket.
  *
  * Contract:
- *  - Writes one line: `{"type":"session_open","session_id":"...","ts":"..."}\n`
- *  - One-shot semantics: does **not** read the daemon's response bytes before
- *    `end()` — intentional (HIPPEA hint only). If the daemon wrote backpressure
- *    or error bytes, they are left unread; the separate long-lived `PythonCoreBridge`
- *    connection owns JSON-RPC traffic.
- *  - Silent-fail on any network, socket-not-found, or timeout error. The
- *    Python core's `_first_turn_recall_hook` falls back to the cold recall
- *    path when the cascade LRU is empty (expected when daemon is down).
- *  - Hard timeout at 2s so a hung socket cannot delay wrapper boot.
+ * - Writes one line: `{"type":"session_open","session_id":"...","ts":"..."}\n`
+ * - One-shot semantics: does **not** read the daemon's response bytes before
+ * `end()` — intentional (hint only). If the daemon wrote backpressure
+ * or error bytes, they are left unread; the separate long-lived `PythonCoreBridge`
+ * connection owns JSON-RPC traffic.
+ * - Silent-fail on any network, socket-not-found, or timeout error. The
+ * Python core's `_first_turn_recall_hook` falls back to the cold recall
+ * path when the cascade LRU is empty (expected when daemon is down).
+ * - Hard timeout at 2s so a hung socket cannot delay wrapper boot.
  *
  * Returns a Promise<void> that ALWAYS resolves (never rejects) so callers
  * can use `void emitSessionOpen(...)` in a sync bootstrap block without

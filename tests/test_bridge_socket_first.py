@@ -1,55 +1,34 @@
-"""R2/A6 acceptance — bridge.ts is a pure connector (no spawn).
+"""Acceptance: bridge.ts is a pure connector (no spawn).
 
-# History
+# Behaviour under test
 
-This file was renamed-in-place from the pre-Phase-7.1 test of the same
-name. The pre-Phase-7.1 file asserted spawn-fallback
-behavior:
-  - test_cold_start_spawns_daemon_under_5s — asserted that the wrapper
-    SPAWNS `python -m iai_mcp.daemon` when the socket is missing
-    (`daemon_delta >= 1`).
-  - test_warm_start_reuses_daemon_under_250ms — relied on wrapper #1 to
-    bootstrap the daemon via spawn so wrapper #2 could attach.
+The wrapper ONLY connects to ~/.iai-mcp/.daemon.sock with a 5s timeout; on
+miss it throws `DaemonUnreachableError` (code -32002) and the wrapper process
+exits non-zero. Daemon spawning is launchd's job (plist + install.sh +
+LISTEN_FDS branch).
 
-(this plan, 07.1-04) DELETES bridge.ts's spawn capability:
-the wrapper now ONLY connects to ~/.iai-mcp/.daemon.sock with a 5s
-timeout; on miss it throws `DaemonUnreachableError` (code -32002) and
-the wrapper process exits non-zero. Daemon spawning is now launchd's
-job (Wave 1 plist + Wave 2 install.sh + Wave 2 LISTEN_FDS branch).
-
-Both pre-7.1 tests therefore had to be restructured:
-  - Old `test_cold_start_spawns_daemon_under_5s` is REPLACED by
-    `test_start_throws_DaemonUnreachableError_when_socket_missing`
-    which asserts the inverse: NO daemon spawned, wrapper exits
-    non-zero with the new error in stderr.
-  - Old `test_warm_start_reuses_daemon_under_250ms` is REPLACED by
-    `test_start_succeeds_with_warm_daemon_no_extra_spawn` which
-    pre-starts a daemon manually (subprocess.Popen of
-    `python -m iai_mcp.daemon`), waits for socket bind, then spawns
-    the wrapper and asserts initialize handshake succeeds AND
-    daemon process count delta == 0 (the wrapper did NOT spawn a
+  - `test_start_throws_DaemonUnreachableError_when_socket_missing` asserts
+    NO daemon is spawned and the wrapper exits non-zero with the error in
+    stderr.
+  - `test_start_succeeds_with_warm_daemon_no_extra_spawn` pre-starts a daemon
+    manually (subprocess.Popen of `python -m iai_mcp.daemon`), waits for
+    socket bind, then spawns the wrapper and asserts the initialize handshake
+    succeeds AND daemon process count delta == 0 (the wrapper did NOT spawn a
     second daemon).
 
 # Test isolation strategy
 
-Both tests use IAI_DAEMON_SOCKET_PATH env override (HIGH-4 lock at
-bridge.ts module top — verified preserved through Task 1
-edit) so they target a tmp socket and never touch the user's real
-~/.iai-mcp/.daemon.sock — the production daemon (if any) is not
-disturbed.
+Both tests use the IAI_DAEMON_SOCKET_PATH env override so they target a tmp
+socket and never touch the user's real ~/.iai-mcp/.daemon.sock — the
+production daemon (if any) is not disturbed.
 
-Delta-snapshot psutil pattern (lesson from / 07-04
-SUMMARYs): we count `iai_mcp.daemon` processes BEFORE and AFTER the
-wrapper boot and assert the DELTA, not the absolute. On a developer
-machine with a live production daemon, `before["daemon"] >= 1`; an
-absolute `assert after["daemon"] == 1` would falsely fail.
+Delta-snapshot psutil pattern: we count `iai_mcp.daemon` processes BEFORE and
+AFTER the wrapper boot and assert the DELTA, not the absolute. On a developer
+machine with a live production daemon, `before["daemon"] >= 1`; an absolute
+`assert after["daemon"] == 1` would falsely fail.
 
 # Pattern reuse
 
-Helpers (`_count_iai_mcp_processes`, `_kill_test_daemons`,
-`_spawn_wrapper`, `_initialize`, `_call_memory_recall`,
-`_wait_for_daemon_socket`) and the `built_wrapper` fixture are kept
-verbatim from the pre-7.1 file — they remain valid scaffolding.
 The `_count_iai_mcp_processes` shape mirrors
 `tests/test_socket_subagent_reuse.py` and `tests/test_socket_fail_loud.py`.
 """
@@ -114,18 +93,35 @@ def _count_iai_mcp_processes() -> dict[str, int]:
 
 
 def _kill_test_daemons(sock_path: Path) -> None:
-    """Cleanup helper — kill any iai_mcp.daemon processes whose env
-    references the test sock_path. Avoids touching the user's real
-    daemon if one is running."""
-    sock_str = str(sock_path)
-    for p in psutil.process_iter(["cmdline", "environ"]):
+    """Kill iai_mcp.daemon processes that hold sock_path open via lsof.
+
+    setproctitle() clobbers the external psutil.Process.environ() view on
+    macOS — the daemon's own os.environ is intact but external readers lose
+    injected vars after the title is set.  lsof on the specific tmp socket
+    path is setproctitle-proof: only the process that HOLDS the file open
+    is matched.  This is path-exact and never touches the production daemon,
+    which binds ~/.iai-mcp/.daemon.sock — a completely different path.
+    """
+    target = str(sock_path)
+    res = subprocess.run(
+        ["lsof", "-U", "-F", "pn"],
+        capture_output=True, text=True, check=False,
+    )
+    current: int | None = None
+    pids: set[int] = set()
+    for line in res.stdout.splitlines():
+        if line.startswith("p"):
+            try:
+                current = int(line[1:])
+            except ValueError:
+                current = None
+        elif line.startswith("n") and current is not None and line[1:] == target:
+            pids.add(current)
+    for pid in pids:
         try:
-            cl = " ".join(p.info.get("cmdline") or [])
-            if "iai_mcp.daemon" not in cl:
-                continue
-            env = p.info.get("environ") or {}
-            if env.get("IAI_DAEMON_SOCKET_PATH") == sock_str:
-                p.send_signal(signal.SIGTERM)
+            cl = " ".join(psutil.Process(pid).cmdline())
+            if "iai_mcp.daemon" in cl:
+                psutil.Process(pid).send_signal(signal.SIGTERM)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
 
@@ -155,10 +151,9 @@ def _spawn_daemon_in_background(
 ) -> subprocess.Popen:
     """Pre-start a daemon manually via `python -m iai_mcp.daemon`.
 
-    wrappers no longer spawn the daemon themselves — that's
-    launchd's job in production and the test's job here. We use the
-    manual-run code path (no LISTEN_FDS env set), which the
-    daemon supports unchanged per D7.1-09 (backward compat).
+    Wrappers no longer spawn the daemon themselves — that's launchd's job in
+    production and the test's job here. We use the manual-run code path
+    (no LISTEN_FDS env set), which the daemon supports for backward compat.
     """
     env = os.environ.copy()
     env["IAI_DAEMON_SOCKET_PATH"] = str(sock_path)
@@ -255,33 +250,20 @@ def _wait_for_daemon_socket(sock_path: Path, timeout_sec: float = 30.0) -> bool:
 def test_start_throws_DaemonUnreachableError_when_socket_missing(
     built_wrapper, tmp_path
 ):
-    """+ mcp-tools-list-empty-cache (2026-05-02): with no daemon
-    on the test socket, the wrapper MUST stay alive and MUST serve
-    tools/list from the static registry within an MCP-client-friendly
+    """With no daemon on the test socket, the wrapper MUST stay alive and MUST
+    serve tools/list from the static registry within an MCP-client-friendly
     timeout. tools/call MUST surface daemon_unreachable as an isError
     response (fail-loud at the right layer).
 
-    History (this is the same test slot — replaces the pre-2026-05-02
-    contract that asserted "wrapper exits non-zero on daemon miss"):
-    - Pre-fix the wrapper had a top-level `await bridge.start()` BEFORE
-      `server.connect(transport)`. On a missing/slow daemon socket the
-      Node process either exited non-zero (after 5s timeout) OR — the
-      bug being fixed — replied to MCP `initialize` after a long delay
-      with no tools/list ever cached, making `mcp__iai-mcp__*` invisible
-      for the entire client session. Old assertion 1 (non-zero exit) and
-      assertion 2 (DaemonUnreachableError on stderr) encoded the
-      consequence of that ordering, not the architectural contract.
-    - Post-fix `server.connect(transport)` runs FIRST; bridge.start()
-      is fire-and-forget; tools/list is independent of daemon state;
-      tools/call lazy-awaits bridge readiness and surfaces
-      daemon_unreachable as a structured tool-result error. This is
-      strictly better — Claude Code's "Connected" status now matches
-      reality (transport IS connected), and daemon-down failures are
-      actionable per-call instead of opaque registry-empty.
+    Ordering contract: `server.connect(transport)` runs FIRST; bridge.start()
+    is fire-and-forget; tools/list is independent of daemon state;
+    tools/call lazy-awaits bridge readiness and surfaces daemon_unreachable
+    as a structured tool-result error. The transport reports "Connected"
+    because it genuinely is, and daemon-down failures are actionable per-call
+    instead of opaque registry-empty.
 
-    The load-bearing invariant — `daemon_delta == 0` — is
-    UNCHANGED and asserted here exactly as before. The wrapper still
-    must NOT spawn the daemon under any condition.
+    The load-bearing invariant — `daemon_delta == 0` — is asserted here: the
+    wrapper still must NOT spawn the daemon under any condition.
     """
     sock_dir = Path(f"/tmp/iai-7.1-noconn-{os.getpid()}-{id(tmp_path)}")
     sock_dir.mkdir(parents=True, exist_ok=True)
@@ -332,8 +314,8 @@ def test_start_throws_DaemonUnreachableError_when_socket_missing(
         assert "result" in list_resp, f"tools/list error: {list_resp}"
         tools = list_resp["result"]["tools"]
         names = {t["name"] for t in tools}
-        assert len(names) == 12, (
-            f"tools/list returned {len(names)} tools, expected 12. "
+        assert len(names) == 13, (
+            f"tools/list returned {len(names)} tools, expected 13. "
             f"names={sorted(names)}"
         )
         assert list_elapsed < 4.0, (
@@ -387,21 +369,26 @@ def test_start_throws_DaemonUnreachableError_when_socket_missing(
         call_resp = json.loads(call_line.decode("utf-8"))
         assert "result" in call_resp, f"tools/call missing result: {call_resp}"
         result = call_resp["result"]
-        # The wrapper renders bridge errors as content with isError=True
-        # (see CallToolRequestSchema handler in index.ts); some legacy
-        # paths use the JSON-RPC `error` envelope. Either is acceptable
-        # — what's NOT acceptable is silent success.
+        # memory_recall daemon-down is a graceful STORE-backed degraded recall
+        # (direct-store, no bank scan). The wrapper routes start-rejection to
+        # runDirectRecall first; only if that also fails does it propagate the
+        # error.
+        #
+        # New contract: the result must NOT be silently wrong.  Acceptable:
+        #   (a) isError=True  (direct-store failed too — last-resort error)
+        #   (b) isError=False and content is non-empty store-backed result
+        #       (direct-store succeeded — correct graceful degrade)
+        # NOT acceptable: isError=False AND empty/missing content (silent fail).
         is_error = result.get("isError") is True
         content_text = ""
         if isinstance(result.get("content"), list) and result["content"]:
             content_text = result["content"][0].get("text", "") or ""
-        assert is_error or "daemon_unreachable" in content_text.lower() \
-            or "daemonunreachable" in content_text.lower(), (
-            f"tools/call did NOT surface daemon_unreachable when daemon "
-            f"is missing — fail-loud invariant violated. result={result}"
+        assert is_error or content_text, (
+            f"tools/call returned neither an error nor usable content when "
+            f"daemon is missing — silent-fail invariant violated. result={result}"
         )
 
-        # ---- Assertion 4 (UNCHANGED invariant): no spawn ----
+        # ---- Assertion 4 (no-spawn invariant) ----
         # Allow ≤1.5s for any (hypothetically) spawned-but-detached
         # daemon to surface in psutil.
         time.sleep(1.0)
@@ -410,7 +397,7 @@ def test_start_throws_DaemonUnreachableError_when_socket_missing(
         assert daemon_delta == 0, (
             f"REGRESSION: wrapper spawned {daemon_delta} new iai_mcp.daemon "
             f"process(es) (baseline={daemon_baseline}, after={after['daemon']}). "
-            f"wrappers MUST NOT spawn the daemon — the spawn-fallback "
+            f"Wrappers MUST NOT spawn the daemon — the spawn-fallback "
             f"chain in bridge.ts has been re-introduced."
         )
         core_delta = after["core"] - core_baseline
@@ -435,18 +422,18 @@ def test_start_throws_DaemonUnreachableError_when_socket_missing(
 
 
 def test_start_succeeds_with_warm_daemon_no_extra_spawn(built_wrapper, tmp_path):
-    """R2 happy path: with a daemon ALREADY running on the test
+    """Happy path: with a daemon ALREADY running on the test
     socket (started manually by the test, mimicking what launchd does
     in production), the wrapper must connect successfully, complete
     the MCP initialize handshake, run a memory_recall round-trip, AND
     NOT spawn a second daemon.
 
     This proves:
-      (a) bridge.ts:start() still works against a warm socket
+      (a) bridge.ts start() still works against a warm socket
           (no regression in the connect path).
       (b) The wrapper does NOT spawn a second daemon when one already
-          exists (the singleton property — though in 7.1 this is
-          trivially true because the spawn code is GONE).
+          exists (the singleton property — trivially true now that the
+          spawn code is GONE).
     """
     sock_dir = Path(f"/tmp/iai-7.1-warm-{os.getpid()}-{id(tmp_path)}")
     sock_dir.mkdir(parents=True, exist_ok=True)
@@ -456,12 +443,12 @@ def test_start_succeeds_with_warm_daemon_no_extra_spawn(built_wrapper, tmp_path)
     assert not sock_path.exists()
 
     # Pre-start a daemon manually (mimics launchd socket-activated spawn
-    # in production; in tests we use the manual-run code path per
-    # D7.1-09 backward compat).
+    # in production; in tests we use the manual-run code path for
+    # backward compat).
     daemon_proc = _spawn_daemon_in_background(sock_path, store_dir)
     try:
         # Wait for the daemon to bind. Cold-start (bge-small load +
-        # LanceDB open + asyncio.start_unix_server) is empirically
+        # store open + asyncio.start_unix_server) is empirically
         # 3-10s on macOS.
         assert _wait_for_daemon_socket(sock_path, timeout_sec=30.0), (
             f"daemon did not bind socket {sock_path} within 30s"
@@ -487,7 +474,7 @@ def test_start_succeeds_with_warm_daemon_no_extra_spawn(built_wrapper, tmp_path)
             # memory_recall round-trip — proves the JSON-RPC wire path
             # over the socket works end-to-end.
             elapsed, recall_resp = _call_memory_recall(
-                wrapper_proc, cue="warm-daemon test",
+                wrapper_proc, cue="phase 7.1 warm-daemon test",
                 rpc_id=2, timeout_sec=10.0,
             )
             # Either a result (recall hit/miss) or an error envelope is
@@ -496,8 +483,8 @@ def test_start_succeeds_with_warm_daemon_no_extra_spawn(built_wrapper, tmp_path)
 
             # Round-trip should be sub-second on a warm daemon. Generous
             # 2s budget against test-harness overhead (subprocess startup,
-            # MCP handshake jitter); the SPEC A6 250ms budget is verified
-            # in Wave 6 acceptance against the production daemon.
+            # MCP handshake jitter); the 250ms acceptance budget is verified
+            # separately against the production daemon.
             assert elapsed < 2.0, (
                 f"warm-daemon memory_recall took {elapsed:.2f}s, exceeds "
                 f"2.0s safety budget"
@@ -507,13 +494,13 @@ def test_start_succeeds_with_warm_daemon_no_extra_spawn(built_wrapper, tmp_path)
             time.sleep(0.5)
             after = _count_iai_mcp_processes()
 
-            # No new daemon — singleton property holds (trivially in 7.1
-            # because the spawn code is gone).
+            # No new daemon — singleton property holds (trivially now that
+            # the spawn code is gone).
             daemon_delta = after["daemon"] - daemon_baseline
             assert daemon_delta == 0, (
                 f"REGRESSION: wrapper spawned a second daemon during boot "
                 f"(baseline={daemon_baseline}, after={after['daemon']}, "
-                f"delta={daemon_delta}). wrappers MUST be pure "
+                f"delta={daemon_delta}). Wrappers MUST be pure "
                 f"connectors."
             )
             core_delta = after["core"] - core_baseline

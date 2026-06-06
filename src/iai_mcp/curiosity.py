@@ -1,18 +1,18 @@
-"""Active curiosity (LEARN-04, , ) -- Task 4.
+"""Active curiosity engine.
 
- trigger: prediction entropy > 0.7 bits AND 3-turn cooldown since last
+Trigger: prediction entropy > 0.7 bits AND 3-turn cooldown since last
 curiosity question in this session.
 
- tiered style:
-- entropy in [ENTROPY_LOW, ENTROPY_MID)  -> silent log event, no question
+Tiered style:
+- entropy in [ENTROPY_LOW, ENTROPY_MID) -> silent log event, no question
 - entropy in [ENTROPY_MID, ENTROPY_HIGH) -> inline hint
-- entropy >= ENTROPY_HIGH                -> direct clarifying question
+- entropy >= ENTROPY_HIGH -> direct clarifying question
 
 Every question creates curiosity_bridge edges from each triggering record to
 the question's UUID (used as a stable hub id). The question itself lives in
 the events table (kind=curiosity_question); callers may insert a first-class
-record if persistent text is desired, but keeps questions
-event-sourced to minimise LanceDB write volume.
+record if persistent text is desired, keeping questions event-sourced to
+minimise write volume.
 """
 from __future__ import annotations
 
@@ -94,7 +94,7 @@ def fire_curiosity(
     session_id: str,
     turn: int,
 ) -> CuriosityQuestion | None:
-    """ gate + tiering.
+    """gate + tiering.
 
     Returns a CuriosityQuestion (or None) and, as a side effect:
     - emits a curiosity_silent_log event for low-entropy misses
@@ -143,7 +143,7 @@ def fire_curiosity(
 
     # curiosity_bridge edges. Delta proportional to entropy so higher-entropy
     # questions get stronger edges.
-    # R3: batch all triggers into a single boost_edges call
+    # Batch all triggers into a single boost_edges call
     # (one merge_insert + one tbl.add at most). The diagnostic try/except
     # boundary is preserved at the SINGLE-call level — failure of the batched
     # write must never block the curiosity fire path.
@@ -155,7 +155,7 @@ def fire_curiosity(
                 edge_type="curiosity_bridge",
                 delta=float(entropy),
             )
-        except Exception:
+        except (OSError, RuntimeError, ValueError):
             # Diagnostic; never block the curiosity fire on edge failure.
             pass
 
@@ -223,3 +223,12 @@ def pending_questions(
             )
         )
     return out
+
+
+def get_pending_questions(store: MemoryStore, limit: int = 2) -> list[dict]:
+    """Active Inference surface: return top-N unresolved curiosity questions as dicts."""
+    qs = pending_questions(store)
+    return [
+        {"text": q.text, "entropy": q.entropy, "tier": q.tier}
+        for q in qs[:limit]
+    ]

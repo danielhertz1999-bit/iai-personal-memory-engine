@@ -1,7 +1,7 @@
-""" RED: TEM factorization (Whittington-Behrens 2020).
+"""TEM factorization (Whittington-Behrens 2020).
 
 Verifies BSC binding/unbinding fidelity at D=10000 across 15 / 17 / 18
-role-filler pairs (D-TEM-02 target). Constitutional invariants:
+role-filler pairs. Invariants:
 
 - Tensor-product bind is XOR-reversible (BSC self-inverse semantics).
 - Pack/unpack maintains >= 95% unbind accuracy at 15 pairs.
@@ -16,14 +16,14 @@ import pytest
 
 
 def test_role_vocabulary_has_18_entries() -> None:
-    """D-TEM Claude's Discretion locks role count at 18 (covers WHEN/WHERE/...
+    """Role count is locked at 18 (covers WHEN/WHERE/...
     plus tier/lang/community/etc. structural attributes per MemoryRecord).
     """
     from iai_mcp.tem import ROLE_VOCABULARY
 
     assert isinstance(ROLE_VOCABULARY, tuple)
     assert len(ROLE_VOCABULARY) == 18
-    # Constitutional minimum subset from CONTEXT.md D-TEM:
+    # Minimum required subset of structural roles:
     for required in ("WHEN", "WHERE", "ROLE", "PROJECT", "COMMUNITY_ID", "TEMPORAL_POSITION"):
         assert required in ROLE_VOCABULARY, f"missing constitutional role {required!r}"
 
@@ -117,18 +117,18 @@ def _fidelity_at(n_pairs: int) -> float:
 
 
 def test_unbind_fidelity_15_pairs() -> None:
-    """D-TEM-02: at 15 role-filler pairs, unbind fidelity >= 0.95."""
+    """At 15 role-filler pairs, unbind fidelity >= 0.95."""
     fidelity = _fidelity_at(15)
     assert fidelity >= 0.95, f"unbind fidelity at 15 pairs = {fidelity:.3f} < 0.95"
 
 
 def test_unbind_fidelity_17_pairs() -> None:
-    """D-TEM-02 secondary target: at 17 pairs, fidelity >= 0.92."""
+    """Secondary target: at 17 pairs, fidelity >= 0.92."""
     fidelity = _fidelity_at(17)
     assert fidelity >= 0.92, f"unbind fidelity at 17 pairs = {fidelity:.3f} < 0.92"
 
 
 def test_unbind_fidelity_18_pairs() -> None:
-    """D-TEM-02 outer bound: at 18 pairs (whole vocab), fidelity >= 0.90."""
+    """Outer bound: at 18 pairs (whole vocab), fidelity >= 0.90."""
     fidelity = _fidelity_at(18)
     assert fidelity >= 0.90, f"unbind fidelity at 18 pairs = {fidelity:.3f} < 0.90"

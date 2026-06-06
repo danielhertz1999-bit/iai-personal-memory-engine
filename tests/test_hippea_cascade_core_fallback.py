@@ -1,4 +1,4 @@
-"""— core-side HIPPEA fallback cascade tests.
+"""core-side fallback cascade tests.
 
 Closes the N=1k cross-process LRU gap that flagged as
 known: the daemon's cascade populates the daemon's LRU, but the MCP
@@ -10,24 +10,24 @@ core runs in a different process and ``snapshot_warm_ids()`` returns
 Covered contracts:
 
     Task 1 — helper (compute_core_side_warm_snapshot):
-        T1.1  helper exists and is synchronous
-        T1.2  returns list[UUID] with length <= max_records
-        T1.3  returns [] when no salient communities (cold fallback)
-        T1.4  read-only against store across 5 invocations
-        T1.5  does NOT mutate the daemon-side _warm_lru
-        T1.6  respects the top-K salient community ranking
-        T1.7  C3 guard — no anthropic import in the module
-        T1.8  performance floor — <100 ms on N=1000 records
+        T1.1 helper exists and is synchronous
+        T1.2 returns list[UUID] with length <= max_records
+        T1.3 returns [] when no salient communities (cold fallback)
+        T1.4 read-only against store across 5 invocations
+        T1.5 does NOT mutate the daemon-side _warm_lru
+        T1.6 respects the top-K salient community ranking
+        T1.7 C3 guard — no anthropic import in the module
+        T1.8 performance floor — <100 ms on N=1000 records
 
     Task 2 — wiring (_first_turn_recall_hook fallback):
-        T2.1  _CORE_WARM_LRU module-level TTLCache present
-        T2.2  _CORE_CASCADE_FIRED_PER_SESSION module-level set present
-        T2.3  empty daemon snapshot + first call -> cascade fires
-        T2.4  second call same session -> cascade is NOT fired again (idempotent)
-        T2.5  non-empty daemon snapshot -> core fallback is NOT fired
-        T2.6  compute_core_side_warm_snapshot raising is silently swallowed
-        T2.7  regression fence — helper does not touch recall accuracy
-        T2.8  response carries warm_lru_source observability field
+        T2.1 _CORE_WARM_LRU module-level TTLCache present
+        T2.2 _CORE_CASCADE_FIRED_PER_SESSION module-level set present
+        T2.3 empty daemon snapshot + first call -> cascade fires
+        T2.4 second call same session -> cascade is NOT fired again (idempotent)
+        T2.5 non-empty daemon snapshot -> core fallback is NOT fired
+        T2.6 compute_core_side_warm_snapshot raising is silently swallowed
+        T2.7 regression fence — helper does not touch recall accuracy
+        T2.8 response carries warm_lru_source observability field
 """
 from __future__ import annotations
 
@@ -62,7 +62,7 @@ def _isolated_keyring(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.fixture
 def store(tmp_path: Path) -> MemoryStore:
-    return MemoryStore(path=tmp_path / "lancedb")
+    return MemoryStore(path=tmp_path / "hippo")
 
 
 @pytest.fixture(autouse=True)
@@ -278,7 +278,7 @@ def _invoke_first_turn_hook(session_id="sess-a", cue="hello"):
     response: dict = {}
     params = {"session_id": session_id, "cue": cue}
 
-    # Build a fake store that survives the retrieve path without LanceDB
+    # Build a fake store that survives the retrieve path without store
     # round-trips (saves ~seconds per test case).
     store = mock.MagicMock()
     store.get = mock.MagicMock(return_value=None)

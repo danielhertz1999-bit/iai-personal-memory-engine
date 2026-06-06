@@ -1,4 +1,4 @@
-"""— async provenance write queue ( / M-02).
+"""Async provenance write queue.
 
 Moves provenance writes off the recall critical path. A single daemon
 thread drains a bounded queue.Queue of (record_id, entry) pairs and
@@ -8,24 +8,23 @@ exactly as the sync path did.
 Why this is the right shape:
 - provenance writes are pure SIDE EFFECTS; pipeline_recall never reads
   their result. Textbook fire-and-forget candidate.
-- The biological analogue: consolidation writes happen during rest, not
-  during retrieval (CLS / sleep replay).
+- Consolidation writes happen during rest, not during retrieval.
 - The existing ``AsyncWriteQueue`` is for record inserts,
   which must be durable before their return (S4 viability check reads
   them back). Provenance has no such contract — a simpler, purpose-built
   queue avoids the coroutine/event-loop machinery that asyncio imposes.
 
-Constitutional fences:
-- Rule 1: worker swallows all exceptions (recall must never fail due
-  to a provenance-write failure).
-- entries are never dropped during normal operation; on shutdown
-  the atexit hook drains the queue. W1/when the
-  in-memory queue is full under overload, batches are spilled to
+Fences:
+- Worker swallows all exceptions (recall must never fail due to a
+  provenance-write failure).
+- Entries are never dropped during normal operation; on shutdown the
+  atexit hook drains the queue. When the in-memory queue is full under
+  overload, batches are spilled to
   ``~/.iai-mcp/.provenance-overflow/<unix_ms>-<n>.jsonl``. The worker
   drains the spill dir on idle and re-enqueues the batches. Zero drops
   on the happy path; the only path that can drop is disk-write failure
   (alarmed via the ``provenance_queue_spill_failed`` stderr event).
-- C3 / C6: stdlib only. No extra dependencies.
+- Stdlib only. No extra dependencies.
 
 Python 3.11+.
 """
@@ -33,6 +32,7 @@ from __future__ import annotations
 
 import atexit
 import json
+import logging
 import queue
 import sys
 import threading
@@ -40,6 +40,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from iai_mcp.store import MemoryStore
@@ -49,7 +51,7 @@ if TYPE_CHECKING:
 _STOP = object()
 _FLUSH = object()
 
-# W1/ — overflow spill-to-disk.
+# Overflow spill-to-disk.
 OVERFLOW_DIR_NAME = ".provenance-overflow"
 # Worker idle poll: 5s upper bound on overflow-drain responsiveness.
 # Bounded so under sustained overload the spill drain catches up
@@ -62,10 +64,10 @@ class ProvenanceWriteQueue:
 
     Usage:
         q = ProvenanceWriteQueue(store, coalesce_ms=50)
-        q.start()                                # idempotent
-        q.enqueue([(record_id, entry_dict), ...])  # non-blocking
-        q.flush(timeout=2.0)                     # drain + wait
-        q.stop()                                 # drain + join
+        q.start() # idempotent
+        q.enqueue([(record_id, entry_dict),...]) # non-blocking
+        q.flush(timeout=2.0) # drain + wait
+        q.stop() # drain + join
 
     The worker loop:
         1. Blocking `.get()` on the queue (wakes on enqueue or sentinel).
@@ -169,11 +171,11 @@ class ProvenanceWriteQueue:
     def enqueue(self, pairs: "list[tuple[UUID, dict]]") -> None:
         """Non-blocking enqueue.
 
-        W1/when the in-memory queue is full, the batch
-        spills to ``~/.iai-mcp/.provenance-overflow/<ts>-<n>.jsonl``.
-        The worker thread drains the spill dir on idle and re-enqueues
-        the batches. zero drops under overload (only path that
-        can drop is disk-write failure, which is itself alarmed).
+        When the in-memory queue is full, the batch spills to
+        ``~/.iai-mcp/.provenance-overflow/<ts>-<n>.jsonl``. The worker
+        thread drains the spill dir on idle and re-enqueues the batches:
+        zero drops under overload (the only path that can drop is a
+        disk-write failure, which is itself alarmed).
         """
         if not pairs:
             return
@@ -192,7 +194,7 @@ class ProvenanceWriteQueue:
                 + str(len(pairs))
                 + "}\n"
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 -- stderr emission is best-effort
             pass
 
     # ---------------------------------------------------------------- spill / drain
@@ -209,9 +211,9 @@ class ProvenanceWriteQueue:
 
         Failure modes:
         - Disk full / permission denied: emits structured stderr event
-          ``provenance_queue_spill_failed``. This is the ONLY drop path
-          remaining post-07.9 W1; it's a system-level alarm condition,
-          not a normal-operation outcome.
+          ``provenance_queue_spill_failed``. This is the ONLY remaining
+          drop path; it's a system-level alarm condition, not a
+          normal-operation outcome.
         """
         if not pairs:
             return
@@ -228,14 +230,15 @@ class ProvenanceWriteQueue:
                     fh.write(json.dumps({"id": str(rid), "entry": entry}) + "\n")
             tmp_path.rename(fpath)  # atomic rename keeps drain from
             # ever reading a half-written file.
-        except Exception as exc:
+        except (OSError, TypeError, ValueError) as exc:
+            logger.warning("provenance_queue_spill_failed", extra={"err": str(exc)[:200], "n_pairs": len(pairs)})
             try:
                 sys.stderr.write(
                     '{"event":"provenance_queue_spill_failed","error":'
                     + _json_str(str(exc))
                     + ',"n_pairs":' + str(len(pairs)) + '}\n'
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 -- stderr emission is best-effort
                 pass
 
     def _drain_overflow_dir(self) -> int:
@@ -277,8 +280,9 @@ class ProvenanceWriteQueue:
                     return n_re_enqueued
                 fpath.unlink()
                 n_re_enqueued += len(pairs)
-            except Exception as exc:
+            except (OSError, json.JSONDecodeError, KeyError, ValueError) as exc:
                 # Malformed spill file: preserve evidence, do not lose data.
+                logger.warning("provenance_queue_spill_drain_failed", extra={"err": str(exc)[:200]})
                 try:
                     failed = fpath.with_suffix(f".failed-{int(time.time())}.jsonl")
                     fpath.rename(failed)
@@ -286,7 +290,7 @@ class ProvenanceWriteQueue:
                         '{"event":"provenance_queue_spill_drain_failed","error":'
                         + _json_str(str(exc)) + '}\n'
                     )
-                except Exception:
+                except Exception:  # noqa: BLE001 -- stderr + rename is best-effort
                     pass
         return n_re_enqueued
 
@@ -295,8 +299,8 @@ class ProvenanceWriteQueue:
     def _run(self) -> None:
         """Worker loop.
 
-        W1/between blocking `_q.get()` cycles the worker
-        drains any spilled overflow files at ``~/.iai-mcp/.provenance-overflow/``.
+        Between blocking `_q.get()` cycles the worker drains any spilled
+        overflow files at ``~/.iai-mcp/.provenance-overflow/``.
         Bounded poll: idle-timeout = ``_WORKER_IDLE_POLL_S`` so the spill
         drain runs at most once per ``_WORKER_IDLE_POLL_S`` seconds when
         the queue is empty.
@@ -309,10 +313,11 @@ class ProvenanceWriteQueue:
                 # Defensive: any error during drain is logged + swallowed.
                 try:
                     self._drain_overflow_dir()
-                except Exception:
-                    pass
+                except Exception:  # noqa: BLE001 -- worker must never die
+                    logger.debug("provenance_overflow_drain_error", exc_info=True)
                 continue
-            except Exception:
+            except Exception:  # noqa: BLE001 -- worker must never die
+                logger.debug("provenance_queue_get_error", exc_info=True)
                 continue
             if item is _STOP:
                 # Drain remaining real items before exit.
@@ -367,12 +372,13 @@ class ProvenanceWriteQueue:
             self._flush_event.set()
 
     def _flush_batch(self, pairs: list) -> None:
-        """Call store.append_provenance_batch, swallow all exceptions (Rule 1)."""
+        """Call store.append_provenance_batch, swallow all exceptions."""
         if not pairs:
             return
         try:
             self._store.append_provenance_batch(pairs, records_cache=None)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 -- recall must never fail
+            logger.warning("provenance_queue_flush_failed", extra={"n_pairs": len(pairs), "err": str(exc)[:200]})
             try:
                 sys.stderr.write(
                     '{"event":"provenance_queue_flush_failed","n_pairs":'
@@ -381,7 +387,7 @@ class ProvenanceWriteQueue:
                     + _json_str(str(exc))
                     + "}\n"
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 -- stderr emission is best-effort
                 pass
 
     def _atexit_flush(self) -> None:
@@ -390,7 +396,7 @@ class ProvenanceWriteQueue:
             if self._started:
                 self.flush(timeout=2.0)
                 self.stop()
-        except Exception:
+        except Exception:  # noqa: BLE001 -- atexit must never raise
             pass
 
 

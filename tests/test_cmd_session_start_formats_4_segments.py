@@ -1,7 +1,7 @@
 """Contract:
 - Store with L0 + L1 + at least one L2 + rich-club -> stdout contains the
-  four section headers in fixed order: '# L0 identity', '# L1 critical facts',
-  '# L2 community', '# Global rich-club'.
+  four section headers in fixed order: '## Identity', '## Critical facts',
+  '## Topic communities', '## Key memories'.
 - Empty segments are skipped (no header with empty body).
 """
 from __future__ import annotations
@@ -74,24 +74,24 @@ def test_stdout_contains_four_segments_in_fixed_order(tmp_path, monkeypatch, cap
     out = capsys.readouterr().out
 
     assert rc == 0
-    assert "# L0 identity" in out, out
-    assert "# L1 critical facts" in out, out
-    assert "# L2 community" in out, out
-    assert "# Global rich-club" in out, out
-    # Fixed order.
-    i0 = out.index("# L0 identity")
-    i1 = out.index("# L1 critical facts")
-    i2 = out.index("# L2 community")
-    i3 = out.index("# Global rich-club")
+    assert "## Identity" in out, out
+    assert "## Critical facts" in out, out
+    assert "## Topic communities" in out, out
+    assert "## Key memories" in out, out
+    # Fixed order: Identity < Critical facts < Topic communities < Key memories.
+    i0 = out.index("## Identity")
+    i1 = out.index("## Critical facts")
+    i2 = out.index("## Topic communities")
+    i3 = out.index("## Key memories")
     assert i0 < i1 < i2 < i3, (i0, i1, i2, i3, out)
     # No empty-body segment: a header followed immediately by another header
     # or by EOF means the body was empty and the formatter forgot to skip.
-    for header in ("# L0 identity", "# L1 critical facts", "# L2 community", "# Global rich-club"):
+    for header in ("## Identity", "## Critical facts", "## Topic communities", "## Key memories"):
         h_idx = out.index(header)
         tail = out[h_idx + len(header):]
         # After the header newline there must be non-whitespace before the
-        # next "# " or EOF.
+        # next "## " or EOF.
         assert tail.startswith("\n"), header
-        body_end = tail.find("\n# ")
+        body_end = tail.find("\n## ")
         body = tail[1:] if body_end == -1 else tail[1:body_end]
         assert body.strip() != "", f"empty body under {header}: {body!r}"

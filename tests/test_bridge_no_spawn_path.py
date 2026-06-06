@@ -1,10 +1,10 @@
-"""R5 acceptance — compile-output regression trap.
+"""Compile-output regression trap.
 
-This is the regression-trap that catches a future revert of 's
+This is the regression-trap that catches a future revert of the
 no-spawn architecture. If `child_process.spawn` reappears in
 `mcp-wrapper/dist/bridge.js`, this test FAILS — alerting the developer
-(or a future Claude) that someone has reintroduced the TOCTOU spawn
-race that explicitly removed.
+that someone has reintroduced the TOCTOU spawn
+race that was explicitly removed.
 
 # Why a compile-output trap, not just a source-level grep?
 
@@ -21,13 +21,9 @@ catch:
 The compiled `dist/bridge.js` is what actually ships and runs. Greping
 THAT is the load-bearing assertion.
 
-# Reference
-
-- Task 3
-- 07.1-CONTEXT.md D7.1-07 (bridge.ts spawn-removal scope)
-- The mirror source-level assertion lives in Task 1
-  (``grep -c 'child_process[.]spawn|^import.*spawn|spawnDaemon'
-  mcp-wrapper/src/bridge.ts`` returns 0)
+A mirror source-level assertion lives alongside this test
+(``grep -c 'child_process[.]spawn|^import.*spawn|spawnDaemon'
+mcp-wrapper/src/bridge.ts`` returns 0).
 """
 from __future__ import annotations
 
@@ -106,10 +102,10 @@ def test_dist_bridge_js_has_no_child_process_spawn(built_bridge_js):
     found = [s for s in forbidden_substrings if s in text]
     assert not found, (
         "REGRESSION: dist/bridge.js contains spawn-related substring(s) "
-        f"that explicitly removed: {found}. "
-        "Someone has re-introduced the TOCTOU spawn race that 's "
-        "pure-connector refactor eliminated. Re-read 07.1-CONTEXT.md "
-        "D7.1-07 (bridge.ts spawn-removal scope) before pushing."
+        f"that were explicitly removed: {found}. "
+        "Someone has re-introduced the TOCTOU spawn race that the "
+        "pure-connector refactor eliminated. Review the bridge.ts "
+        "spawn-removal scope before pushing."
     )
 
 
@@ -130,7 +126,7 @@ def test_dist_bridge_js_has_DaemonUnreachableError(built_bridge_js):
     """
     text = built_bridge_js.read_text(encoding="utf-8")
 
-    # done criteria for Task 1: DaemonUnreachableError
+    # done criteria: DaemonUnreachableError
     # appears ≥2 times in the source (class def + at least one throw).
     # Same expectation for the compiled output — tsc preserves named
     # class identifiers exactly.
@@ -157,9 +153,9 @@ def test_dist_bridge_js_has_5000_socket_timeout(built_bridge_js):
     If this test fails:
       - The constant was renamed: update the assertion AND verify the
         new name is the connect timeout (not idle-shutdown / heartbeat).
-      - The value was lowered (e.g., back to 250): re-read CONTEXT.md
-        D7.1-07 — 5s is required because launchd cold-spawn of the
-        daemon (bge-small embedder load + LanceDB open) is empirically
+      - The value was lowered (e.g., back to 250): 5s is required
+        because launchd cold-spawn of the
+        daemon (bge-small embedder load + store open) is empirically
         3-10s on macOS. A lower timeout will spuriously throw
         DaemonUnreachableError on legitimate cold-starts.
     """
@@ -171,8 +167,7 @@ def test_dist_bridge_js_has_5000_socket_timeout(built_bridge_js):
         "REGRESSION: dist/bridge.js does not contain "
         "'SOCKET_CONNECT_TIMEOUT_MS = 5000'. Either the constant was "
         "renamed, the value was changed, or tsc minification was "
-        "enabled (which would also break the source-level grep done "
-        "criteria in Task 1). requires 5000ms to cover "
-        "launchd socket-activation cold-start window — see "
-        "07.1-CONTEXT.md D7.1-07."
+        "enabled (which would also break the source-level grep "
+        "criteria). 5000ms is required to cover the "
+        "launchd socket-activation cold-start window."
     )

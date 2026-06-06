@@ -15,7 +15,7 @@
     discriminator that keeps the test RED on current `main`).
 (d) When the cache file exists and mtime is 25h old, the hook still
     prints the cache content, logs `cache-hit age=`, and exits 0 WITHOUT
-    invoking the CLI (no freshness expiry).
+    invoking the CLI (cortex has no freshness expiry).
 """
 from __future__ import annotations
 
@@ -163,6 +163,123 @@ def test_daemon_writes_cache_on_rem_completion(tmp_path, monkeypatch):
     )
 
 
+# ---- file-mode invariant
+
+def test_cache_file_mode_is_owner_only(tmp_path, monkeypatch):
+    from iai_mcp import daemon as daemon_mod
+
+    store = _fresh_store(tmp_path, monkeypatch)
+
+    from iai_mcp.core import _seed_l0_identity
+    _seed_l0_identity(store)
+
+    from datetime import datetime, timezone
+    from uuid import uuid4
+    from iai_mcp.types import EMBED_DIM, MemoryRecord
+    _now = datetime.now(timezone.utc)
+    for _i in range(3):
+        store.insert(MemoryRecord(
+            id=uuid4(),
+            tier="semantic",
+            literal_surface=f"Pinned fact {_i}: high-detail context.",
+            aaak_index="",
+            embedding=[0.1] * EMBED_DIM,
+            community_id=None,
+            centrality=0.5,
+            detail_level=5,
+            pinned=True,
+            stability=0.0,
+            difficulty=0.0,
+            last_reviewed=None,
+            never_decay=True,
+            never_merge=False,
+            provenance=[],
+            created_at=_now,
+            updated_at=_now,
+            tags=[],
+            language="en",
+        ))
+
+    cache_path = tmp_path / "session-start-payload.cached.md"
+    daemon_mod._write_session_start_cache(store, cache_path=cache_path)
+
+    assert cache_path.exists(), "cache file was not created"
+    assert oct(stat.S_IMODE(cache_path.stat().st_mode)) == "0o600", (
+        f"cache file mode is not 0o600; got "
+        f"{oct(stat.S_IMODE(cache_path.stat().st_mode))}"
+    )
+
+
+# ---- regression: precache writer must not invoke the LLMLingua compressor
+
+def test_precache_does_not_compress_payload(tmp_path, monkeypatch):
+    """The session-start precache writer must NOT route the rendered markdown
+    through compress_recall_payload. LLMLingua-2 drops tokens mid-word and
+    produces unreadable token-soup; the payload is already budgeted by the
+    composer and hard-capped at 10 000 chars, making compression both
+    destructive and redundant.
+
+    Design: a non-raising recording spy (NOT a raising one — the writer's outer
+    ``except Exception`` would silently swallow a raised exception and pass
+    vacuously). The spy counts invocations and returns its input unchanged,
+    guaranteeing the file-exists assertion below is independent of whether the
+    real compressor would have run.
+    """
+    from iai_mcp import compress as compress_mod
+    from iai_mcp import daemon as daemon_mod
+
+    calls = {"n": 0}
+
+    def _spy(hits_text, store=None):  # non-raising, records call count only
+        calls["n"] += 1
+        return hits_text
+
+    monkeypatch.setattr(compress_mod, "compress_recall_payload", _spy)
+
+    store = _fresh_store(tmp_path, monkeypatch)
+
+    from iai_mcp.core import _seed_l0_identity
+    _seed_l0_identity(store)
+
+    from datetime import datetime, timezone
+    from uuid import uuid4
+    from iai_mcp.types import EMBED_DIM, MemoryRecord
+    _now = datetime.now(timezone.utc)
+    for _i in range(3):
+        store.insert(MemoryRecord(
+            id=uuid4(),
+            tier="semantic",
+            literal_surface=f"Pinned fact {_i}: high-detail context.",
+            aaak_index="",
+            embedding=[0.1] * EMBED_DIM,
+            community_id=None,
+            centrality=0.5,
+            detail_level=5,
+            pinned=True,
+            stability=0.0,
+            difficulty=0.0,
+            last_reviewed=None,
+            never_decay=True,
+            never_merge=False,
+            provenance=[],
+            created_at=_now,
+            updated_at=_now,
+            tags=[],
+            language="en",
+        ))
+
+    cache_path = tmp_path / "c.md"
+    daemon_mod._write_session_start_cache(store, cache_path=cache_path)
+
+    assert calls["n"] == 0, (
+        "session-start precache path must NOT invoke compress_recall_payload — "
+        "doing so routes readable continuity markdown through LLMLingua-2, which "
+        "drops tokens mid-word and produces unreadable token-soup."
+    )
+    assert cache_path.exists(), "cache file was not created by the precache writer"
+    assert cache_path.read_text(encoding="utf-8"), "cache file is empty after precache write"
+
+
 # ---------------------------------------------------------------------- (b)
 
 def test_hook_reads_cache_when_fresh(tmp_path):
@@ -174,7 +291,7 @@ def test_hook_reads_cache_when_fresh(tmp_path):
     # Match real payload shape: format_payload_as_markdown joins blocks with
     # "\n\n" and emits no trailing newline, so the daemon-written cache file
     # has no trailing newline either. Bash command substitution
-    # (`out=$(head -c ... "$file")`) strips trailing newlines, so a cache
+    # (`out=$(head -c... "$file")`) strips trailing newlines, so a cache
     # that omitted the trailing newline round-trips byte-for-byte.
     cache_content = "# L0 identity\nfresh-cache-content-marker"
     (home / CACHE_REL).write_text(cache_content)
@@ -247,6 +364,9 @@ def test_hook_serves_stale_cache(tmp_path):
     home.mkdir()
     (home / ".iai-mcp").mkdir()
 
+    # Cache content without trailing newline — matches the daemon writer
+    # (format_payload_as_markdown emits no trailing newline) and survives
+    # bash's command-substitution newline-stripping byte-for-byte.
     stale_cache = home / CACHE_REL
     cache_content = "# stale\nold content that must be ignored"
     stale_cache.write_text(cache_content)

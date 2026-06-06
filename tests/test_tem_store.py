@@ -1,6 +1,6 @@
-""" RED: structure_hv field schema validation on MemoryRecord.
+"""RED: structure_hv field schema validation on MemoryRecord.
 
-MemoryRecord.structure_hv: bytes is the renamed Phase-2 hd_vector slot. It
+MemoryRecord.structure_hv: bytes is the renamed hd_vector slot. It
 must accept empty bytes (pre-migration sentinel) OR exactly STRUCTURE_HV_BYTES
 (1250 bytes, D=10000 BSC packed) -- anything else is a constitutional schema
 violation that __post_init__ rejects.
@@ -87,7 +87,7 @@ def test_structure_hv_rejects_non_bytes() -> None:
 
 
 def test_module_constants_match_canonical_dims() -> None:
-    """STRUCTURE_HV_DIM=10000 (D-TEM-01); STRUCTURE_HV_BYTES=1250 (D/8)."""
+    """STRUCTURE_HV_DIM=10000; STRUCTURE_HV_BYTES=1250 (D/8)."""
     from iai_mcp.types import STRUCTURE_HV_BYTES, STRUCTURE_HV_DIM
 
     assert STRUCTURE_HV_DIM == 10000

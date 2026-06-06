@@ -1,7 +1,7 @@
 """IAI-MCP benchmark harness.
 
-Phase-1 benchmarks:
-- bench.tokens   -- (steady <=3000) + (fresh <=8000)
+ benchmarks:
+- bench.tokens -- (steady <=3000) + (fresh <=8000)
 - bench.verbatim -- (verbatim recall >=99% on pinned records)
 
 Both runners are invokable as CLIs (`python -m bench.tokens`, `python -m bench.verbatim`)

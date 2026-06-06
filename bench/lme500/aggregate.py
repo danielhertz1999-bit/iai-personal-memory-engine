@@ -7,7 +7,7 @@ Usage:
         --summary bench/lme500/output/lme500-v1-summary.json
 
 The --in path may be:
-- the final summary JSON ({"per_row": [...], ...} schema), or
+- the final summary JSON ({"per_row": [...],...} schema), or
 - the per-row JSONL checkpoint (one JSON dict per line — works on
   partial runs while the bench is still in progress).
 

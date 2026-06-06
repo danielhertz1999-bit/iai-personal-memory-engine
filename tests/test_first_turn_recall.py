@@ -1,6 +1,4 @@
-"""RED-state test scaffold. Tasks 2-5 turn these GREEN.
-
-Covers / D5-03: first-turn auto-recall hook in core.dispatch that fires
+"""First-turn auto-recall hook in core.dispatch that fires
 exactly once per session and injects a scoped recall into the response.
 """
 from __future__ import annotations
@@ -42,7 +40,7 @@ def _seed_one_record(store: MemoryStore, text: str = "reference content") -> Non
 
 
 def test_first_turn_fires_exactly_once(tmp_path, monkeypatch):
-    """D5-03: first dispatch injects first_turn_recall; second dispatch does not."""
+    """first dispatch injects first_turn_recall; second dispatch does not."""
     # Patch daemon_state to emulate first-turn-pending for session s1 exactly once.
     pending = {"s1": True}
 
@@ -76,7 +74,7 @@ def test_first_turn_fires_exactly_once(tmp_path, monkeypatch):
 
 
 def test_first_turn_budget_capped_at_400(tmp_path, monkeypatch):
-    """D5-03: first_turn_recall budget_tokens ≤ 400."""
+    """first_turn_recall budget_tokens ≤ 400."""
     pending = {"s2": True}
     monkeypatch.setattr(
         "iai_mcp.daemon_state.load_state",
@@ -101,7 +99,7 @@ def test_first_turn_budget_capped_at_400(tmp_path, monkeypatch):
 
 
 def test_daemon_unreachable_falls_back_silently(tmp_path, monkeypatch):
-    """D5-03 silent-fail: daemon_state read error must not break dispatch."""
+    """silent-fail: daemon_state read error must not break dispatch."""
     def _boom():
         raise RuntimeError("synthetic daemon_state failure")
 
@@ -122,7 +120,7 @@ def test_daemon_unreachable_falls_back_silently(tmp_path, monkeypatch):
 
 
 def test_first_turn_emits_event(tmp_path, monkeypatch):
-    """D5-03: first_turn hook writes kind=first_turn_recall event."""
+    """first_turn hook writes kind=first_turn_recall event."""
     from iai_mcp.events import query_events
 
     pending = {"s4": True}

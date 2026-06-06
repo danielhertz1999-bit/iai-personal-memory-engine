@@ -1,15 +1,15 @@
-"""Tests for R8 — cleanup migration safety.
+"""Tests for cleanup migration safety.
 
-Locked decisions covered (06-CONTEXT.md):
+Behaviour covered:
 - top-level `iai-mcp schema-cleanup` subcommand with `[--dry-run] [--apply]
-  [--store-path PATH]`. Default mode is `--dry-run` (Beer VSM S2 reversibility).
+  [--store-path PATH]`. Default mode is `--dry-run` for reversibility.
 - `tier="semantic_pruned"` records remain in store indefinitely.
 - `SEMANTIC_PRUNED_TIER` constant in `src/iai_mcp/types.py`.
 - snapshot directory naming `~/.iai-mcp/lancedb-pre-cleanup-YYYYMMDDTHHMMSSZ`
   (UTC ISO-8601 basic format, no colons; filesystem-safe macOS + Linux).
 - pytest under `tests/` (single file: `test_migrate_cleanup.py`).
 
-R8 acceptance (06-SPEC.md): N=12 known duplicates across 4 patterns →
+Acceptance: N=12 known duplicates across 4 patterns →
 `--dry-run` reports the diff without mutating; `--apply` snapshots
 the LanceDB tables BEFORE any write, soft-deletes via tier rename to
 `semantic_pruned`, reinforces incoming `schema_instance_of` edges
@@ -88,7 +88,7 @@ def _patch_embedder(monkeypatch):
     yield
 
 
-# ---------------------------------------------------------------- Task 1: SEMANTIC_PRUNED_TIER constant + TIER_ENUM extension
+# ---------------------------------------------------------------- SEMANTIC_PRUNED_TIER constant + TIER_ENUM extension
 
 
 def test_semantic_pruned_tier_constant_and_enum_membership():
@@ -96,7 +96,7 @@ def test_semantic_pruned_tier_constant_and_enum_membership():
     from iai_mcp.types import SEMANTIC_PRUNED_TIER, TIER_ENUM
 
     assert SEMANTIC_PRUNED_TIER == "semantic_pruned", (
-        "D-09 mandates the constant value 'semantic_pruned' (used as a soft-delete "
+        "the constant value must be 'semantic_pruned' (used as a soft-delete "
         "sentinel by cleanup_schema_duplicates)."
     )
     assert SEMANTIC_PRUNED_TIER in TIER_ENUM, (
@@ -125,7 +125,7 @@ def test_memoryrecord_invalid_tier_still_raises():
         _rec(tier="garbage")
 
 
-# ---------------------------------------------------------------- Task 2: cleanup_schema_duplicates callable
+# ---------------------------------------------------------------- cleanup_schema_duplicates callable
 
 
 def _seed_dup_store(
@@ -136,7 +136,7 @@ def _seed_dup_store(
 ):
     """Insert duplicate schema records DIRECTLY via store.insert(MemoryRecord(...)).
 
-    made `persist_schema` idempotent so it would refuse to create the
+     made `persist_schema` idempotent so it would refuse to create the
     duplicate state we need for the test — the cleanup is a one-shot recovery for
     stores that accumulated duplicates BEFORE shipped.
 
@@ -213,7 +213,7 @@ def _count_pruned(store) -> int:
 
 
 def test_cleanup_dry_run_does_not_mutate_store(tmp_path):
-    """R8: --dry-run reports the diff and creates NO snapshot, mutates NO record."""
+    """--dry-run reports the diff and creates NO snapshot, mutates NO record."""
     from iai_mcp.migrate import cleanup_schema_duplicates
 
     store, _patterns = _seed_dup_store(
@@ -249,9 +249,9 @@ def test_cleanup_dry_run_does_not_mutate_store(tmp_path):
 
 
 def test_cleanup_apply_creates_snapshot_directory_before_writes(tmp_path):
-    """R8: --apply creates snapshot dir BEFORE soft-deletes; tables intact in copy.
+    """--apply creates snapshot dir BEFORE soft-deletes; tables intact in copy.
 
-    Per D-11, snapshot is at `store.root / f'lancedb-pre-cleanup-{ts}'`
+    The snapshot is at `store.root / f'lancedb-pre-cleanup-{ts}'`
     (sibling of the inner `lancedb/` tables dir).
     """
     from iai_mcp.migrate import cleanup_schema_duplicates
@@ -271,16 +271,21 @@ def test_cleanup_apply_creates_snapshot_directory_before_writes(tmp_path):
     suffix = snap.name[len("lancedb-pre-cleanup-"):]
     assert len(suffix) == 16 and suffix.endswith("Z")
 
-    # The snapshot is a copy of the inner `lancedb/` tables dir, so it must
-    # contain the .lance subdirs at top level.
+    # The snapshot is a copy of the storage dir; with HippoDB it contains
+    # the hippo/ subdirectory (brain.sqlite3 + hnswlib index).
     snap_entries = {p.name for p in snap.iterdir()}
-    assert "records.lance" in snap_entries, snap_entries
-    assert "events.lance" in snap_entries, snap_entries
-    assert "edges.lance" in snap_entries, snap_entries
+    assert snap_entries, f"snapshot must be non-empty, got: {snap_entries}"
+    # Accept either HippoDB layout (brain.sqlite3 at snap top-level, copied from
+    # hippo/ contents) or legacy LanceDB layout (.lance dirs).
+    has_hippo = "brain.sqlite3" in snap_entries
+    has_lance = any(e.endswith(".lance") for e in snap_entries)
+    assert has_hippo or has_lance, (
+        f"snapshot must contain brain.sqlite3 or .lance dirs; got: {snap_entries}"
+    )
 
 
 def test_cleanup_apply_soft_deletes_duplicates_via_tier_rename(tmp_path):
-    """R8: --apply leaves 1 keeper per pattern at tier='semantic'; the rest at 'semantic_pruned'."""
+    """--apply leaves 1 keeper per pattern at tier='semantic'; the rest at 'semantic_pruned'."""
     from iai_mcp.migrate import cleanup_schema_duplicates
 
     store, _patterns = _seed_dup_store(tmp_path, n_per_pattern=4, n_patterns=3)
@@ -293,7 +298,7 @@ def test_cleanup_apply_soft_deletes_duplicates_via_tier_rename(tmp_path):
 
 
 def test_cleanup_apply_reinforces_edges_onto_keeper(tmp_path):
-    """R8: keeper inherits incoming schema_instance_of edges from duplicates."""
+    """keeper inherits incoming schema_instance_of edges from duplicates."""
     from iai_mcp.migrate import cleanup_schema_duplicates
     from iai_mcp.store import EDGES_TABLE
 
@@ -384,7 +389,7 @@ def test_cleanup_apply_keeper_is_oldest_per_pattern(tmp_path):
 
 
 def test_cleanup_apply_skips_single_record_groups(tmp_path):
-    """R8: patterns with N=1 schema row are left untouched (not duplicates)."""
+    """patterns with N=1 schema row are left untouched (not duplicates)."""
     from iai_mcp.migrate import cleanup_schema_duplicates
 
     store, _patterns = _seed_dup_store(
@@ -403,7 +408,7 @@ def test_cleanup_apply_skips_single_record_groups(tmp_path):
 
 
 def test_cleanup_emits_schema_cleanup_run_event(tmp_path):
-    """R8 + audit trail: schema_cleanup_run event written with the summary payload."""
+    """audit trail: schema_cleanup_run event written with the summary payload."""
     from iai_mcp.events import query_events
     from iai_mcp.migrate import cleanup_schema_duplicates
 
@@ -432,7 +437,7 @@ def test_cleanup_emits_schema_cleanup_run_event(tmp_path):
 
 
 def test_cleanup_apply_is_idempotent_on_second_run(tmp_path):
-    """R8: re-running --apply on the migrated store reports zero work to do."""
+    """re-running --apply on the migrated store reports zero work to do."""
     from iai_mcp.migrate import cleanup_schema_duplicates
 
     store, _patterns = _seed_dup_store(tmp_path, n_per_pattern=4, n_patterns=3)
@@ -456,7 +461,7 @@ def test_cleanup_apply_is_idempotent_on_second_run(tmp_path):
     assert _count_pruned(store) == 9
 
 
-# ---------------------------------------------------------------- Task 3: iai-mcp schema-cleanup CLI subcommand
+# ---------------------------------------------------------------- iai-mcp schema-cleanup CLI subcommand
 
 
 def _run_cli(argv: list[str]) -> tuple[int, str]:

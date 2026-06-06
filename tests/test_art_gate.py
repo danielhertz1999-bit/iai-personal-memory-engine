@@ -1,4 +1,4 @@
-"""ART vigilance gate tests (, , )."""
+"""ART vigilance gate tests."""
 from __future__ import annotations
 
 from iai_mcp.types import EMBED_DIM
@@ -7,7 +7,7 @@ from tests.test_store import _make
 
 
 def test_vigilance_rho_is_0_95():
-    """ρ fixed at 0.95 for """
+    """ρ fixed at 0.95."""
     assert VIGILANCE_RHO == 0.95
 
 
@@ -40,7 +40,7 @@ def test_moderate_similarity_below_rho_creates():
     """cos = 0.90 < 0.95 -> create."""
     existing = _make(vec=[1.0] + [0.0] * (EMBED_DIM - 1))
     # Construct a vector with cosine exactly 0.90 to the existing one.
-    # If we take [0.9, sqrt(1 - 0.81), 0, 0, ...] with unit norm, cosine = 0.9
+    # If we take [0.9, sqrt(1 - 0.81), 0, 0,...] with unit norm, cosine = 0.9
     import math
     y = math.sqrt(1 - 0.9 * 0.9)
     candidate = _make(vec=[0.9, y] + [0.0] * (EMBED_DIM - 2))

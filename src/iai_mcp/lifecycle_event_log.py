@@ -1,6 +1,6 @@
-"""-- JSONL event log for lifecycle state machine validation.
+"""JSONL event log for lifecycle state machine validation.
 
-The lifecycle state machine needs an append-only event log to validate
+The lifecycle state machine uses an append-only event log to validate
 transitions in shadow-run mode and to provide a post-mortem trail when
 something misbehaves. The log is the empirical ground truth for "did the
 machine compute the right state at the right moment", separate from the
@@ -10,8 +10,7 @@ Format: JSONL (one JSON record per line), file per UTC date, kept under
 `~/.iai-mcp/logs/lifecycle-events-YYYY-MM-DD.jsonl`. Daily rotation
 keyed off the UTC date of the appended event so writes near local
 midnight do not silently fragment across two files in unpredictable
-timezones. 30-day retention with gzip compression for older files
-matches the retention spec.
+timezones. 30-day retention with gzip compression for older files.
 
 Atomic line writes: each `append` opens the file with `O_APPEND |
 O_CREAT` and uses `fcntl.flock(LOCK_EX)` to serialise concurrent writers
@@ -37,8 +36,7 @@ from typing import Any
 DEFAULT_LOG_DIR: Path = Path.home() / ".iai-mcp" / "logs"
 
 # Event kinds emitted by the state machine and helpers; treat as the
-# closed set for now — adding a kind requires updating downstream
-# consumers (panel R7 validation script in a future phase).
+# closed set for now — adding a kind requires updating downstream consumers.
 KNOWN_EVENT_KINDS: frozenset[str] = frozenset(
     {
         "state_transition",
@@ -69,9 +67,9 @@ class LifecycleEventLog:
     """Append-only JSONL event log with daily rotation + retention.
 
     Public surface:
-        append(event)             -- write one event line, lock + fsync.
-        rotate_old_files(...)     -- gzip files older than retention.
-        current_file()            -- return path to today's log file.
+        append(event) -- write one event line, lock + fsync.
+        rotate_old_files(...) -- gzip files older than retention.
+        current_file() -- return path to today's log file.
 
     Thread/process safety: a per-call `fcntl.flock` on the destination
     file makes concurrent writers (daemon, hooks) safe. The lock is

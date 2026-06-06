@@ -1,12 +1,11 @@
-"""Rich-club pre-fetch .
+"""Rich-club pre-fetch.
 
 Top 10% of nodes by centrality. Used by pipeline.pipeline_recall at stage 4
-(union with 2-hop spread) and by session-start assembler to pre-warm
-the Anthropic prompt cache with a stable global-hub set.
+(union with 2-hop spread) and by the session-start assembler to pre-warm
+the prompt cache with a stable global-hub set.
 
-van den Heuvel & Sporns 2011 (J Neurosci 31:15775) observed that the top ~10%
-of hub nodes handle ~69% of the network's shortest-path traffic. We use the
-same percentile as the pre-fetch size.
+The top ~10% of hub nodes handle the large majority of the network's
+shortest-path traffic, so that percentile is used as the pre-fetch size.
 """
 from __future__ import annotations
 
@@ -17,7 +16,7 @@ from iai_mcp.graph import MemoryGraph
 
 
 def rich_club_nodes(graph: MemoryGraph, percent: float = 0.10) -> list[UUID]:
-    """: top `percent` fraction of nodes by centrality.
+    """Return the top `percent` fraction of nodes by centrality.
 
     - Empty graph -> [].
     - Non-empty graph -> at least 1 node (ceil) even if percent rounds to 0.

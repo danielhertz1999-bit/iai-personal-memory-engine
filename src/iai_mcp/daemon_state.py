@@ -1,22 +1,16 @@
-# Canonical FSM state lives in ``lifecycle_state.json`` (LifecycleStateRecord).
-# This module's ``fsm_state`` field is the legacy view; ``fsm_reconcile`` at
-# daemon startup compares the two and warns on disagreement.
 """Atomic daemon state persistence.
 
 State file at ~/.iai-mcp/.daemon-state.json holds:
-- fsm_state               -- WAKE / TRANSITIONING / SLEEP / DREAMING
-- daemon_started_at       -- ISO8601 UTC
-- last_digest_shown_at    -- ISO8601 UTC, used by morning digest gate
-- pending_digest          -- dict ready to surface in next memory_recall
-- last_learned_at         -- last quiet-window learn timestamp
-- last_session_ts         -- last observed session_started event ts
+- fsm_state -- WAKE / TRANSITIONING / SLEEP / DREAMING
+- daemon_started_at -- ISO8601 UTC
+- last_digest_shown_at -- ISO8601 UTC, used by morning digest gate
+- pending_digest -- dict ready to surface in next memory_recall
+- last_learned_at -- last quiet-window learn timestamp
+- last_session_ts -- last observed session_started event ts
 
 All writes via tempfile + os.replace (POSIX atomic rename). Crash-mid-write
 leaves the old file intact; readers either see old complete or new complete,
-never partial.
-
-T-04-01 mitigation: atomic rename precludes torn writes.
-T-04-07 mitigation: file mode 0o600 user-only.
+never partial. File mode is 0o600 user-only.
 """
 from __future__ import annotations
 
@@ -28,7 +22,7 @@ from pathlib import Path
 
 STATE_PATH: Path = Path.home() / ".iai-mcp" / ".daemon-state.json"
 
-# morning-digest gating threshold. The digest is surfaced only when it
+#: morning-digest gating threshold. The digest is surfaced only when it
 # has been at least this many hours since the last show (or has never shown).
 DIGEST_SHOW_THRESHOLD_HOURS: int = 18
 
@@ -76,7 +70,7 @@ def save_state(state: dict) -> None:
             os.fsync(f.fileno())
         os.chmod(tmp, 0o600)
         os.replace(tmp, STATE_PATH)
-    except Exception:
+    except (OSError, TypeError, ValueError):
         try:
             os.unlink(tmp)
         except OSError:
@@ -151,7 +145,7 @@ def prune_stale_first_turn(
 
 
 def mark_session_opened(state: dict, session_id: str) -> None:
-    """ / D5-03: mark first_turn_pending for a session.
+    """Mark first_turn_pending for a session.
 
     Stores the opening timestamp as the dict value so ``prune_stale_first_turn``
     can evict entries whose client died before consuming the flag. Opportunistic
@@ -170,7 +164,7 @@ def mark_session_opened(state: dict, session_id: str) -> None:
 def consume_first_turn(state: dict, session_id: str) -> bool:
     """Return True iff first call for session; atomic pop+save.
 
-    D5-03: the first memory_recall in a session consumes the
+     : the first memory_recall in a session consumes the
     flag so subsequent recalls bypass the first-turn hook.
     """
     try:
@@ -180,33 +174,31 @@ def consume_first_turn(state: dict, session_id: str) -> bool:
         if pending.pop(session_id, False):
             try:
                 save_state(state)
-            except Exception:
+            except (OSError, TypeError, ValueError):
                 # save failure is non-fatal — returning True still triggers
                 # the hook exactly once in-process; cross-process atomicity
                 # is best-effort.
                 pass
             return True
         return False
-    except Exception:
+    except (KeyError, TypeError, AttributeError):
         return False
 
 
-# R3 (per / / ): a per-tick + startup
-# reaper for stale `first_turn_pending` entries with a 1-hour TTL and a
-# tuple return shape (updated_state, dropped_session_ids).
+# Per-tick + startup reaper for stale `first_turn_pending` entries with a
+# 1-hour TTL and a tuple return shape (updated_state, dropped_session_ids).
 #
 # Distinct from `prune_stale_first_turn` above which has a 24h ceiling and
 # is opportunistically invoked from `mark_session_opened`. Both helpers
-# coexist by design (researcher finding #1 + advisor recommendation):
+# coexist:
 # - `prune_stale_first_turn` keeps its 24h opportunistic path on session-open;
-# - `prune_first_turn_pending` is the per-tick + startup reaper that needs
-#   the dropped IDs back so the caller can emit
-# `kind=first_turn_pending_expired` events .
+# - `prune_first_turn_pending` is the per-tick + startup reaper that returns
+#   the dropped IDs back so the caller can emit `kind=first_turn_pending_expired`.
 #
 # Pure function — no I/O. Caller is responsible for `save_state(state)`
 # and the event emit. Idempotent; safe on empty/missing input.
 
-FIRST_TURN_PENDING_TTL_SEC_DEFAULT: float = 3600.0  # D7.2-08 1h default
+FIRST_TURN_PENDING_TTL_SEC_DEFAULT: float = 3600.0  # 1h default
 
 
 def prune_first_turn_pending(
@@ -214,7 +206,7 @@ def prune_first_turn_pending(
     now: datetime | None = None,
     ttl_sec: float = FIRST_TURN_PENDING_TTL_SEC_DEFAULT,
 ) -> tuple[dict, list[str]]:
-    """R3: drain stale `first_turn_pending` entries.
+    """Drain stale `first_turn_pending` entries.
 
     Returns (updated_state_dict, dropped_session_ids). Pure function —
     does NOT call save_state; does NOT emit events. Caller decides
@@ -230,8 +222,7 @@ def prune_first_turn_pending(
 
     Distinct from `prune_stale_first_turn` (24h default, returns int);
     this helper is per-tick + startup with a shorter TTL and visibility
-    into which sessions were dropped ( event payload needs the
-    session_ids list).
+    into which sessions were dropped.
     """
     pending = state.get("first_turn_pending")
     if not isinstance(pending, dict) or not pending:
@@ -266,7 +257,7 @@ def prune_first_turn_pending(
 
 
 def get_pending_digest(state: dict, now: datetime) -> dict | None:
-    """: return pending morning digest if eligible, else None.
+    """Return pending morning digest if eligible, else None.
 
     Eligibility gate: >= DIGEST_SHOW_THRESHOLD_HOURS since last_digest_shown_at
     OR never shown. When returned, the digest is consumed from state and

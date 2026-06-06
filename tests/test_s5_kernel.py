@@ -1,6 +1,6 @@
-"""Tests for iai_mcp.s5 -- identity kernel .
+"""Tests for iai_mcp.s5 -- identity kernel.
 
-D-22 constitutional:
+ constitutional:
 - ρ_identity = 0.99 (stricter than write-path ρ=0.95 and S4 ρ=0.97).
 - M-of-N = 3-of-5: a proposal becomes an invariant update only after 3
   vigilance-passing proposals within the consensus window.
@@ -128,7 +128,7 @@ def test_propose_invariant_update_first_proposal_stages(tmp_path):
 
 
 def test_propose_invariant_update_consensus_commits(tmp_path):
-    """3 distinct-session proposals agreeing -> 3rd returns ("committed", ...)."""
+    """3 distinct-session proposals agreeing -> 3rd returns ("committed",...)."""
     from iai_mcp.s5 import propose_invariant_update
     from iai_mcp.store import MemoryStore
 

@@ -1,13 +1,13 @@
-""" prompt-injection shield (, ) -- .
+"""Prompt-injection shield.
 
-Three-tier deployment per :
-    HARD_BLOCK     -> L0 identity + S5 invariant writes (reject on detection)
+Three-tier deployment:
+    HARD_BLOCK -> L0 identity + S5 invariant writes (reject on detection)
     FLAG_FOR_REVIEW -> profile updates (flag + warn, write proceeds)
-    LOG_ONLY        -> content records (log only, allow)
+    LOG_ONLY -> content records (log only, allow)
 
- threat model (three severities):
+Threat model (three severities):
   - Direct override (e.g. "forget X, now Y") -> HARD BLOCK via signal words
-  - Gradual drift (subtle lies over weeks)   -> DETECT via trajectory M4 anomaly
+  - Gradual drift (subtle lies over weeks) -> DETECT via trajectory M4 anomaly
                                                  (see s5.detect_drift_anomaly)
   - Data poisoning (intentional false write) -> MITIGATE via ART vigilance
                                                  + user-approval UX
@@ -32,7 +32,7 @@ from uuid import UUID
 from iai_mcp.events import write_event
 
 
-# ------------------------------------------------------------ constitutional constants
+# ------------------------------------------------------------ shield constants
 
 # Confidence thresholds for the shield verdict. Confidence is a simple signal:
 # matched_count / TOTAL_BASELINE -- used for downstream analytics, not the
@@ -65,7 +65,7 @@ SIGNAL_WORDS_WARNING_EN: list[str] = [
     "different", "instead", "actually", "update",
 ]
 
-# Per-language critical signal words (D-02a mandate).
+# Per-language critical signal words (mandate).
 # Keys are ISO-639-1 codes; values are minimal strictly-imperative tokens.
 # Conservative by design: false positives on legitimate non-English chatter are
 # worse than false negatives at this tier (users have multiple layers of
@@ -107,7 +107,7 @@ SIGNAL_WORDS_CRITICAL_BY_LANG: dict[str, list[str]] = {
 
 
 class ShieldTier(str, Enum):
-    """ three-tier deployment."""
+    """three-tier deployment."""
 
     HARD_BLOCK = "hard_block"          # L0 identity + S5 invariants
     FLAG_FOR_REVIEW = "flag"           # profile updates
@@ -174,10 +174,10 @@ def evaluate_injection_risk(
     """Core shield detection (pure function, no side effects).
 
     Tier escalation policy:
-      HARD_BLOCK       -- any critical OR warning match -> reject (severity critical)
-      FLAG_FOR_REVIEW  -- any match -> flag (severity warning)
-      LOG_ONLY         -- any match -> log_allow (severity info)
-      no match         -- detected=False, action=log_allow
+      HARD_BLOCK -- any critical OR warning match -> reject (severity critical)
+      FLAG_FOR_REVIEW -- any match -> flag (severity warning)
+      LOG_ONLY -- any match -> log_allow (severity info)
+      no match -- detected=False, action=log_allow
     """
     critical_list, warning_list = _signal_lists_for_language(target_language)
     matched_critical = _match_patterns(text, critical_list)
@@ -249,9 +249,9 @@ def apply_shield(
     """Evaluate + emit event (side-effectful wrapper).
 
     Event kind is determined by the tier policy:
-      - reject    -> kind="shield_rejection" (severity critical)
-      - flag      -> kind="shield_flag"      (severity warning)
-      - log_allow -> kind="shield_log"       (severity info, ONLY on detection)
+      - reject -> kind="shield_rejection" (severity critical)
+      - flag -> kind="shield_flag" (severity warning)
+      - log_allow -> kind="shield_log" (severity info, ONLY on detection)
 
     No event is emitted when the verdict is "not detected" -- no signal, no
     noise in the events table.

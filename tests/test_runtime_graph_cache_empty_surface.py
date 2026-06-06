@@ -1,4 +1,4 @@
-"""/ — empty-surface cache poisoning regression.
+"""Empty-surface cache poisoning regression.
 
 AES-GCM decrypt failure during
 graph build poisons the runtime-graph cache with empty `surface` strings,
@@ -25,6 +25,8 @@ applied (GREEN witness).
 from __future__ import annotations
 
 import json
+import math
+import random
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -41,7 +43,7 @@ from iai_mcp.types import EMBED_DIM, MemoryRecord
 @pytest.fixture(autouse=True)
 def _isolated_keyring(monkeypatch: pytest.MonkeyPatch):
     """Project-canonical isolated-keyring fixture (mirrors
-    test_pipeline_anti_hits_malformed.py:33-50). Without this the test
+    test_pipeline_anti_hits_malformed.py). Without this the test
     hangs on macOS keychain GUI prompts on the construction host."""
     import keyring as _keyring
 
@@ -58,23 +60,30 @@ def _isolated_keyring(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.fixture
 def store(tmp_path: Path) -> MemoryStore:
-    """Fresh MemoryStore in tmp_path/lancedb with cache file under tmp_path."""
-    s = MemoryStore(path=tmp_path / "lancedb")
+    """Fresh MemoryStore in tmp_path/hippo with cache file under tmp_path."""
+    s = MemoryStore(path=tmp_path / "hippo")
     # Override root so the cache file lands at tmp_path/runtime_graph_cache.json
-    # (mirrors the pattern in test_runtime_graph_cache.py:60 +
-    # test_data_integrity_soak.py:207).
+    # (mirrors the pattern in test_runtime_graph_cache.py +
+    # test_data_integrity_soak.py).
     s.root = tmp_path
     return s
 
 
 def _make_record(rid: UUID, surface: str = "topic") -> MemoryRecord:
+    # Seed from the record id so every record gets a directionally-distinct
+    # embedding (pairwise cosine < 0.20 in 384-d). Constant-vector embeddings
+    # all share cosine 1.0 and collapse via the pattern-separation gate.
+    rng = random.Random(rid.int)
+    raw = [rng.gauss(0.0, 1.0) for _ in range(EMBED_DIM)]
+    mag = math.sqrt(sum(x * x for x in raw))
+    embedding = [x / mag for x in raw] if mag > 0 else raw
     now = datetime.now(timezone.utc)
     return MemoryRecord(
         id=rid,
         tier="episodic",
         literal_surface=surface,
         aaak_index="",
-        embedding=[0.1] * EMBED_DIM,
+        embedding=embedding,
         community_id=None,
         centrality=0.0,
         detail_level=2,
@@ -94,7 +103,7 @@ def _make_record(rid: UUID, surface: str = "topic") -> MemoryRecord:
 
 def _write_encrypted_cache(store: MemoryStore, path: Path, data: dict) -> None:
     """Encrypt and write a hand-modified JSON dict to the v3 ciphertext
-    sidecar. Mirrors tests/test_runtime_graph_cache.py:82-93 verbatim."""
+    sidecar. Mirrors tests/test_runtime_graph_cache.py verbatim."""
     from iai_mcp import runtime_graph_cache
     from iai_mcp.crypto import encrypt_field
 
@@ -111,15 +120,15 @@ def _write_encrypted_cache(store: MemoryStore, path: Path, data: dict) -> None:
 
 
 def test_decrypt_failure_skips_cache_write(store, tmp_path):
-    """D-02 step 1: a tampered ciphertext on one record must NOT poison
+    """step 1: a tampered ciphertext on one record must NOT poison
     the runtime-graph cache. The poisoned record's id MUST be absent
     from the on-disk cache's ``node_payload`` after build_runtime_graph
     runs through the decrypt-failure path.
 
-    AD-tamper trick (mirrors tests/test_store_encrypted.py:250-274):
+    AD-tamper trick (mirrors tests/test_store_encrypted.py):
     overwrite r_b's literal_surface column with r_a's ciphertext. The AD
     (associated data) bound to that ciphertext is r_a.id, so the read
-    path's `_decrypt_for_record(r_b.id, ...)` call raises (AAD mismatch
+    path's `_decrypt_for_record(r_b.id,...)` call raises (AAD mismatch
     fails the GCM tag check).
 
     Without the fix retrieve.py writes ``surface=""`` to
@@ -163,7 +172,7 @@ def test_decrypt_failure_skips_cache_write(store, tmp_path):
     assert str(r_a.id) in payload, "clean record must be cached"
     assert str(r_b.id) not in payload, (
         "poisoned record (decrypt-fail) must NOT be in the cache — "
-        "an empty surface there is the V2-03 poisoning bug"
+        "an empty surface there is the poisoning bug"
     )
 
 
@@ -171,7 +180,7 @@ def test_decrypt_failure_skips_cache_write(store, tmp_path):
 
 
 def test_pipeline_falls_back_to_store_on_empty_surface(store, tmp_path):
-    """D-02 step 2: synthetically poison the live graph node payload
+    """step 2: synthetically poison the live graph node payload
     (set surface=""). pipeline._read_record_payload must round-trip via
     store.get(rid) and return the original literal_surface, NOT the
     poisoned empty string.
@@ -195,12 +204,13 @@ def test_pipeline_falls_back_to_store_on_empty_surface(store, tmp_path):
     # on tamper — the tamper would mean the node isn't in the graph at
     # all, defeating the purpose of testing pipeline's empty-surface
     # guard. The synthetic poison is the orthogonal regression target.)
-    assert str(rid) in graph._nx.nodes, "node should exist post-build"
-    graph._nx.nodes[str(rid)]["surface"] = ""
+    assert rid in set(graph.iter_nodes()), "node should exist post-build"
+    graph.set_node_payload(rid, {"surface": ""})
 
-    # _read_record_payload takes a NetworkX graph (G.nodes.get); pipeline
-    # callers always pass `graph._nx` (cf. pipeline.py:717 `G = graph._nx`).
-    out = pipeline._read_record_payload(graph._nx, rid, store)
+    # _read_record_payload accepts a MemoryGraph (sidecar fast path) and falls
+    # back to store.get on empty-surface sentinel — the empty-surface poison
+    # exercises that fall-back branch.
+    out = pipeline._read_record_payload(graph, rid, store)
     assert out is not None, "store.get fallback must produce a record"
     # The returned object's literal_surface must equal the original,
     # round-tripped via store.get's decrypt path. Field name varies
@@ -219,7 +229,7 @@ def test_pipeline_falls_back_to_store_on_empty_surface(store, tmp_path):
 def test_runtime_graph_cache_drops_poisoned_entries_on_load(
     store, tmp_path, capsys
 ):
-    """D-02 step 3: hand-write an encrypted cache containing one good
+    """step 3: hand-write an encrypted cache containing one good
     node and one poisoned (surface="") node. try_load must drop the
     poisoned entry and emit a runtime_graph_cache_drop_poisoned_entry
     stderr event.
@@ -294,7 +304,7 @@ def test_runtime_graph_cache_drops_poisoned_entries_on_load(
     assert payload is not None
     assert str(good_id) in payload, "well-formed entry must survive rehydrate"
     assert str(bad_id) not in payload, (
-        "poisoned (surface='') entry must be dropped — that is V2-03 fix"
+        "poisoned (surface='') entry must be dropped"
     )
 
     captured = capsys.readouterr()

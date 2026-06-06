@@ -1,6 +1,6 @@
-"""Tests for LLMLingua-2 compression (Task 2, ).
+"""Tests for LLMLingua-2 compression.
 
-Scope (constitutional):
+Scope:
 - ALLOWED: L2 community descriptors, session summaries, cls_summary records.
 - FORBIDDEN: literal_surface of normal records, pinned, invariant_anchor,
   user-tagged 'raw' records.
@@ -99,7 +99,7 @@ def test_is_compressible_allows_schema():
 
 
 def test_is_compressible_rejects_normal_record_by_default():
-    """D-25 literal_surface constitutional: default is reject unless explicitly allowed."""
+    """literal_surface constitutional: default is reject unless explicitly allowed."""
     from iai_mcp.compress import is_compressible
 
     r = _rec(tags=["project:iai-mcp"])

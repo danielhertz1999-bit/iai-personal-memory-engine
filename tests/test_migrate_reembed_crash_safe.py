@@ -1,6 +1,6 @@
-"""/ regression tests for crash-safe reembed migration.
+"""Regression tests for crash-safe reembed migration.
 
-Closes V2-05: the reembed migration at migrate.py:300-305 dropped the records
+The reembed migration in migrate.py dropped the records
 table and rebuilt row-by-row from a stashed iterator. A crash, kill, power
 loss, or KeyboardInterrupt between drop and rebuild left the user with an
 empty records table — no staging path, no rollback, no resume. This file's
@@ -8,7 +8,7 @@ five regression tests fail on the un-fixed code (mid-flight kill empties
 records; no rollback function reachable; no resume) and pass after the
 four-phase staged-swap flow + boot-time detector are in place.
 
-Required cases (verbatim names from D-05):
+Required cases (verbatim names from):
 1. test_mid_migration_kill_preserves_old_table — KeyboardInterrupt on the
    4th embed call leaves records (10) intact; records_v_new present with 3
    staged rows; migration_progress.json points at row 3.
@@ -32,8 +32,8 @@ path. The plan's literal 384→384 same-dim setup hits the early-return
 no_op branch BEFORE any embed call fires, so the kill-mid-flight injection
 never triggers. Test 5 (idempotency) is structured as 384→1024 first run
 (real migration) then 1024→1024 second call (no_op witness). This is a
-test-spec correction surfaced during pre-write review; the contract from
-CONTEXT (mid-flight kill preserves old table; rollback restores;
+test-spec correction surfaced during pre-write review; the contract
+(mid-flight kill preserves old table; rollback restores;
 resume continues; idempotent rerun after success) is preserved verbatim.
 """
 from __future__ import annotations
@@ -51,7 +51,7 @@ import pytest
 @pytest.fixture(autouse=True)
 def _isolated_keyring(monkeypatch: pytest.MonkeyPatch):
     """Standard project test isolation — verbatim from
-    tests/test_pipeline_anti_hits_malformed.py:33-45. Without this fixture
+    tests/test_pipeline_anti_hits_malformed.py. Without this fixture
     the test will fail on the construction host because the OS keyring is
     unavailable."""
     import keyring as _keyring
@@ -72,7 +72,7 @@ def _isolated_keyring(monkeypatch: pytest.MonkeyPatch):
 
 class _DimEmbedder:
     """Deterministic fake embedder with configurable dim. Verbatim from
-    tests/test_migrate_reembed_to_current_dim.py:24-41 — the canonical
+    tests/test_migrate_reembed_to_current_dim.py — the canonical
     project pattern for testing dim-change scenarios without loading
     transformers."""
 
@@ -94,7 +94,7 @@ class _DimEmbedder:
 
 def _fresh_store(tmp_path, dim: int, monkeypatch):
     """Make a MemoryStore at an explicit dim via env override. Verbatim from
-    tests/test_migrate_reembed_to_current_dim.py:44-50."""
+    tests/test_migrate_reembed_to_current_dim.py."""
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path / "iai"))
     monkeypatch.setenv("IAI_MCP_EMBED_DIM", str(dim))
     from iai_mcp.store import MemoryStore
@@ -103,7 +103,7 @@ def _fresh_store(tmp_path, dim: int, monkeypatch):
 
 def _seed_records(store, embedder, n: int = 10) -> list[UUID]:
     """Insert n deterministic records. Mirrors
-    tests/test_migrate_reembed_to_current_dim.py:53-88 — same field shape.
+    tests/test_migrate_reembed_to_current_dim.py — same field shape.
     Parameterised on n so each test seeds the count it needs."""
     from iai_mcp.types import MemoryRecord
     ids = []
@@ -147,7 +147,7 @@ def _seed_records(store, embedder, n: int = 10) -> list[UUID]:
 
 
 def test_successful_migration_promotes_old_to_records(tmp_path, monkeypatch):
-    """D-05 case 3 / happy path: stage -> validate -> atomic swap ->
+    """case 3 / happy path: stage -> validate -> atomic swap ->
     deferred cleanup. Post-state: records has 20 rows; records_v_new is
     gone (cleaned); ONE records_old_<ts> remains (deferred cleanup, will
     be dropped on next boot via detect_partial_migration)."""
@@ -178,7 +178,7 @@ def test_successful_migration_promotes_old_to_records(tmp_path, monkeypatch):
 
 
 def test_mid_migration_kill_preserves_old_table(tmp_path, monkeypatch):
-    """D-05 case 1 / mid-flight kill: KeyboardInterrupt on the 4th
+    """case 1 / mid-flight kill: KeyboardInterrupt on the 4th
     embed call leaves the original records (10) intact; records_v_new
     present with 3 staged rows; migration_progress.json points at row 3."""
     src = _DimEmbedder(384)
@@ -222,7 +222,7 @@ def test_mid_migration_kill_preserves_old_table(tmp_path, monkeypatch):
 
 
 def test_rollback_handler_restores_from_old(tmp_path, monkeypatch):
-    """D-05 case 2 / rollback: from the kill state, _rollback drops
+    """case 2 / rollback: from the kill state, _rollback drops
     records_v_new. records is intact (didn't touch it). Drops
     progress file. No records_old_<ts> in this scenario because the kill
     fired before the atomic swap."""
@@ -251,7 +251,7 @@ def test_rollback_handler_restores_from_old(tmp_path, monkeypatch):
     assert rc == 0, "rollback must succeed on a clean kill-mid-stage state"
 
     names = set(store.db.table_names())
-    assert "records" in names, "records must still exist (never dropped it)"
+    assert "records" in names, "records must still exist (it was never dropped)"
     assert store.db.open_table("records").count_rows() == 10, (
         "records must hold the original 10 rows after rollback"
     )
@@ -264,7 +264,7 @@ def test_rollback_handler_restores_from_old(tmp_path, monkeypatch):
 
 
 def test_resume_handler_continues_from_checkpoint(tmp_path, monkeypatch):
-    """D-05 case 4 / resume: from the kill state, _resume picks up at
+    """case 4 / resume: from the kill state, _resume picks up at
     row 4 and finishes the remaining 7 rows. Final records.count_rows() ==
     10; records_v_new is cleaned up."""
     src = _DimEmbedder(384)
@@ -303,7 +303,7 @@ def test_resume_handler_continues_from_checkpoint(tmp_path, monkeypatch):
 
 
 def test_idempotency_rerun_after_success(tmp_path, monkeypatch):
-    """D-05 case 5 / idempotency: re-running migrate after a clean
+    """case 5 / idempotency: re-running migrate after a clean
     migration is a no-op + emits migration_reembed event with no_op=True.
 
     Sequence: 384 -> 1024 (real migration) then 1024 -> 1024 (no_op).

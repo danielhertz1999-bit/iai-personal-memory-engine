@@ -1,10 +1,10 @@
-"""Wave 4 R8/A4 acceptance — sub-agent socket reuse.
+"""Sub-agent socket reuse.
 
-R8 / A4: spawning ephemeral child wrapper processes (the test stand-in
+Spawning ephemeral child wrapper processes (the test stand-in
 for sub-agents) MUST add zero new `iai_mcp.*` processes when a daemon is
-already up. Pre-Phase-7, each spawned wrapper would fork its own
-`iai_mcp.core` Python (the per-wrapper architecture removed by Plan
-07-04 Task 1). Post-Phase-7, every wrapper joins the singleton daemon
+already up. Previously, each spawned wrapper would fork its own
+`iai_mcp.core` Python (the per-wrapper architecture has been removed).
+Now every wrapper joins the singleton daemon
 via the socket-first path in bridge.ts.
 
 The HIGH-4 lock at the top of bridge.ts
@@ -84,20 +84,37 @@ def _count_iai_mcp_processes() -> dict[str, int]:
 
 
 def _kill_test_daemons(sock_path: Path) -> None:
-    """Kill iai_mcp.daemon processes whose env points at the test sock_path.
+    """Kill iai_mcp.daemon processes that hold sock_path open via lsof.
 
-    Avoids touching the user's real production daemon — only daemons
-    spawned with our IAI_DAEMON_SOCKET_PATH env value get terminated.
+    setproctitle() clobbers the external psutil.Process.environ() view on
+    macOS — the daemon's own os.environ is intact but external readers lose
+    injected vars after the title is set.  lsof on the specific tmp socket
+    path is setproctitle-proof: only the process that HOLDS the file open
+    is matched.  This is path-exact and never touches the production daemon,
+    which binds ~/.iai-mcp/.daemon.sock — a completely different path.
+    The Popen handle terminate() is the primary kill; this helper is a
+    defensive sweep for any stragglers.
     """
-    sock_str = str(sock_path)
-    for p in psutil.process_iter(["cmdline", "environ"]):
+    target = str(sock_path)
+    res = subprocess.run(
+        ["lsof", "-U", "-F", "pn"],
+        capture_output=True, text=True, check=False,
+    )
+    current: int | None = None
+    pids: set[int] = set()
+    for line in res.stdout.splitlines():
+        if line.startswith("p"):
+            try:
+                current = int(line[1:])
+            except ValueError:
+                current = None
+        elif line.startswith("n") and current is not None and line[1:] == target:
+            pids.add(current)
+    for pid in pids:
         try:
-            cl = " ".join(p.info.get("cmdline") or [])
-            if "iai_mcp.daemon" not in cl:
-                continue
-            env = p.info.get("environ") or {}
-            if env.get("IAI_DAEMON_SOCKET_PATH") == sock_str:
-                p.send_signal(signal.SIGTERM)
+            cl = " ".join(psutil.Process(pid).cmdline())
+            if "iai_mcp.daemon" in cl:
+                psutil.Process(pid).send_signal(signal.SIGTERM)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
 
@@ -195,15 +212,14 @@ def _spawn_daemon_in_background(
 ) -> subprocess.Popen:
     """Pre-start a daemon manually via `python -m iai_mcp.daemon`.
 
-    wrappers no longer spawn the daemon themselves
-    (eliminated the spawn-fallback chain in bridge.ts);
+    Wrappers no longer spawn the daemon themselves
+    (the spawn-fallback chain in bridge.ts has been removed);
     in production launchd does the spawn via socket activation, in
     tests we use the manual-run code path (no LISTEN_FDS env
-    set), which the daemon supports unchanged per D7.1-09 (backward
-    compat).
+    set), which the daemon supports unchanged for backward
+    compat.
 
-    Mirrors the same helper added to tests/test_bridge_socket_first.py
-    in Task 2.
+    Mirrors the same helper in tests/test_bridge_socket_first.py.
     """
     env = os.environ.copy()
     env["IAI_DAEMON_SOCKET_PATH"] = str(sock_path)
@@ -225,7 +241,7 @@ def _spawn_daemon_in_background(
 
 
 def test_subagent_spawns_zero_new_processes(built_wrapper, tmp_path):
-    """A4/R8: with daemon already up, spawning 3 ephemeral sub-agent
+    """With daemon already up, spawning 3 ephemeral sub-agent
     wrappers adds zero new iai_mcp.* processes.
 
     The wrappers connect to the SAME tmp socket the bootstrap wrapper
@@ -247,19 +263,18 @@ def test_subagent_spawns_zero_new_processes(built_wrapper, tmp_path):
         "IAI_DAEMON_IDLE_SHUTDOWN_SECS": "120",
     }
 
-    # Bootstrap: pre-start a daemon manually (deviation
-    # Rule 3 update). The pre-7.1 bootstrap relied on the wrapper
-    # spawn-fallback chain in bridge.ts to spawn the daemon as a
-    # side-effect of the first _quick_recall_via_wrapper call. Phase
-    # 7.1 deletes that chain — wrappers now ONLY connect; if no
+    # Bootstrap: pre-start a daemon manually. The earlier bootstrap relied
+    # on the wrapper spawn-fallback chain in bridge.ts to spawn the daemon
+    # as a side-effect of the first _quick_recall_via_wrapper call. That
+    # chain has been deleted — wrappers now ONLY connect; if no
     # daemon is up, they throw DaemonUnreachableError. In production
     # launchd handles the spawn via socket activation; in tests we
     # use the manual-run code path (no LISTEN_FDS env set)
-    # per D7.1-09 backward compat.
+    # for backward compat.
     daemon_proc = _spawn_daemon_in_background(sock_path, store_dir)
     try:
         # Wait for the daemon to bind. Cold start is empirically
-        # 3-10s on macOS (bge-small load + LanceDB open + asyncio
+        # 3-10s on macOS (bge-small load + store open + asyncio
         # start_unix_server).
         assert _wait_for_daemon_socket(sock_path, timeout_sec=30.0), (
             f"daemon did not bind socket {sock_path} within 30s"
@@ -303,7 +318,7 @@ def test_subagent_spawns_zero_new_processes(built_wrapper, tmp_path):
         time.sleep(0.5)
 
         # CRITICAL ASSERTION: no new iai_mcp.* processes appeared during
-        # the 3 sub-agent runs. This is the load-bearing R8/A4 invariant.
+        # the 3 sub-agent runs. This is the load-bearing invariant.
         after = _count_iai_mcp_processes()
 
         # FAIL-LOUD: zero iai_mcp.core spawned by sub-agent wrappers

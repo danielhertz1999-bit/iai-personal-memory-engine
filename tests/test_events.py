@@ -1,6 +1,6 @@
-"""Tests for the events LanceDB table + events.py module (, D-STORAGE).
+"""Tests for the events table + events.py module.
 
-Covers:
+Scope:
 - events table created on MemoryStore instantiation
 - write_event / query_events round-trip
 - kind/severity/since filters
@@ -20,7 +20,7 @@ import pytest
 
 
 def test_events_table_created_on_store_init(tmp_path):
-    """MemoryStore() creates events table with the D-STORAGE schema."""
+    """MemoryStore() creates events table with the expected schema."""
     from iai_mcp.store import EVENTS_TABLE, MemoryStore
 
     store = MemoryStore(path=tmp_path)
@@ -185,3 +185,154 @@ def test_events_empty_store_returns_empty(tmp_path):
     store = MemoryStore(path=tmp_path)
     assert query_events(store) == []
     assert query_events(store, kind="nothing") == []
+
+
+# --------------------------------------------- recall-source telemetry (H63-7)
+#
+# The recall-path emits TELEMETRY_RECALL_SOURCE best-effort so the real-world
+# recall tails are observable. These tests prove the consensus-locked contract:
+# - the new kinds round-trip through the WHITELISTED events_query surface
+# - recall survives an emit that raises (best-effort guard)
+# - no raw cue text (or cue-derived substring) ever rides a telemetry payload
+# - fallback_rate is DERIVABLE from recall_source counts (no separate metric)
+
+
+def test_recall_source_telemetry_round_trip(tmp_path):
+    """A recall_source event round-trips through the whitelisted events_query."""
+    from iai_mcp.core import EVENTS_QUERY_WHITELIST, dispatch
+    from iai_mcp.events import TELEMETRY_RECALL_SOURCE, write_event
+    from iai_mcp.store import MemoryStore
+
+    # The new kind must pass the events_query whitelist (else fallback_rate is
+    # not derivable through the supported MCP surface).
+    assert TELEMETRY_RECALL_SOURCE == "recall_source"
+    assert "recall_source" in EVENTS_QUERY_WHITELIST
+    assert "embed_construct" in EVENTS_QUERY_WHITELIST
+
+    store = MemoryStore(path=tmp_path)
+    # Write unbuffered so the events table (what events_query reads) is updated
+    # immediately; the production emit is buffered=True and flushed by the daemon.
+    write_event(
+        store,
+        TELEMETRY_RECALL_SOURCE,
+        {"source": "semantic-inprocess", "construct_ms": 26.0, "encode_ms": 11.0},
+        severity="info",
+    )
+
+    out = dispatch(store, "events_query", {"kind": "recall_source"})
+    assert "error" not in out, out
+    assert out["count"] == 1
+    ev = out["events"][0]
+    assert ev["kind"] == "recall_source"
+    assert ev["data"]["source"] == "semantic-inprocess"
+    assert ev["data"]["construct_ms"] == 26.0
+    assert ev["data"]["encode_ms"] == 11.0
+
+
+def test_recall_succeeds_when_telemetry_emit_raises(tmp_path, monkeypatch):
+    """A telemetry emit that raises must NOT break recall (best-effort guard).
+
+    Drives the daemon-down construct path's degrade branch with write_event
+    monkeypatched to raise. Recall must still return a valid result.
+    """
+    import iai_mcp.events as events_mod
+    import iai_mcp.semantic_recall as sr
+    from iai_mcp.store import MemoryStore
+
+    # A real tmp store: the recency degrade reads it (empty -> empty list, never
+    # a hard-fail) and a store handle is reachable so the emit path actually
+    # exercises write_event (the raising monkeypatch below).
+    store = MemoryStore(path=tmp_path)
+
+    # Ensure a store handle is reachable at the emit site so the emit path
+    # actually calls write_event (the deepest-degrade no-store path would
+    # short-circuit to logger.debug and never exercise the raising emit).
+    monkeypatch.setattr(sr, "_WARM_LOCAL_STORE", store, raising=False)
+
+    # Force the construct to fall to the recency floor (deterministic, no model).
+    monkeypatch.setattr(sr, "_construct_with_budget", lambda root: (None, 5.0))
+
+    # The emit MUST swallow this — recall must not propagate it.
+    def _boom(*args, **kwargs):
+        raise RuntimeError("telemetry table exploded")
+
+    monkeypatch.setattr(events_mod, "write_event", _boom)
+
+    result = sr.recall_semantic_warm(str(tmp_path), "what does alice prefer", n=5)
+    # Recall still returns a valid (degraded) list despite the raising emit.
+    assert isinstance(result, list)
+
+
+def test_recall_telemetry_payload_carries_no_raw_cue(tmp_path, monkeypatch):
+    """No raw cue text (or cue-derived substring) leaks into a telemetry payload.
+
+    Drives the degrade emit with a distinctive cue, spies on write_event to
+    record the emitted data dict, and asserts the cue (and its tokens) are
+    absent — only the scrubbed reason token + numeric metrics survive.
+    """
+    import iai_mcp.events as events_mod
+    import iai_mcp.semantic_recall as sr
+    from iai_mcp.store import MemoryStore
+
+    store = MemoryStore(path=tmp_path)
+    monkeypatch.setattr(sr, "_WARM_LOCAL_STORE", store, raising=False)
+    monkeypatch.setattr(sr, "_construct_with_budget", lambda root: (None, 7.0))
+
+    captured: list[dict] = []
+
+    def _spy(store_arg, kind, data, **kwargs):
+        captured.append({"kind": kind, "data": dict(data)})
+        # Return a UUID-ish to satisfy the contract; emit is best-effort anyway.
+        from uuid import uuid4
+        return uuid4()
+
+    monkeypatch.setattr(events_mod, "write_event", _spy)
+
+    cue = "ZEBRA_SECRET_PASSPHRASE_orbital_kangaroo_42"
+    sr.recall_semantic_warm(str(tmp_path), cue, n=5)
+
+    # The recall_source emit was captured.
+    rs = [c for c in captured if c["kind"] == "recall_source"]
+    assert rs, f"no recall_source emit captured: {captured}"
+    payload = rs[0]["data"]
+
+    # Scrubbed reason token + metrics only — never the cue.
+    assert payload["source"] == "recency-degrade"
+    assert payload.get("reason") == "construct_timeout_or_fail"
+    assert "construct_ms" in payload
+
+    # The full cue and each distinctive token must be ABSENT from the payload.
+    blob = json.dumps(payload)
+    assert cue not in blob
+    for token in ("ZEBRA", "SECRET", "PASSPHRASE", "orbital", "kangaroo"):
+        assert token not in blob, f"cue-derived token {token!r} leaked: {payload}"
+
+
+def test_fallback_rate_derivable_from_recall_source(tmp_path):
+    """fallback_rate (degrade / total) is derivable from recall_source counts.
+
+    Proves no separate stored metric is needed: a count-based query over the
+    whitelisted surface yields the expected degrade ratio.
+    """
+    from iai_mcp.core import dispatch
+    from iai_mcp.events import TELEMETRY_RECALL_SOURCE, write_event
+    from iai_mcp.store import MemoryStore
+
+    store = MemoryStore(path=tmp_path)
+    # 3 semantic-inprocess + 1 recency-degrade -> fallback_rate = 1/4 = 0.25.
+    for _ in range(3):
+        write_event(store, TELEMETRY_RECALL_SOURCE,
+                    {"source": "semantic-inprocess", "construct_ms": 30.0})
+    write_event(store, TELEMETRY_RECALL_SOURCE,
+                {"source": "recency-degrade", "construct_ms": 1200.0,
+                 "reason": "construct_timeout_or_fail"})
+
+    out = dispatch(store, "events_query", {"kind": "recall_source", "limit": 1000})
+    assert "error" not in out, out
+    sources = [e["data"]["source"] for e in out["events"]]
+    total = len(sources)
+    degrades = sum(1 for s in sources if s == "recency-degrade")
+    assert total == 4
+    assert degrades == 1
+    fallback_rate = degrades / total
+    assert fallback_rate == pytest.approx(0.25)

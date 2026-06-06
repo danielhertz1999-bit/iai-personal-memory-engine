@@ -1,14 +1,14 @@
-""" RED: LanceDB column rename migration v3 -> v4.
+"""RED: Store column rename migration v3 -> v4.
 
 Verifies migrate_hd_vector_to_structure_hv_v3_to_v4(store):
 - Finds rows that still carry the legacy `hd_vector_json` (pa.string()) column
   OR rows with an empty `structure_hv` and bumps them to schema_version=4 with
   a populated `structure_hv` (pa.binary()) column.
 - Idempotent: second run yields updated == 0.
-- literal_surface preserved byte-for-byte.
+-: literal_surface preserved byte-for-byte.
 - Emits one `migration_v3_to_v4` event with {processed, updated, skipped, duration_ms}.
 - Dry-run does not mutate.
-- CR-01: any DELETE / WHERE predicate routes through store._uuid_literal.
+-: any DELETE / WHERE predicate routes through store._uuid_literal.
 """
 from __future__ import annotations
 
@@ -161,7 +161,7 @@ def test_migration_dry_run_does_not_mutate(tmp_path, monkeypatch):
 
 
 def test_migration_uses_uuid_literal_guard(tmp_path, monkeypatch):
-    """CR-01: the migration MUST route every UUID interpolation through
+    """the migration MUST route every UUID interpolation through
     store._uuid_literal so a poisoned UUID cannot inject SQL content."""
     store, _ = _seed_pre_migration_store(tmp_path, monkeypatch, n=2)
     from iai_mcp import store as store_mod

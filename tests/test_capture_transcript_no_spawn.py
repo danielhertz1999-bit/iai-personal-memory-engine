@@ -1,7 +1,7 @@
-"""/ R3 acceptance — `iai-mcp capture-transcript --no-spawn`.
+"""Acceptance tests for `iai-mcp capture-transcript --no-spawn`.
 
-Eliminates the third spawn vector from forensic anomaly #3 (Stop-hook
-spawning iai_mcp.daemon under N-session race). When 3 Claude sessions close
+Eliminates the third spawn vector: the Stop-hook
+spawning iai_mcp.daemon under N-session race. When 3 Claude sessions close
 within seconds, 3 hooks each fire `iai-mcp capture-transcript --no-spawn`;
 ZERO daemons get spawned. Each invocation either (a) talks to the existing
 daemon if one is up, or (b) writes a JSONL deferral file and exits 0 within
@@ -9,11 +9,11 @@ daemon if one is up, or (b) writes a JSONL deferral file and exits 0 within
 
 This module covers:
   - Test A: writes deferred file when daemon is unreachable
-  - Test B: completes in under 2s wall-clock (R3 budget)
+  - Test B: completes in under 2s wall-clock (budget)
   - Test C: spawns ZERO new iai_mcp.* processes
   - Test D: --no-spawn surfaces in --help; default (no flag) keeps
             behavior (exit 0 + stdout JSON, no deferred file)
-  - Test E: deferred JSONL v1 header + per-turn event lines (D7.1-04)
+  - Test E: deferred JSONL v1 header + per-turn event lines
   - Test F: missing transcript -> header-only file, no exception
 
 Test isolation:
@@ -21,9 +21,9 @@ Test isolation:
     real ~/.iai-mcp/.deferred-captures/ is never touched.
   - IAI_DAEMON_SOCKET_PATH=/tmp/iai-no-spawn-<pid>-<n>/d.sock so the
     250ms socket probe never hits the user's real daemon.
-  - Subprocess invocation: `[sys.executable, '-m', 'iai_mcp.cli', ...]`
+  - Subprocess invocation: `[sys.executable, '-m', 'iai_mcp.cli',...]`
     with PYTHONPATH set; we don't depend on the `iai-mcp` console script
-    being on PATH (test_socket_subagent_reuse.py:115-116 pattern).
+    being on PATH (test_socket_subagent_reuse.py pattern).
 """
 from __future__ import annotations
 
@@ -170,7 +170,7 @@ def test_no_spawn_writes_deferred_when_daemon_down(tmp_path):
 
 
 def test_no_spawn_completes_in_under_2s(tmp_path):
-    """Test B: R3 acceptance — wall-clock under 2s."""
+    """Test B: wall-clock under 2s."""
     env, _ = _isolated_env(tmp_path)
     transcript = _make_transcript(tmp_path)
 
@@ -180,7 +180,7 @@ def test_no_spawn_completes_in_under_2s(tmp_path):
 
     assert proc.returncode == 0, f"stderr={proc.stderr!r}"
     assert duration < 2.0, (
-        f"--no-spawn took {duration:.3f}s; R3 budget is <2.0s. "
+        f"--no-spawn took {duration:.3f}s; budget is <2.0s. "
         f"Hook would block session teardown."
     )
 
@@ -204,11 +204,11 @@ def test_no_spawn_does_not_spawn_daemon(tmp_path):
     delta_daemon = after["daemon"] - before["daemon"]
     delta_core = after["core"] - before["core"]
     assert delta_daemon <= 0, (
-        f"--no-spawn spawned {delta_daemon} new daemon(s); R3 violated. "
+        f"--no-spawn spawned {delta_daemon} new daemon(s); spawn budget violated. "
         f"before={before} after={after}"
     )
     assert delta_core <= 0, (
-        f"--no-spawn spawned {delta_core} new core(s); R3 violated. "
+        f"--no-spawn spawned {delta_core} new core(s); spawn budget violated. "
         f"before={before} after={after}"
     )
 
@@ -252,8 +252,8 @@ def test_no_spawn_flag_default_false(tmp_path):
     )
     assert default_proc.returncode == 0, default_proc.stderr
 
-    # prints the {errors: N, ...} JSON to STDOUT, not stderr.
-    # We just need it to be valid JSON with no .deferred-captures created.
+    # prints the {errors: N,...} JSON to STDOUT, not stderr.
+    # We just need it to be valid JSON with no.deferred-captures created.
     payload = json.loads(default_proc.stdout.strip())
     assert "errors" in payload or "inserted" in payload, payload
 

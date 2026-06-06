@@ -1,22 +1,22 @@
-"""R2 acceptance suite — bounded graph-bonus + max_degree cache.
+"""Acceptance suite — bounded graph-bonus + max_degree cache.
 
 Two-tier coverage:
 
-  Task 1 (cache + build_runtime_graph contract):
+  Cache + build_runtime_graph contract:
     - test_build_runtime_graph_sets_max_degree_attribute
     - test_cache_round_trip_preserves_max_degree
     - test_empty_store_max_degree_is_zero
 
-  Task 2 (rank-stage R2 acceptance):
+  Rank-stage acceptance:
     - test_normalized_degree_lets_verbatim_outrank_hub
-    - test_old_formula_would_have_ranked_hub_above_verbatim   (regression direction lock)
+    - test_old_formula_would_have_ranked_hub_above_verbatim (regression direction lock)
     - test_pipeline_reason_contains_deg_norm_not_raw_log
     - test_zero_max_degree_does_not_raise_division_error
 
 The hub/verbatim fixtures use HAND-CRAFTED 384d unit vectors so the cosine
 window between hub and verbatim is precisely controllable. _PerfEmbedder's
 sha256-based vectors collapse to ≈0 for distinct text and 1.0 for identical
-text — they cannot produce the 0.3 < gap < 0.42 window the R2 math demands
+text — they cannot produce the 0.3 < gap < 0.42 window the math demands
 (W_DEGREE=0.1 × log(1+64) ≈ 0.42 = max old-formula degree contribution).
 """
 from __future__ import annotations
@@ -40,8 +40,8 @@ class _ControlledEmbedder:
     other text falls through to a sha256-derived vector (the same
     pattern as _PerfEmbedder for parity with seed-time use).
 
-    Used by R2 tests to pin the cue's vector so the dot product against
-    each candidate is the controlled cosine.
+    Used by the rank-stage tests to pin the cue's vector so the dot product
+    against each candidate is the controlled cosine.
     """
 
     DIM = EMBED_DIM
@@ -150,7 +150,7 @@ def test_build_runtime_graph_sets_max_degree_attribute(tmp_path):
     from iai_mcp.retrieve import build_runtime_graph
     from iai_mcp.store import MemoryStore
 
-    store = MemoryStore(path=tmp_path / "lancedb")
+    store = MemoryStore(path=tmp_path / "hippo")
     embedder = _ControlledEmbedder()
     # Seed 5 isolated records so the degree distribution is the trivial
     # all-zeros (one isolated node per record).
@@ -171,7 +171,7 @@ def test_cache_round_trip_preserves_max_degree(tmp_path):
     from iai_mcp.retrieve import build_runtime_graph
     from iai_mcp.store import MemoryStore
 
-    store = MemoryStore(path=tmp_path / "lancedb")
+    store = MemoryStore(path=tmp_path / "hippo")
     embedder = _ControlledEmbedder()
     ids = []
     for i in range(6):
@@ -209,7 +209,7 @@ def test_empty_store_max_degree_is_zero(tmp_path):
     from iai_mcp.retrieve import build_runtime_graph
     from iai_mcp.store import MemoryStore
 
-    store = MemoryStore(path=tmp_path / "lancedb")
+    store = MemoryStore(path=tmp_path / "hippo")
     embedder = _ControlledEmbedder()
     rec = _make_episodic(embedder.embed("only"), "only one")
     store.insert(rec)
@@ -221,20 +221,20 @@ def test_empty_store_max_degree_is_zero(tmp_path):
 
 # ------------------------------------------------------------- Task 2 tests
 # Hub vs verbatim fixture geometry:
-#   cue text:        "verbatim cue marker A"
-#   verbatim record: cos = 0.60 to cue
-#   hub record:      cos = 0.30 to cue, deg = 64 (max in graph)
-#   filler records:  64 distractors carrying isolated edges to make hub deg=64
+# cue text: "verbatim cue marker A"
+# verbatim record: cos = 0.60 to cue
+# hub record: cos = 0.30 to cue, deg = 64 (max in graph)
+# filler records: 64 distractors carrying isolated edges to make hub deg=64
 #
 # OLD formula (W_DEGREE * log(1+deg)):
-#   hub_score      ≈ 0.30 + 0.1 * log(65) ≈ 0.30 + 0.4170 = 0.7170
-#   verbatim_score ≈ 0.60 + 0.1 * log(1)  ≈ 0.60 + 0.0000 = 0.6000
-#   → hub wins by ≈ 0.117  (old regression direction)
+# hub_score ≈ 0.30 + 0.1 * log(65) ≈ 0.30 + 0.4170 = 0.7170
+# verbatim_score ≈ 0.60 + 0.1 * log(1) ≈ 0.60 + 0.0000 = 0.6000
+# → hub wins by ≈ 0.117 (old regression direction)
 #
 # NEW formula (W_DEGREE * log(1+deg)/log(1+max_deg)):
-#   hub_score      ≈ 0.30 + 0.1 * 1.0     = 0.4000
-#   verbatim_score ≈ 0.60 + 0.1 * 0.0     = 0.6000
-#   → verbatim wins by 0.20  (R2 acceptance)
+# hub_score ≈ 0.30 + 0.1 * 1.0 = 0.4000
+# verbatim_score ≈ 0.60 + 0.1 * 0.0 = 0.6000
+# → verbatim wins by 0.20
 
 
 def _seed_hub_vs_verbatim(tmp_path, hub_degree: int = 64):
@@ -247,7 +247,7 @@ def _seed_hub_vs_verbatim(tmp_path, hub_degree: int = 64):
     from iai_mcp.retrieve import build_runtime_graph
     from iai_mcp.store import MemoryStore
 
-    store = MemoryStore(path=tmp_path / "lancedb")
+    store = MemoryStore(path=tmp_path / "hippo")
     embedder = _ControlledEmbedder()
 
     cue_text = "verbatim cue marker A"
@@ -290,7 +290,7 @@ def _seed_hub_vs_verbatim(tmp_path, hub_degree: int = 64):
 
 
 def test_normalized_degree_lets_verbatim_outrank_hub(tmp_path):
-    """R2 acceptance: under the NEW formula the verbatim record outranks
+    """Under the NEW formula the verbatim record outranks
     the hub on a cue where verbatim has cos=0.60 and hub has cos=0.30
     plus deg=64. Verbatim must land at or before position the hub does."""
     from iai_mcp.pipeline import recall_for_response
@@ -338,18 +338,18 @@ def test_old_formula_would_have_ranked_hub_above_verbatim(tmp_path):
     cue_vec = cue_vec / float(np.linalg.norm(cue_vec))
 
     def _live_cos(rid):
-        node = graph._nx.nodes[str(rid)]
-        v = np.asarray(node["embedding"], dtype=np.float32)
+        emb = graph.get_embedding(rid)
+        v = np.asarray(emb, dtype=np.float32)
         return float(np.dot(cue_vec, v))
 
     hub_cos = _live_cos(hub_id)
     verbatim_cos = _live_cos(verbatim_id)
 
-    deg_dict = dict(graph._nx.degree())
+    deg_dict = {str(nid): deg for nid, deg in graph.degrees()}
     hub_deg = float(deg_dict.get(str(hub_id), 0))
     verbatim_deg = float(deg_dict.get(str(verbatim_id), 0))
 
-    # OLD formula constants (from pipeline.py:115-118, NOT changed by ).
+    # OLD formula constants (the unbounded log-degree weighting, pre-fix).
     W_COSINE = 1.0
     W_DEGREE = 0.1
     # AAAK is 0 (no aaak_index seeded). Age penalty is ~0 for fresh records.
@@ -400,7 +400,7 @@ def test_zero_max_degree_does_not_raise_division_error(tmp_path):
     from iai_mcp.retrieve import build_runtime_graph
     from iai_mcp.store import MemoryStore
 
-    store = MemoryStore(path=tmp_path / "lancedb")
+    store = MemoryStore(path=tmp_path / "hippo")
     embedder = _ControlledEmbedder()
     cue_text = "cold start cue with no graph topology"
     cue_vec = embedder.embed(cue_text)

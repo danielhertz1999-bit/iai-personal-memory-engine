@@ -1,6 +1,6 @@
-"""concept mode schema separation tests.
+"""Concept mode schema separation tests.
 
-R6 acceptance per SPEC.md:
+Acceptance:
 - Test seeds 10 verbatim records (varying cosine to a chosen cue) +
   5 schema hubs (high degree, tier=semantic, tag pattern:*).
 - With concept cue:
@@ -15,9 +15,8 @@ R6 acceptance per SPEC.md:
     (ii) evidence_count equals incoming schema_instance_of edge count.
     (iii) pattern field equals substring after 'pattern:' in the schema's tags.
 
-Constitutional framing — Beer VSM S1 vs S4 + McClelland CLS:
-operations (verbatim) and intelligence (schema) live at different recursion
-levels. patterns_observed[] makes S4 visible WITHOUT collapsing it into S1.
+Verbatim and schema results live at different levels; patterns_observed[]
+surfaces schema results without collapsing them into the verbatim hits.
 """
 from __future__ import annotations
 
@@ -112,7 +111,7 @@ def _make_episodic(vec: list[float], text: str) -> MemoryRecord:
 
 def _make_schema_hub_with_pattern(vec: list[float], text: str, pattern: str) -> MemoryRecord:
     """Real schema-shape: tier=semantic + tag 'pattern:{pattern}' triggers
-    R6's strip from hits[] into patterns_observed[]."""
+    the strip from hits[] into patterns_observed[]."""
     now = datetime.now(timezone.utc)
     return MemoryRecord(
         id=uuid4(),
@@ -166,7 +165,7 @@ SCHEMA_PATTERNS = [
 
 
 def _seed_10_verbatim_plus_5_schema_hubs(tmp_path, hub_cos: float = 0.65):
-    """R6 fixture: 10 verbatim episodic records (varying cosine) + 5 schema
+    """Fixture: 10 verbatim episodic records (varying cosine) + 5 schema
     hubs (each tagged pattern:* with HUB_DEGREE incoming edges).
 
     hub_cos lets tests choose whether hubs would-have-ranked HIGH (0.65 > some
@@ -180,7 +179,7 @@ def _seed_10_verbatim_plus_5_schema_hubs(tmp_path, hub_cos: float = 0.65):
     from iai_mcp.retrieve import build_runtime_graph
     from iai_mcp.store import MemoryStore
 
-    store = MemoryStore(path=tmp_path / "lancedb")
+    store = MemoryStore(path=tmp_path / "hippo")
     embedder = _ControlledEmbedder()
 
     cue_vec = embedder.embed(CONCEPT_CUE)
@@ -226,12 +225,12 @@ def _seed_10_verbatim_plus_5_schema_hubs(tmp_path, hub_cos: float = 0.65):
 
 
 # ============================================================================
-# R6 acceptance tests
+# Acceptance tests
 # ============================================================================
 
 
 def test_concept_mode_excludes_schemas_from_hits(tmp_path):
-    """R6 acceptance: hits[] contains zero records satisfying
+    """Acceptance: hits[] contains zero records satisfying
     (tier='semantic' AND any tag startswith 'pattern:').
     """
     from iai_mcp.pipeline import recall_for_response
@@ -322,7 +321,7 @@ def test_concept_mode_patterns_observed_evidence_count_matches_edges(tmp_path):
         )
         # The pipeline implementation queries dst-only (not src) for simplicity,
         # so we accept either: the documented count from the implementation,
-        # which is the dst-only count, OR the OR-counted total. The R6
+        # which is the dst-only count, OR the OR-counted total. The
         # acceptance is "evidence_count derived from the edges table" — both
         # counts faithfully reflect the edge structure.
         dst_only_count = int(

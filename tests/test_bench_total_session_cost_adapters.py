@@ -1,4 +1,4 @@
-"""mempalace / claude-mem subprocess adapters in
+"""Task 3 — mempalace / claude-mem subprocess adapters in
 ``bench/total_session_cost.py``.
 
 These adapters let the reference column carry a live measurement
@@ -9,12 +9,12 @@ a ``bench_adapter_unavailable`` stderr event.
 
 Covered contracts:
 
-    Test 1  _run_mempalace_adapter signature exists and accepts the 10-turn script
-    Test 2  mempalace CLI absent -> None + stderr event, no exception
-    Test 3  mempalace CLI present -> sums per-turn token counts via the 3-tier counter
-    Test 4  --measure-mempalace flag wires the live adapter into refs["mempalace_measured"]
-    Test 5  _run_claude_mem_adapter mirrors mempalace shape for forward compat
-    Test 6  manual --ref-mempalace alongside --measure-mempalace keeps both values,
+    Test 1 _run_mempalace_adapter signature exists and accepts the 10-turn script
+    Test 2 mempalace CLI absent -> None + stderr event, no exception
+    Test 3 mempalace CLI present -> sums per-turn token counts via the 3-tier counter
+    Test 4 --measure-mempalace flag wires the live adapter into refs["mempalace_measured"]
+    Test 5 _run_claude_mem_adapter mirrors mempalace shape for forward compat
+    Test 6 manual --ref-mempalace alongside --measure-mempalace keeps both values,
             but LIVE measurement is the comparator for the `passed` flag
 """
 from __future__ import annotations

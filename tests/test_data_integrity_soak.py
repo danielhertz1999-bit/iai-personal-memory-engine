@@ -1,13 +1,12 @@
-"""W5 / — cross-cut data-integrity integration soak.
+"""Cross-cut data-integrity integration soak.
 
-Exercises the W1-W4 hardening fixes *together* under load shapes that no
-per-wave unit test reaches. Each case maps 1:1 to the four CONTEXT.md
-D-05 sub-requirements:
+Exercises the hardening fixes *together* under load shapes that no
+single unit test reaches:
 
-1. provenance overflow round-trip under sustained load (W1 / D-01)
-2. capture drain partial-failure preserves evidence (W2 / D-02)
-3. graph-cache encryption round-trip + plaintext absence (W3 / D-03)
-4. anti-hits malformed edge does not crash recall (W4 / D-04)
+1. provenance overflow round-trip under sustained load
+2. capture drain partial-failure preserves evidence
+3. graph-cache encryption round-trip + plaintext absence
+4. anti-hits malformed edge does not crash recall
 
 All cases run against a real ``MemoryStore`` in tmp_path with a
 deterministic passphrase fallback (no keyring required).
@@ -16,7 +15,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import threading
 import time
 from datetime import datetime, timezone
@@ -27,8 +25,11 @@ import pytest
 
 
 # Deterministic passphrase so encryption paths work without a keyring
-# backend on this construction host.
-os.environ.setdefault("IAI_MCP_CRYPTO_PASSPHRASE", "test-soak-w5-passphrase")
+# backend on this host. Provided per-test by the conftest autouse
+# ``_crypto_passphrase_env`` fixture (any consistent value works for the
+# in-process encrypt/decrypt round-trips here — no subprocess needs a
+# specific shared value). No module-level os.environ write — that would
+# pollute the global env for every subsequently-collected test.
 
 
 @pytest.fixture(autouse=True)
@@ -48,12 +49,12 @@ def _isolated_keyring(monkeypatch: pytest.MonkeyPatch):
 
 
 # ============================================================================
-# Case 1 — provenance overflow round-trip under sustained load (W1 / D-01)
+# Case 1 — provenance overflow round-trip under sustained load
 # ============================================================================
 
 
 def test_w5_provenance_overflow_sustained_load(tmp_path, monkeypatch):
-    """W5 / case 1: drive 10 batches into a queue sized for 2 in-memory
+    """Case 1: drive 10 batches into a queue sized for 2 in-memory
     slots while the worker is throttled. Assert zero pairs lost; the spill
     dir transient (drains to empty after release + flush)."""
     from iai_mcp.provenance_queue import ProvenanceWriteQueue
@@ -121,26 +122,26 @@ def test_w5_provenance_overflow_sustained_load(tmp_path, monkeypatch):
 
     cues = [p[1]["cue"] for p in flushed]
     assert sorted(cues) == [f"sustained-{i}" for i in range(10)], (
-        f" violated: expected all 10 cues exactly once; got {sorted(cues)}"
+        f"MEM-05 violated: expected all 10 cues exactly once; got {sorted(cues)}"
     )
     overflow_dir = tmp_path / ".iai-mcp" / ".provenance-overflow"
     assert list(overflow_dir.glob("*.jsonl")) == []
 
 
 # ============================================================================
-# Case 2 — capture drain partial-failure preserves evidence (W2 / D-02)
+# Case 2 — capture drain partial-failure preserves evidence
 # ============================================================================
 
 
 def test_w5_capture_drain_partial_failure_preserves_evidence(tmp_path, monkeypatch):
-    """W5 / case 2: a deferred file with a mixed-success transcript
-    is renamed .failed-<ts>.jsonl when any event hits insert-failed:*.
-    Pre-07.9 the file was unlinked with the events permanently lost."""
+    """Case 2: a deferred file with a mixed-success transcript
+    is renamed .failed-<ts>.jsonl when any event hits insert-failed:*,
+    so the events are never silently unlinked and lost."""
     from iai_mcp.capture import drain_deferred_captures
     from iai_mcp.store import MemoryStore
 
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path / ".iai-mcp" / "lance"))
+    monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path / ".iai-mcp" / "hippo"))
 
     deferred = tmp_path / ".iai-mcp" / ".deferred-captures"
     deferred.mkdir(parents=True)
@@ -191,19 +192,19 @@ def test_w5_capture_drain_partial_failure_preserves_evidence(tmp_path, monkeypat
 
 
 # ============================================================================
-# Case 3 — graph-cache encryption round-trip + plaintext absence (W3 / D-03)
+# Case 3 — graph-cache encryption round-trip + plaintext absence
 # ============================================================================
 
 
 def test_w5_graph_cache_encryption_no_plaintext_canary(tmp_path):
-    """W5 / case 3: save() with surface containing a canary; the
+    """Case 3: save() with surface containing a canary; the
     canary must NOT appear anywhere in the on-disk bytes; try_load
     decrypts back to the original surface byte-for-byte."""
     from iai_mcp import runtime_graph_cache
     from iai_mcp.community import CommunityAssignment
     from iai_mcp.store import MemoryStore
 
-    store = MemoryStore(path=tmp_path / "lancedb")
+    store = MemoryStore(path=tmp_path / "hippo")
     store.root = tmp_path  # cache file under tmp_path
 
     rid = uuid4()
@@ -249,12 +250,12 @@ def test_w5_graph_cache_encryption_no_plaintext_canary(tmp_path):
 
 
 # ============================================================================
-# Case 4 — anti-hits malformed edge does not crash recall (W4 / D-04)
+# Case 4 — anti-hits malformed edge does not crash recall
 # ============================================================================
 
 
 def test_w5_recall_survives_malformed_anti_edge(tmp_path):
-    """W5 / case 4: end-to-end through _find_anti_hits with one
+    """Case 4: end-to-end through _find_anti_hits with one
     valid + one malformed contradicts edge. The recall pipeline must
     survive; the valid anti-hit surfaces; the skip is logged."""
     from iai_mcp.graph import MemoryGraph
@@ -262,7 +263,7 @@ def test_w5_recall_survives_malformed_anti_edge(tmp_path):
     from iai_mcp.store import MemoryStore
     from iai_mcp.types import EMBED_DIM, MemoryHit, MemoryRecord
 
-    store = MemoryStore(path=tmp_path / "lancedb")
+    store = MemoryStore(path=tmp_path / "hippo")
 
     rid_hit = uuid4()
     rid_anti = uuid4()

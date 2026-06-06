@@ -2,13 +2,13 @@
 
 Collapses three pointer fields historically emitted at session-start::
 
-    <id:{8-hex}>               (~8  raw tok)   identity pointer (L0 UUID prefix)
-    <sess:{8-hex} pend:{N}>    (~12 raw tok)   brain session handle + pending
-    <topic:{label<=8}>         (~8  raw tok)   dominant community hint
+    <id:{8-hex}> (~8 raw tok) identity pointer (L0 UUID prefix)
+    <sess:{8-hex} pend:{N}> (~12 raw tok) brain session handle + pending
+    <topic:{label<=8}> (~8 raw tok) dominant community hint
 
 into a single opaque pointer::
 
-    <iai:HHHHHHHHHHHHHHHH>     (~6-10 raw tok) 16-hex blake2s digest
+    <iai:HHHHHHHHHHHHHHHH> (~6-10 raw tok) 16-hex blake2s digest
 
 The payload bytes are derived deterministically from the three inputs via
 blake2s(digest_size=8) -> 64 bits -> 16 hex chars. Deterministic encoding

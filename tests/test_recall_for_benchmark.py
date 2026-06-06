@@ -1,14 +1,13 @@
-"""redesign (08-CONTEXT.md ): benchmark top-K entry-point contract.
+"""Benchmark top-K entry-point contract.
 
-Tests the new public function `recall_for_benchmark(...)` introduced by
-. Contract:
+Tests the public function `recall_for_benchmark(...)`. Contract:
 
 - Signature: store, graph, assignment, rich_club, embedder, cue,
   session_id, k_hits=10, profile_state=None, turn=0, mode='concept'.
 - NO `budget_tokens` parameter — calling with `budget_tokens=1500`
   MUST raise TypeError.
 - Returns RecallResponse with `len(hits) <= k_hits` (cap honoured).
-- Hits are sorted by score descending (R5 deterministic tie-break by
+- Hits are sorted by score descending (deterministic tie-break by
   UUID-asc preserved from `_recall_core`).
 - mode plumbing: bench callers pass `mode="concept"`; the parameter
   threads through to `_recall_core` unchanged.
@@ -78,7 +77,7 @@ def _make(
 def _build_store_and_graph(
     tmp_path, n: int, surface_len: int = 4,
 ) -> tuple[MemoryStore, MemoryGraph, list[MemoryRecord]]:
-    store = MemoryStore(path=tmp_path / "lancedb")
+    store = MemoryStore(path=tmp_path / "hippo")
     recs: list[MemoryRecord] = []
     for i in range(n):
         vec = [0.0] * EMBED_DIM
@@ -92,7 +91,7 @@ def _build_store_and_graph(
         graph.add_node(
             rec.id, community_id=None, embedding=list(rec.embedding),
         )
-        graph._nx.nodes[str(rec.id)].update({
+        graph.set_node_payload(rec.id, {
             "embedding": list(rec.embedding),
             "surface": rec.literal_surface,
             "centrality": 0.0,
@@ -161,7 +160,7 @@ def test_recall_for_benchmark_returns_at_most_k_hits(tmp_path) -> None:
 
 
 def test_recall_for_benchmark_hits_sorted_by_score_desc(tmp_path) -> None:
-    """Test 8: hits are sorted by `score` descending (R5 deterministic order)."""
+    """Test 8: hits are sorted by `score` descending (deterministic order)."""
     from iai_mcp.pipeline import recall_for_benchmark
 
     # 8 records on distinct axes; cue at axis 0 -> rank ordered by axis index.
@@ -220,7 +219,7 @@ def test_recall_for_benchmark_budget_used_is_informational(tmp_path) -> None:
 
 
 def test_recall_for_benchmark_threads_mode_to_core(tmp_path) -> None:
-    """D-02 mode plumbing: `mode='concept'` (bench default) flows through."""
+    """mode plumbing: `mode='concept'` (bench default) flows through."""
     from iai_mcp.pipeline import recall_for_benchmark
 
     store, graph, recs = _build_store_and_graph(tmp_path, n=5)
@@ -244,7 +243,7 @@ def test_recall_for_benchmark_signature_has_no_budget_tokens_param() -> None:
     assert "mode" in sig.parameters
     assert "budget_tokens" not in sig.parameters, (
         "recall_for_benchmark signature must NOT carry a budget_tokens "
-        "parameter (D-07 contract split — the entry-point split exists so "
+        "parameter (the entry-point split exists so "
         "the two response shapes can never silently swap via an optional kwarg)."
     )
 

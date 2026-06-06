@@ -6,8 +6,7 @@ quality FLOOR + structural completeness check that lifts the Glama Tool
 Definition Quality Score (TDQS) of the iai-mcp server from C 2.42 toward
 B (>=3.0).
 
-The existing budget test stays at 30/330 caps per user directive
-2026-05-11 (cap raise rejected). This file uses the FACT that the budget
+The existing budget test stays at 30/330 caps. This file uses the FACT that the budget
 regex captures only the FIRST `description:` after each `name:` — so
 per-param descriptions inside `inputSchema.properties.*` and sibling
 fields (annotations, outputSchema) are INVISIBLE to the budget regex.
@@ -173,7 +172,7 @@ def _enumerate_tool_blocks() -> list[tuple[str, int, int]]:
 def test_each_description_has_usage_or_behavior_marker() -> None:
     """Every top-level description must contain >=1 marker from MARKERS.
 
-    Lifts Glama D2 Usage Guidelines (2/5 -> 3-4/5) and D3 Behavior
+    Lifts the Glama Usage Guidelines (2/5 -> 3-4/5) and Behavior
     dimensions across the 12-tool surface.
     """
     descs = _extract_top_level_descriptions()
@@ -210,16 +209,16 @@ def test_camouflaging_status_defines_what_is_detected() -> None:
 
 
 def test_every_tool_has_annotations_block() -> None:
-    """Each of the 12 tool entries must declare a sibling `annotations: {`
+    """Each of the 13 tool entries must declare a sibling `annotations: {`
     block at column 4 (4-space indent — same depth as inputSchema).
 
     Per-tool brace-balance scan: slice each tool's span and check for the
-    `annotations:` substring. Lifts Glama D3 Behavior out of the 1-2/5 band.
+    `annotations:` substring. Lifts the Glama Behavior dimension out of the 1-2/5 band.
     """
     text = TOOLS_TS.read_text()
     blocks = _enumerate_tool_blocks()
-    assert len(blocks) == 12, (
-        f"expected 12 tool entries, found {len(blocks)}: {[b[0] for b in blocks]}"
+    assert len(blocks) == 13, (
+        f"expected 13 tool entries, found {len(blocks)}: {[b[0] for b in blocks]}"
     )
     annotations_re = re.compile(r"^    annotations:\s*\{", re.MULTILINE)
     total = len(annotations_re.findall(text))
@@ -228,21 +227,21 @@ def test_every_tool_has_annotations_block() -> None:
         span = text[open_idx:close_idx]
         if not annotations_re.search(span):
             missing.append(name)
-    assert not missing and total == 12, (
+    assert not missing and total == 13, (
         f"Quality-floor violation: tools missing `annotations: {{` block at "
-        f"column 4 (found {total}, expected 12); missing tools: "
+        f"column 4 (found {total}, expected 13); missing tools: "
         f"{sorted(missing)}"
     )
 
 
 def test_every_tool_has_output_schema_block() -> None:
-    """Each of the 12 tool entries must declare a sibling `outputSchema: {`
-    block at column 4. Lifts Glama D6 Completeness out of the 1-3/5 band.
+    """Each of the 13 tool entries must declare a sibling `outputSchema: {`
+    block at column 4. Lifts the Glama Completeness dimension out of the 1-3/5 band.
     """
     text = TOOLS_TS.read_text()
     blocks = _enumerate_tool_blocks()
-    assert len(blocks) == 12, (
-        f"expected 12 tool entries, found {len(blocks)}: {[b[0] for b in blocks]}"
+    assert len(blocks) == 13, (
+        f"expected 13 tool entries, found {len(blocks)}: {[b[0] for b in blocks]}"
     )
     output_re = re.compile(r"^    outputSchema:\s*\{", re.MULTILINE)
     total = len(output_re.findall(text))
@@ -251,9 +250,9 @@ def test_every_tool_has_output_schema_block() -> None:
         span = text[open_idx:close_idx]
         if not output_re.search(span):
             missing.append(name)
-    assert not missing and total == 12, (
+    assert not missing and total == 13, (
         f"Quality-floor violation: tools missing `outputSchema: {{` block at "
-        f"column 4 (found {total}, expected 12); missing tools: "
+        f"column 4 (found {total}, expected 13); missing tools: "
         f"{sorted(missing)}"
     )
 

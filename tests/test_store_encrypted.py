@@ -3,13 +3,13 @@
 Exercises the store-level encryption layer that wraps insert()/get() so callers
 never see ciphertext. Covers:
 
-- On-disk verification: raw LanceDB row's literal_surface column starts with
+- On-disk verification: raw SQLite row's literal_surface column starts with
   iai:enc:v1: after insert
 - Round-trip via store.insert + store.get preserves the original string
 - Query similar still works (embeddings remain plaintext)
 - Wrong key / tampered row -> InvalidTag / CryptoError
 - AD binding: copy ciphertext from row A into row B -> decrypt fails
-- Plaintext rows (pre-migration / <=02-07 data) read correctly
+- Plaintext rows (pre-migration data) read correctly
 - provenance_json + profile_modulation_gain_json also encrypted
 - append_provenance_batch (batch API) re-encrypts on write
 """
@@ -79,7 +79,7 @@ def _make(text: str = "hello", language: str = "en", detail: int = 2):
 
 
 def test_insert_writes_encrypted_literal_surface_on_disk(tmp_path):
-    """acceptance: raw LanceDB row's literal_surface starts with iai:enc:v1:."""
+    """acceptance: raw SQLite row's literal_surface starts with iai:enc:v1:."""
     from iai_mcp.store import MemoryStore, RECORDS_TABLE
     store = MemoryStore(path=tmp_path)
     rec = _make(text="top-secret Russian phrase: Привет")

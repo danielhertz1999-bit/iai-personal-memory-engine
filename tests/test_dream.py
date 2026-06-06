@@ -197,7 +197,7 @@ def test_non_last_cycle_does_not_invoke_insight(tmp_path, monkeypatch):
 
     result = asyncio.run(runner())
 
-    assert insight_calls == [], "insight called on non-last cycle (D-08 violation)"
+    assert insight_calls == [], "insight called on non-last cycle"
     assert result["claude_call_used"] is False
 
 
@@ -234,7 +234,7 @@ def test_last_cycle_triggers_insight(tmp_path, monkeypatch):
 # Test 5: last cycle with claude_enabled=False does NOT invoke insight
 # ---------------------------------------------------------------------------
 
-def test_last_cycle_respects_host_disabled(tmp_path, monkeypatch):
+def test_last_cycle_respects_claude_disabled(tmp_path, monkeypatch):
     from iai_mcp import dream
 
     event_log = _EventLog()

@@ -1,6 +1,6 @@
-""" RED: S4 sigma event-emission tests.
+"""RED: S4 sigma event-emission tests.
 
-Constitutional contract:
+Contract:
 - Developmental (N<500, sigma<1) -> kind=sigma_observation phase=developmental
   AND a profile_updated event for the Hebbian rate boost.
 - Mid-life drift (N>=500, sigma<1) -> kind=sigma_drift.
@@ -34,7 +34,7 @@ def _seed_synthetic_graph(monkeypatch, *, n_nodes: int, sigma_val: float) -> Non
         }
 
     monkeypatch.setattr(sigma_mod, "compute_topology_snapshot", _fake_snapshot)
-    # Stub build_runtime_graph so we don't need a real LanceDB graph.
+    # Stub build_runtime_graph so we don't need a real store graph.
     from iai_mcp import retrieve
 
     def _fake_build(_store):

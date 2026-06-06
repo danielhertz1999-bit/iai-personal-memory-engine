@@ -1,0 +1,158 @@
+{
+  "rng_seed": 20260601,
+  "stable_key_scheme": "UUID(int=i)",
+  "n1k": {
+    "n_records": 1000,
+    "reference_cues": [
+      {
+        "cue": "hello",
+        "cue_label": "lexical-generic",
+        "must_hit": true,
+        "two_hop_only": false,
+        "hub_sensitive": true,
+        "expected_stable_keys": [
+          "00000000-0000-0000-0000-000000000001"
+        ],
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "returned_hit_ids_top10": [
+          "00000000-0000-0000-0000-000000000001"
+        ],
+        "anti_hit_surfaced": false
+      },
+      {
+        "cue": "specialized technical framework review",
+        "cue_label": "lexical-specific",
+        "must_hit": true,
+        "two_hop_only": true,
+        "hub_sensitive": false,
+        "expected_stable_keys": [
+          "00000000-0000-0000-0000-000000000005"
+        ],
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "returned_hit_ids_top10": [
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000001",
+          "00000000-0000-0000-0000-000000000002",
+          "00000000-0000-0000-0000-000000000005",
+          "726bb93b-922f-4ad7-a649-3a4fe2ae45ef",
+          "019d0785-5450-4739-a8ed-573c74b67f75",
+          "57569f6d-1fa9-496f-b772-86cdbdf5b734",
+          "69741dcf-b513-46c7-a652-be6e7dc90651",
+          "7096e6f1-ebcc-4690-83b0-806a495406bf"
+        ],
+        "anti_hit_surfaced": false
+      }
+    ],
+    "contradicts_pair_stable_keys": [
+      "00000000-0000-0000-0000-000000000006",
+      "00000000-0000-0000-0000-000000000007"
+    ],
+    "hub_sensitive_cue_label": "lexical-generic",
+    "two_hop_only_cue_label": "lexical-specific",
+    "ef_50_behaviour": "returned-200",
+    "ef_50_result_count": 200,
+    "recall_at_200": {
+      "lexical-generic": 0.98,
+      "lexical-specific": 0.975
+    },
+    "recall_at_200_note": "Random uniform unit-vector filler in 384-d produces near-tied cosines (std ~0.051). ANN at ef=200 struggles to rank near-tied neighbors consistently. Production clustered embeddings yield higher recall@200. The threshold for 200th-nearest-neighbor cosine at N=10k is ~0.10.",
+    "ann_boundary_specific_cue": 0.0289,
+    "two_hop_gold_cosine_vs_cue": 0.02,
+    "two_hop_gold_outside_ann_top200": true,
+    "two_hop_gold_reachable_via_2hop": true,
+    "small_k_ef_blast_radius": {
+      "k": 3,
+      "ef_from": 50,
+      "ef_to": 200,
+      "p50_ms_ef50": 1.79,
+      "p95_ms_ef50": 2.02,
+      "p50_ms_ef200": 2.0,
+      "p95_ms_ef200": 2.01,
+      "latency_delta_p50_ms": 0.21,
+      "latency_delta_p95_ms": -0.0,
+      "top_set_changed": false,
+      "change_direction": "toward-exact-or-unchanged",
+      "memory_delta_rss_mb": 0.0
+    }
+  },
+  "n10k": {
+    "n_records": 10000,
+    "reference_cues": [
+      {
+        "cue": "hello",
+        "cue_label": "lexical-generic",
+        "must_hit": true,
+        "two_hop_only": false,
+        "hub_sensitive": true,
+        "expected_stable_keys": [
+          "00000000-0000-0000-0000-000000000001"
+        ],
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "returned_hit_ids_top10": [
+          "00000000-0000-0000-0000-000000000001"
+        ],
+        "anti_hit_surfaced": false
+      },
+      {
+        "cue": "specialized technical framework review",
+        "cue_label": "lexical-specific",
+        "must_hit": true,
+        "two_hop_only": true,
+        "hub_sensitive": false,
+        "expected_stable_keys": [
+          "00000000-0000-0000-0000-000000000005"
+        ],
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "returned_hit_ids_top10": [
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000001",
+          "00000000-0000-0000-0000-000000000002",
+          "00000000-0000-0000-0000-000000000005",
+          "70798f8d-a6e0-445d-a1c5-ab0bcf4c0d5b",
+          "726bb93b-922f-4ad7-a649-3a4fe2ae45ef",
+          "73f768d3-3bf1-4185-90ba-8fd68b1fc231",
+          "019d0785-5450-4739-a8ed-573c74b67f75",
+          "4f762648-e58f-4a39-a78c-5eeb95118343"
+        ],
+        "anti_hit_surfaced": false
+      }
+    ],
+    "contradicts_pair_stable_keys": [
+      "00000000-0000-0000-0000-000000000006",
+      "00000000-0000-0000-0000-000000000007"
+    ],
+    "hub_sensitive_cue_label": "lexical-generic",
+    "two_hop_only_cue_label": "lexical-specific",
+    "ef_50_behaviour": "returned-200",
+    "ef_50_result_count": 200,
+    "recall_at_200": {
+      "lexical-generic": 0.445,
+      "lexical-specific": 0.505
+    },
+    "recall_at_200_note": "Random uniform unit-vector filler in 384-d produces near-tied cosines (std ~0.051). ANN at ef=200 struggles to rank near-tied neighbors consistently. Production clustered embeddings yield higher recall@200. The threshold for 200th-nearest-neighbor cosine at N=10k is ~0.10.",
+    "ann_boundary_specific_cue": 0.0576,
+    "two_hop_gold_cosine_vs_cue": 0.02,
+    "two_hop_gold_outside_ann_top200": true,
+    "two_hop_gold_reachable_via_2hop": true,
+    "small_k_ef_blast_radius": {
+      "k": 3,
+      "ef_from": 50,
+      "ef_to": 200,
+      "p50_ms_ef50": 1.86,
+      "p95_ms_ef50": 2.57,
+      "p50_ms_ef200": 2.47,
+      "p95_ms_ef200": 2.69,
+      "latency_delta_p50_ms": 0.61,
+      "latency_delta_p95_ms": 0.11,
+      "top_set_changed": true,
+      "change_direction": "toward-exact-or-unchanged",
+      "memory_delta_rss_mb": 0.0
+    }
+  }
+}

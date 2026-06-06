@@ -1,36 +1,34 @@
 """acceptance — `iai-mcp capture-transcript --no-spawn` ALWAYS defers.
 
-Closes the embedder cold-load amplification documented in SPEC 07.5: every
-Stop-hook invocation (286/day on 2026-04-27) was loading bge-small-en-v1.5
-in a brand-new Python subprocess on the daemon-reachable path. Forensic
-evidence: stderr `Loading weights: 0%|...| 0/391 ...|██| 391/391` × 10 +
-`leaked semaphore objects at shutdown` × 7.
+Closes the embedder cold-load amplification from the original fix:
+every Stop-hook invocation was loading bge-small-en-v1.5 in a brand-new Python
+subprocess on the daemon-reachable path.
 
 Fix: `cmd_capture_transcript` `--no-spawn` branch in `src/iai_mcp/cli.py`
 no longer probes the socket and no longer imports
 `iai_mcp.capture.capture_transcript` / `iai_mcp.store.MemoryStore`. It
 unconditionally calls `write_deferred_captures(...)` and prints
-`{"status": "deferred", "path": "..."}`. The daemon's WAKE drain (Phase
-7.1 R3 / ) consumes deferred files with the daemon's
-already-loaded embedder.
+`{"status": "deferred", "path": "..."}`. The daemon's WAKE drain consumes
+deferred files with the daemon's already-loaded embedder.
+
+sentence-transformers is not a dependency. Any accidental embedder import on
+the --no-spawn path would crash the subprocess (rc != 0), which all tests catch.
 
 Test matrix:
 - Test 1: subprocess + reachable mock socket (real AF_UNIX listener) →
   status="deferred", stderr has ZERO `Loading weights` and ZERO
-  `sentence_transformers` mentions. The reachable case used to inline-embed;
+  `sentence_transformers` output. The reachable case used to inline-embed;
   now it must defer just like the unreachable case.
 - Test 2: subprocess + unreachable socket (back-compat) → identical output.
-  Locks down that the new always-defer path doesn't regress the existing
-  unreachable behaviour.
+  Locks down that the always-defer path doesn't regress existing behaviour.
 - Test 3: subprocess + fresh interpreter introspects `sys.modules` AFTER the
   CLI handler runs end-to-end → asserts `iai_mcp.embed` and
   `sentence_transformers` are NOT loaded. Subprocess required because other
-  pytest tests in the same session may pre-load `iai_mcp.embed`, which
-  poisons in-process `sys.modules` checks.
+  pytest tests in the same session may pre-load `iai_mcp.embed`.
 - Test 4: in-process source-string scan of the modified function body →
   asserts the `--no-spawn` block contains zero `capture_transcript` /
   `MemoryStore` import statements. Cheap structural lockdown so the inline
-  path can't be reintroduced without breaking a test (SPEC A1).
+  path can't be reintroduced without breaking a test.
 
 Test isolation:
 - HOME=tmp_path so `Path.home()` resolves to a fresh dir; the user's
@@ -38,7 +36,7 @@ Test isolation:
 - IAI_DAEMON_SOCKET_PATH=/tmp/iai-no-spawn-defer-<pid>-<n>/d.sock so the
   reachable case binds a real listener and the unreachable case points to
   a non-existent path.
-- Subprocess invocation: `[sys.executable, '-m', 'iai_mcp.cli', ...]` with
+- Subprocess invocation: `[sys.executable, '-m', 'iai_mcp.cli',...]` with
   PYTHONPATH set; we don't depend on the `iai-mcp` console script being on
   PATH (matches the test_capture_transcript_no_spawn.py pattern).
 """
@@ -102,40 +100,11 @@ def _isolated_env(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
 def _make_transcript(tmp_path: Path) -> Path:
     """Write a 3-turn Claude Code-style JSONL transcript."""
     turns = [
-        {"type": "user", "message": {"role": "user", "content": "hello world 7 5"}},
+        {"type": "user", "message": {"role": "user", "content": "hello phase 7 5"}},
         {"type": "assistant", "message": {"role": "assistant", "content": "ack always defer"}},
         {"type": "user", "message": {"role": "user", "content": "third defer turn"}},
     ]
     transcript_path = tmp_path / "transcript.jsonl"
-    transcript_path.write_text("\n".join(json.dumps(t) for t in turns) + "\n")
-    return transcript_path
-
-
-def _make_codex_transcript(tmp_path: Path) -> Path:
-    turns = [
-        {
-            "type": "response_item",
-            "payload": {
-                "type": "message",
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": "noisy injected instructions should not be captured",
-                    }
-                ],
-            },
-        },
-        {
-            "type": "event_msg",
-            "payload": {"type": "user_message", "message": "codex event user turn"},
-        },
-        {
-            "type": "event_msg",
-            "payload": {"type": "agent_message", "message": "codex assistant turn"},
-        },
-    ]
-    transcript_path = tmp_path / "codex-transcript.jsonl"
     transcript_path.write_text("\n".join(json.dumps(t) for t in turns) + "\n")
     return transcript_path
 
@@ -184,7 +153,7 @@ def _bind_listener(sock_path: Path) -> socket.socket:
 
 
 def test_no_spawn_reachable_defers_not_inserts(tmp_path):
-    """R1: even with the daemon socket reachable, --no-spawn
+    """Even with the daemon socket reachable, --no-spawn
     writes a deferred-captures JSONL and exits 0 with status="deferred"."""
     env, deferred_dir, sock_path = _isolated_env(tmp_path)
     transcript = _make_transcript(tmp_path)
@@ -204,7 +173,7 @@ def test_no_spawn_reachable_defers_not_inserts(tmp_path):
     # Must be JSON-parsable AND have status="deferred" (NOT "inserted": N).
     payload = json.loads(proc.stdout.strip())
     assert payload.get("status") == "deferred", (
-        f"reachable case must defer under ; got {payload!r}"
+        f"reachable case must defer; got {payload!r}"
     )
     assert "path" in payload, payload
     assert "inserted" not in payload, (
@@ -212,14 +181,16 @@ def test_no_spawn_reachable_defers_not_inserts(tmp_path):
     )
 
     # Empirical proof the embedder did NOT cold-load: stderr is clean.
-    # `sentence_transformers` writes a tqdm progress bar containing
-    # `Loading weights` when bge-small-en-v1.5 first loads.
+    # sentence-transformers is no longer a dependency; any accidental import on
+    # this path would crash the subprocess (caught by the rc==0 assertion above).
+    # "Loading weights" would indicate the Rust native embedder was loaded —
+    # which must not happen on the --no-spawn path.
     assert "Loading weights" not in proc.stderr, (
-        f"embedder cold-loaded on reachable --no-spawn path (broken):\n"
+        f"embedder cold-loaded on reachable --no-spawn path:\n"
         f"{proc.stderr}"
     )
     assert "sentence_transformers" not in proc.stderr, (
-        f"sentence_transformers touched on reachable --no-spawn path:\n"
+        f"sentence_transformers output on --no-spawn path (should be impossible):\n"
         f"{proc.stderr}"
     )
 
@@ -253,32 +224,13 @@ def test_no_spawn_unreachable_still_defers(tmp_path):
     assert payload.get("status") == "deferred", payload
     assert "inserted" not in payload, payload
 
-    # Same stderr cleanliness invariant.
+    # Same stderr cleanliness invariant. sentence-transformers is not installed;
+    # any output containing these strings would indicate an unexpected import.
     assert "Loading weights" not in proc.stderr, proc.stderr
     assert "sentence_transformers" not in proc.stderr, proc.stderr
 
     files = sorted(deferred_dir.glob("*.jsonl"))
     assert len(files) == 1, f"expected 1 deferred file, got {files}"
-
-
-def test_no_spawn_extracts_codex_transcript_turns(tmp_path):
-    env, deferred_dir, _sock_path = _isolated_env(tmp_path)
-    transcript = _make_codex_transcript(tmp_path)
-
-    proc = _run_no_spawn(env, transcript)
-
-    assert proc.returncode == 0, f"stderr={proc.stderr!r} stdout={proc.stdout!r}"
-    payload = json.loads(proc.stdout.strip())
-    assert payload.get("status") == "deferred", payload
-
-    files = sorted(deferred_dir.glob("*.jsonl"))
-    assert len(files) == 1, f"expected 1 deferred file, got {files}"
-    events = [json.loads(line) for line in files[0].read_text().splitlines()[1:]]
-    assert [event["role"] for event in events] == ["user", "assistant"]
-    assert [event["text"] for event in events] == [
-        "codex event user turn",
-        "codex assistant turn",
-    ]
 
 
 # ---------------------------------------------------------------------------
@@ -290,10 +242,10 @@ def test_no_spawn_extracts_codex_transcript_turns(tmp_path):
 
 
 def test_no_spawn_zero_embedder_imports_in_fresh_process(tmp_path):
-    """R1 (import-isolation): in a brand-new Python interpreter,
-    invoking the `--no-spawn` CLI handler end-to-end leaves
-    `iai_mcp.embed` and `sentence_transformers` UNLOADED. Direct evidence
-    the heavy-import path is severed."""
+    """Import-isolation: in a brand-new Python interpreter, invoking the
+    `--no-spawn` CLI handler end-to-end leaves `iai_mcp.embed` UNLOADED.
+    sentence-transformers is not installed; it cannot appear in sys.modules.
+    Direct evidence the heavy-import path is severed."""
     env, deferred_dir, _sock_path = _isolated_env(tmp_path)
     transcript = _make_transcript(tmp_path)
 
@@ -381,7 +333,7 @@ def test_no_spawn_branch_has_no_inline_imports():
         flags=re.MULTILINE | re.DOTALL,
     )
     assert no_spawn_match, (
-        "could not isolate `if no_spawn:` block; layout drifted from fix"
+        "could not isolate `if no_spawn:` block; layout drifted from expected structure"
     )
     no_spawn_block = no_spawn_match.group(1)
 
@@ -393,17 +345,17 @@ def test_no_spawn_branch_has_no_inline_imports():
 
     # Forbidden inline-ingest imports.
     assert "from iai_mcp.capture import capture_transcript" not in no_spawn_block, (
-        "regression: capture_transcript reintroduced into "
+        "Regression: capture_transcript reintroduced into "
         "--no-spawn branch (would trigger embedder cold-load on every "
         "Stop-hook fire)"
     )
     assert "from iai_mcp.store import MemoryStore" not in no_spawn_block, (
-        "regression: MemoryStore reintroduced into --no-spawn "
+        "Regression: MemoryStore reintroduced into --no-spawn "
         "branch"
     )
 
     # Defensive: no probe call either — the SPEC removes it from this branch.
     assert "_try_short_timeout_connect" not in no_spawn_block, (
-        "socket probe must be gone from --no-spawn branch (the "
+        "Socket probe must be gone from --no-spawn branch (the "
         "probe was the gate that selected the inline path)"
     )

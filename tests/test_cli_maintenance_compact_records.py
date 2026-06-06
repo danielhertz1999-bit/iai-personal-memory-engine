@@ -1,4 +1,4 @@
-"""tests: `iai-mcp maintenance compact-records`.
+"""Tests for `iai-mcp maintenance compact-records` (Hippo backend).
 
 Eight cases:
   1. test_dry_run_prints_metrics_no_optimize_call
@@ -10,8 +10,8 @@ Eight cases:
   7. test_dry_run_no_audit_file
   8. test_yes_required_with_apply_in_non_tty
 
-All tests use mocked `MemoryStore` + mocked `optimize_lance_storage` +
-mocked `psutil` — zero real LanceDB I/O, zero real embedder load,
+All tests use mocked `MemoryStore` + mocked `optimize_hippo_storage` +
+mocked `psutil` — zero real HippoDB I/O, zero real embedder load,
 combined wall-clock target < 5s.
 """
 from __future__ import annotations
@@ -20,7 +20,6 @@ import argparse
 import json
 import os
 import sys
-from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -61,29 +60,28 @@ def _patch_psutil_alive(
 
 
 def _make_optimize_report(
-    *, versions_before: int = 3, versions_after: int = 1,
-    rows_before: int = 0, rows_after: int = 0,
+    *, rows_before: int = 0, rows_after: int = 0,
 ) -> dict:
-    """Construct an optimize_lance_storage-shaped report (3 tables)."""
+    """Construct an optimize_hippo_storage-shaped report (3 tables)."""
     base = {
         "rows_before": rows_before,
         "rows_after": rows_after,
-        "versions_before": versions_before,
-        "versions_after": versions_after,
         "size_bytes_before": 0,
         "size_bytes_after": 0,
+        "vacuum_elapsed_sec": 0.0,
+        "hnswlib_rebuild_elapsed_sec": 0.0,
         "elapsed_sec": 0.0,
     }
     return {
         "records": dict(base),
-        "edges": dict(base, versions_before=0, versions_after=0),
-        "events": dict(base, versions_before=0, versions_after=0),
+        "edges": dict(base),
+        "events": dict(base),
     }
 
 
 def _make_fake_store(record_ids: list[str]) -> MagicMock:
     """Construct a MagicMock MemoryStore exposing tbl.count_rows() +
-    tbl.to_pandas(columns=['id']) for the given record-id list.
+    tbl.search().select(['id']).to_pandas() for the given record-id list.
     """
     fake_store = MagicMock()
     fake_tbl = MagicMock()
@@ -102,10 +100,8 @@ def _make_fake_store(record_ids: list[str]) -> MagicMock:
 
 @pytest.fixture
 def iai_root(tmp_path, monkeypatch):
-    """Sandbox HOME → tmp_path; pre-create
-    `~/.iai-mcp/lancedb/records.lance` skeleton with `_versions/` subdir
-    holding 3 fake manifests so the size/version walk has data to
-    measure.
+    """Sandbox HOME → tmp_path; pre-create `~/.iai-mcp/hippo/brain.sqlite3`
+    stub so the hippo_dir exists check passes without opening a real DB.
     """
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
@@ -121,12 +117,10 @@ def iai_root(tmp_path, monkeypatch):
 
     iai_dir = tmp_path / ".iai-mcp"
     iai_dir.mkdir()
-    records_lance = iai_dir / "lancedb" / "records.lance"
-    records_lance.mkdir(parents=True)
-    versions_dir = records_lance / "_versions"
-    versions_dir.mkdir()
-    for i in range(3):
-        (versions_dir / f"{i:020d}.manifest").write_bytes(b"x" * 100)
+    hippo_dir = iai_dir / "hippo"
+    hippo_dir.mkdir(parents=True)
+    # Stub brain.sqlite3 so size measurement doesn't crash.
+    (hippo_dir / "brain.sqlite3").write_bytes(b"SQLite format 3" + b"\x00" * 85)
     # Reload cli to pick up new HOME — STATE_PATH/LOCK_PATH/SOCKET_PATH are
     # module-scope Path.home() captures.
     import importlib
@@ -141,26 +135,30 @@ def iai_root(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_dry_run_prints_metrics_no_optimize_call(iai_root, capsys):
+def test_dry_run_prints_metrics_no_optimize_call(iai_root, monkeypatch, capsys):
     """--dry-run emits metrics-only JSON; mocked optimize never called."""
+    fake_store = _make_fake_store([])
+    monkeypatch.setattr(
+        "iai_mcp.store.MemoryStore", lambda path=None, **kw: fake_store,
+    )
     from iai_mcp.cli import cmd_maintenance_compact_records
     with patch(
-        "iai_mcp.maintenance.optimize_lance_storage"
+        "iai_mcp.maintenance.optimize_hippo_storage"
     ) as mock_opt:
         rc = cmd_maintenance_compact_records(_make_args(dry_run=True))
     assert rc == 0
     out = capsys.readouterr().out
     payload = json.loads(out)
     assert payload["mode"] == "dry-run"
-    assert "versions_count" in payload["metrics"]["pre"]
-    assert "size_mb" in payload["metrics"]["pre"]
+    # Hippo backend reports db_size_mb and records_count (no versions_count).
+    assert "db_size_mb" in payload["metrics"]["pre"]
     assert "records_count" in payload["metrics"]["pre"]
     assert payload["metrics"]["post"] is None
     mock_opt.assert_not_called()
 
 
 def test_apply_with_yes_runs_optimize(iai_root, monkeypatch, capsys):
-    """Mocked optimize → `--apply --yes` calls it once with retention=0d."""
+    """Mocked optimize → `--apply --yes` calls it once."""
     from iai_mcp import cli as _cli
 
     fake_store = _make_fake_store(["id1", "id2", "id3", "id4", "id5"])
@@ -168,11 +166,10 @@ def test_apply_with_yes_runs_optimize(iai_root, monkeypatch, capsys):
         "iai_mcp.store.MemoryStore", lambda path=None, **kw: fake_store,
     )
     mock_opt = MagicMock(return_value=_make_optimize_report(
-        versions_before=3, versions_after=1,
         rows_before=5, rows_after=5,
     ))
     monkeypatch.setattr(
-        "iai_mcp.maintenance.optimize_lance_storage", mock_opt,
+        "iai_mcp.maintenance.optimize_hippo_storage", mock_opt,
     )
 
     rc = _cli.cmd_maintenance_compact_records(
@@ -180,8 +177,6 @@ def test_apply_with_yes_runs_optimize(iai_root, monkeypatch, capsys):
     )
     assert rc == 0
     assert mock_opt.call_count == 1
-    _, kwargs = mock_opt.call_args
-    assert kwargs["retention"] == timedelta(days=0)
 
 
 def test_preflight_refuses_when_daemon_alive(iai_root, monkeypatch, capsys):
@@ -198,7 +193,7 @@ def test_preflight_refuses_when_daemon_alive(iai_root, monkeypatch, capsys):
 
     from iai_mcp.cli import cmd_maintenance_compact_records
     with patch(
-        "iai_mcp.maintenance.optimize_lance_storage"
+        "iai_mcp.maintenance.optimize_hippo_storage"
     ) as mock_opt:
         rc = cmd_maintenance_compact_records(
             _make_args(apply=True, yes=True),
@@ -212,18 +207,16 @@ def test_preflight_refuses_when_daemon_alive(iai_root, monkeypatch, capsys):
 def test_preflight_skips_when_daemon_state_missing(
     iai_root, monkeypatch, capsys,
 ):
-    """No .daemon-state.json → preflight passes; optimize is called."""
+    """No.daemon-state.json → preflight passes; optimize is called."""
     assert not (iai_root / ".daemon-state.json").exists()
 
     fake_store = _make_fake_store([])
     monkeypatch.setattr(
         "iai_mcp.store.MemoryStore", lambda path=None, **kw: fake_store,
     )
-    mock_opt = MagicMock(return_value=_make_optimize_report(
-        versions_before=3, versions_after=1,
-    ))
+    mock_opt = MagicMock(return_value=_make_optimize_report())
     monkeypatch.setattr(
-        "iai_mcp.maintenance.optimize_lance_storage", mock_opt,
+        "iai_mcp.maintenance.optimize_hippo_storage", mock_opt,
     )
 
     from iai_mcp.cli import cmd_maintenance_compact_records
@@ -243,9 +236,8 @@ def test_record_id_set_invariant_aborts_on_divergence(
         "iai_mcp.store.MemoryStore", lambda path=None, **kw: fake_store,
     )
     monkeypatch.setattr(
-        "iai_mcp.maintenance.optimize_lance_storage",
+        "iai_mcp.maintenance.optimize_hippo_storage",
         MagicMock(return_value=_make_optimize_report(
-            versions_before=3, versions_after=1,
             rows_before=3, rows_after=2,
         )),
     )
@@ -255,11 +247,11 @@ def test_record_id_set_invariant_aborts_on_divergence(
     post_set = {"id1", "id2"}
     metrics_seq = [
         {
-            "versions_count": 3, "size_mb": 0.0,
+            "db_size_mb": 0.0,
             "records_count": 3, "record_id_set": pre_set,
         },
         {
-            "versions_count": 1, "size_mb": 0.0,
+            "db_size_mb": 0.0,
             "records_count": 2, "record_id_set": post_set,
         },
     ]
@@ -299,9 +291,8 @@ def test_audit_file_written_on_apply(iai_root, monkeypatch, capsys):
         "iai_mcp.store.MemoryStore", lambda path=None, **kw: fake_store,
     )
     monkeypatch.setattr(
-        "iai_mcp.maintenance.optimize_lance_storage",
+        "iai_mcp.maintenance.optimize_hippo_storage",
         MagicMock(return_value=_make_optimize_report(
-            versions_before=3, versions_after=1,
             rows_before=2, rows_after=2,
         )),
     )
@@ -324,8 +315,12 @@ def test_audit_file_written_on_apply(iai_root, monkeypatch, capsys):
     assert "elapsed_sec" in payload
 
 
-def test_dry_run_no_audit_file(iai_root, capsys):
+def test_dry_run_no_audit_file(iai_root, monkeypatch, capsys):
     """--dry-run never writes a `.maintenance-compact-*.json` file."""
+    fake_store = _make_fake_store([])
+    monkeypatch.setattr(
+        "iai_mcp.store.MemoryStore", lambda path=None, **kw: fake_store,
+    )
     from iai_mcp.cli import cmd_maintenance_compact_records
     rc = cmd_maintenance_compact_records(_make_args(dry_run=True))
     assert rc == 0

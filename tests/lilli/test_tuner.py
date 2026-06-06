@@ -1,0 +1,239 @@
+"""Tests for lilli/profile/tuner.py -- retrieval-policy RL + trust refinement.
+
+Mirrors test_learn_retrieval_policy.py and the LEARN-06 tests in
+test_learn_profile_bayes.py but imports from the canonical new location.
+
+Boundary: no daemon/lifecycle imports (enforced by conftest.py).
+"""
+from __future__ import annotations
+
+import random
+from uuid import uuid4
+
+import pytest
+
+from iai_mcp.events import write_event
+from iai_mcp.store import MemoryStore
+
+
+# ---------------------------------------------------------------- constants
+
+
+def test_constants_present():
+    from iai_mcp.lilli.profile.tuner import (
+        LEARN_RATE,
+        MAX_WEIGHT,
+        MIN_WEIGHT,
+        EPSILON_EXPLORE,
+        TRUST_INCREMENT_PER_COMMIT,
+        TRUST_DECREMENT_PER_REJECT,
+    )
+    assert LEARN_RATE == 0.05
+    assert MAX_WEIGHT == 5.0
+    assert MIN_WEIGHT == 0.0
+    assert 0.0 < EPSILON_EXPLORE < 1.0
+    assert TRUST_INCREMENT_PER_COMMIT > 0
+    assert TRUST_DECREMENT_PER_REJECT > 0
+
+
+# ---------------------------------------------------------------- RetrievalFeedback
+
+
+def test_retrieval_feedback_dataclass():
+    from iai_mcp.lilli.profile.tuner import RetrievalFeedback
+
+    fb = RetrievalFeedback(
+        query_type="fact_lookup",
+        hit_ids=[uuid4(), uuid4()],
+        used_ids=[],
+        corrected=False,
+        re_asked=False,
+    )
+    assert fb.query_type == "fact_lookup"
+    assert len(fb.hit_ids) == 2
+
+
+# ---------------------------------------------------------------- update_retrieval_weights
+
+
+def test_retrieval_feedback_used_boosts_weights():
+    from iai_mcp.lilli.profile.tuner import RetrievalFeedback, update_retrieval_weights
+
+    ids = [uuid4() for _ in range(3)]
+    fb = RetrievalFeedback(
+        query_type="lookup",
+        hit_ids=ids,
+        used_ids=ids[:3],
+        corrected=False,
+        re_asked=False,
+    )
+    before = {"W_COSINE": 1.0, "W_AAAK": 0.3, "W_DEGREE": 0.1, "W_AGE": 0.05}
+    after = update_retrieval_weights(fb, before)
+    assert after["W_COSINE"] > before["W_COSINE"]
+
+
+def test_retrieval_feedback_corrected_reduces_weights():
+    from iai_mcp.lilli.profile.tuner import RetrievalFeedback, update_retrieval_weights
+
+    ids = [uuid4() for _ in range(3)]
+    fb = RetrievalFeedback(
+        query_type="lookup",
+        hit_ids=ids,
+        used_ids=[],
+        corrected=True,
+        re_asked=False,
+    )
+    before = {"W_COSINE": 1.0, "W_AAAK": 0.3, "W_DEGREE": 0.1, "W_AGE": 0.05}
+    after = update_retrieval_weights(fb, before)
+    assert after["W_COSINE"] < before["W_COSINE"]
+
+
+def test_retrieval_feedback_re_asked_reduces_weights():
+    from iai_mcp.lilli.profile.tuner import RetrievalFeedback, update_retrieval_weights
+
+    ids = [uuid4() for _ in range(3)]
+    fb = RetrievalFeedback(
+        query_type="lookup",
+        hit_ids=ids,
+        used_ids=[],
+        corrected=False,
+        re_asked=True,
+    )
+    before = {"W_COSINE": 1.0, "W_AAAK": 0.3, "W_DEGREE": 0.1, "W_AGE": 0.05}
+    after = update_retrieval_weights(fb, before)
+    assert after["W_COSINE"] < before["W_COSINE"]
+
+
+def test_retrieval_weights_bounded():
+    from iai_mcp.lilli.profile.tuner import (
+        MAX_WEIGHT, MIN_WEIGHT, RetrievalFeedback, update_retrieval_weights,
+    )
+
+    ids = [uuid4() for _ in range(3)]
+    weights = {"W_COSINE": 1.0, "W_AAAK": 0.3, "W_DEGREE": 0.1, "W_AGE": 0.05}
+    for _ in range(1000):
+        fb = RetrievalFeedback(
+            query_type="x", hit_ids=ids, used_ids=ids,
+            corrected=False, re_asked=False,
+        )
+        weights = update_retrieval_weights(fb, weights)
+    assert weights["W_COSINE"] <= MAX_WEIGHT
+    assert weights["W_COSINE"] >= MIN_WEIGHT
+
+
+def test_does_not_mutate_input():
+    from iai_mcp.lilli.profile.tuner import RetrievalFeedback, update_retrieval_weights
+
+    ids = [uuid4()]
+    before = {"W_COSINE": 1.0}
+    before_copy = dict(before)
+    fb = RetrievalFeedback("x", ids, ids, False, False)
+    update_retrieval_weights(fb, before)
+    assert before == before_copy
+
+
+# ---------------------------------------------------------------- pick_retrieval_strategy
+
+
+def test_pick_retrieval_strategy_returns_string():
+    from iai_mcp.lilli.profile.tuner import pick_retrieval_strategy
+
+    random.seed(42)
+    s = pick_retrieval_strategy("fact_lookup", history={})
+    assert isinstance(s, str)
+
+
+def test_pick_retrieval_strategy_epsilon_greedy():
+    from iai_mcp.lilli.profile.tuner import pick_retrieval_strategy
+
+    random.seed(7)
+    history = {
+        "fact_lookup": {
+            "pipeline_default": {"mean": 0.9, "n": 10},
+            "greedy_2hop": {"mean": 0.1, "n": 10},
+            "rich_club_first": {"mean": 0.2, "n": 10},
+        }
+    }
+    picks = {"pipeline_default": 0, "greedy_2hop": 0, "rich_club_first": 0}
+    for _ in range(200):
+        s = pick_retrieval_strategy("fact_lookup", history)
+        picks[s] = picks.get(s, 0) + 1
+    assert picks["pipeline_default"] > 120
+
+
+def test_pick_retrieval_strategy_no_history():
+    from iai_mcp.lilli.profile.tuner import pick_retrieval_strategy
+
+    random.seed(42)
+    s = pick_retrieval_strategy("unseen", history={})
+    assert isinstance(s, str)
+    assert s in ("pipeline_default", "greedy_2hop", "rich_club_first")
+
+
+def test_pick_retrieval_strategy_custom_strategies():
+    from iai_mcp.lilli.profile.tuner import pick_retrieval_strategy
+
+    random.seed(1)
+    s = pick_retrieval_strategy("x", history={}, strategies=["a", "b", "c"])
+    assert s in ("a", "b", "c")
+
+
+# ---------------------------------------------------------------- refine_s5_trust_score
+
+
+def test_identity_refinement_increases_s5_trust(tmp_path):
+    from iai_mcp.lilli.profile.tuner import refine_s5_trust_score
+
+    store = MemoryStore(path=tmp_path)
+    anchor_id = uuid4()
+    for _ in range(3):
+        write_event(
+            store, kind="s5_invariant_update",
+            data={"anchor_id": str(anchor_id), "agree_count": 3},
+        )
+    new_score = refine_s5_trust_score(store, anchor_id, current=0.5)
+    assert new_score > 0.5
+
+
+def test_identity_refinement_decreases_on_rejected(tmp_path):
+    from iai_mcp.lilli.profile.tuner import refine_s5_trust_score
+
+    store = MemoryStore(path=tmp_path)
+    anchor_id = uuid4()
+    for _ in range(5):
+        write_event(
+            store, kind="s5_invariant_proposal",
+            data={"anchor_id": str(anchor_id), "passes_vigilance": False},
+        )
+    new_score = refine_s5_trust_score(store, anchor_id, current=0.5)
+    assert new_score < 0.5
+
+
+def test_identity_refinement_clamps_0_1(tmp_path):
+    from iai_mcp.lilli.profile.tuner import refine_s5_trust_score
+
+    store = MemoryStore(path=tmp_path)
+    anchor_id = uuid4()
+    for _ in range(100):
+        write_event(
+            store, kind="s5_invariant_update",
+            data={"anchor_id": str(anchor_id), "agree_count": 3},
+        )
+    score = refine_s5_trust_score(store, anchor_id, current=0.5)
+    assert 0.0 <= score <= 1.0
+
+
+def test_trust_unrelated_anchor_unaffected(tmp_path):
+    """Events for a different anchor_id must not affect the queried anchor."""
+    from iai_mcp.lilli.profile.tuner import refine_s5_trust_score
+
+    store = MemoryStore(path=tmp_path)
+    anchor_id = uuid4()
+    other_id = uuid4()
+    for _ in range(50):
+        write_event(
+            store, kind="s5_invariant_update",
+            data={"anchor_id": str(other_id), "agree_count": 5},
+        )
+    score = refine_s5_trust_score(store, anchor_id, current=0.5)
+    assert score == 0.5

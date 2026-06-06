@@ -1,4 +1,4 @@
-"""Tests for delta encoding (Task 2, ).
+"""Tests for delta encoding.
 
 Hash each session-start component (L0, L1, L2, rich_club). Subsequent turns
 send only changed components; unchanged ones are represented by their hash.

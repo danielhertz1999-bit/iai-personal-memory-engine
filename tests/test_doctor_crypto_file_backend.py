@@ -1,8 +1,8 @@
-"""doctor `check_h_crypto_file_state` + top-of-output hint.
+"""Doctor `check_h_crypto_file_state` + top-of-output hint.
 
 Locks the executable spec for the 8th doctor check row + the migration
 remediation hint that prints at the very top of doctor's output when the
-file-missing-but-Keychain-entry-exists state is detected .
+file-missing-but-Keychain-entry-exists state is detected.
 
 Detection matrix:
 | file present + valid | keyring entry | doctor output       |
@@ -32,7 +32,7 @@ import pytest
 def test_check_h_pass_when_file_present_and_valid(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """D-12 case 1 — valid 0o600 32-byte key file → PASS.
+    """Case 1 — valid 0o600 32-byte key file → PASS.
 
     File-backend resolution honors `IAI_MCP_STORE`; pointing it at tmp_path
     makes the lazy `_key_file_path()` return `tmp_path/.crypto.key`. No
@@ -55,7 +55,7 @@ def test_check_h_pass_when_file_present_and_valid(
 def test_check_h_warn_when_file_missing_and_keyring_has_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """D-12 case 2 — file absent BUT keyring has a key → WARN with migrate-to-file hint.
+    """Case 2 — file absent BUT keyring has a key → WARN with migrate-to-file hint.
 
     Monkeypatches the LOCAL `keyring.get_password` import inside the check
     so the test does not actually probe the user's macOS Keychain.
@@ -86,7 +86,7 @@ def test_check_h_warn_when_file_missing_and_keyring_has_key(
 def test_check_h_pass_when_file_missing_and_no_keyring(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """D-12 case 3 — file absent AND no Keychain entry → PASS (clean fresh install).
+    """Case 3 — file absent AND no Keychain entry → PASS (clean fresh install).
 
     Detail mentions both `crypto init` and `IAI_MCP_CRYPTO_PASSPHRASE`
     so a fresh-install user has actionable guidance.
@@ -115,7 +115,7 @@ def test_check_h_pass_when_file_missing_and_no_keyring(
 def test_check_h_pass_when_keyring_backend_unavailable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """D-12 case 3b — file absent AND keyring NoKeyringError → PASS (clean fresh install).
+    """Case 3b — file absent AND keyring NoKeyringError → PASS (clean fresh install).
 
     Linux servers without a Secret Service backend should be treated the
     same as 'no Keychain entry detected' — not a failure, not a warning.
@@ -141,7 +141,7 @@ def test_check_h_pass_when_keyring_backend_unavailable(
 def test_check_h_fail_when_file_malformed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """D-12 case 4 — file exists but has wrong length → FAIL with `wrong length` in detail."""
+    """Case 4 — file exists but has wrong length → FAIL with `wrong length` in detail."""
     from iai_mcp.doctor import check_h_crypto_file_state
 
     key_path = tmp_path / ".crypto.key"
@@ -160,7 +160,7 @@ def test_check_h_fail_when_file_malformed(
 # ---------------------------------------------------------------- top-of-output hint helper
 
 def test_format_top_of_output_hint_emits_line_when_check_h_warns() -> None:
-    """D-12 — when a WARN row for check_h is present, the helper emits a `> hint:` line
+    """When a WARN row for check_h is present, the helper emits a `> hint:` line
     that names `migrate-to-file` so the user sees the fix BEFORE the row-by-row print.
     """
     from iai_mcp.doctor import CheckResult, _format_top_of_output_hint
@@ -197,10 +197,10 @@ def test_format_top_of_output_hint_returns_none_when_no_warn() -> None:
 # ---------------------------------------------------------------- run_diagnosis includes check_h
 
 def test_run_diagnosis_includes_check_h(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """D-12 wire-in -- `run_diagnosis()` includes the check_h crypto-key row.
+    """Wire-in -- `run_diagnosis()` includes the check_h crypto-key row.
 
     Originally a positional assertion (8th row); rewritten to name-based
-    lookup so subsequent doctor-row additions (added m + n)
+    lookup so subsequent doctor-row additions (later m + n rows)
     do not regress this contract. The (h) and (i) rows must both be
     present in the returned list.
 
@@ -222,9 +222,9 @@ def test_run_diagnosis_includes_check_h(monkeypatch: pytest.MonkeyPatch, tmp_pat
         f"expected exactly one (h) crypto row in run_diagnosis(); "
         f"got {len(h_rows)} from {[r.name for r in results]}"
     )
-    i_rows = [r for r in results if "(i)" in r.name and "lance" in r.name.lower()]
+    i_rows = [r for r in results if "(i)" in r.name]
     assert len(i_rows) == 1, (
-        f"expected exactly one (i) lance versions row in run_diagnosis(); "
+        f"expected exactly one (i) row in run_diagnosis(); "
         f"got {len(i_rows)} from {[r.name for r in results]}"
     )
 
@@ -234,7 +234,7 @@ def test_run_diagnosis_includes_check_h(monkeypatch: pytest.MonkeyPatch, tmp_pat
 def test_cmd_doctor_prints_hint_at_top_when_check_h_warns(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
-    """D-12 wire-in pin (advisor) — cmd_doctor MUST call _format_top_of_output_hint
+    """Wire-in pin — cmd_doctor MUST call _format_top_of_output_hint
     BEFORE print_checklist so the hint appears at the very top of stdout.
 
     Rationale: helper-level tests verify the helper produces the right string,
@@ -259,7 +259,7 @@ def test_cmd_doctor_prints_hint_at_top_when_check_h_warns(
         _doctor.CheckResult("(c) lock file healthy", True, "synthetic", status="PASS"),
         _doctor.CheckResult("(d) no orphan iai_mcp.core procs", True, "synthetic", status="PASS"),
         _doctor.CheckResult("(e) daemon state file valid", True, "synthetic", status="PASS"),
-        _doctor.CheckResult("(f) lancedb store readable", True, "synthetic", status="PASS"),
+        _doctor.CheckResult("(f) hippo storage readable", True, "synthetic", status="PASS"),
         _doctor.CheckResult("(g) no dup binders", True, "synthetic", status="PASS"),
         _doctor.CheckResult(
             "(h) crypto key file state",
@@ -279,7 +279,7 @@ def test_cmd_doctor_prints_hint_at_top_when_check_h_warns(
     captured = capsys.readouterr().out
 
     hint_idx = captured.find("> hint:")
-    header_idx = captured.find("IAI-MCP Doctor")
+    header_idx = captured.find("iai doctor")
     assert hint_idx >= 0, f"expected `> hint:` line in stdout, got:\n{captured!r}"
     assert header_idx >= 0, f"expected checklist header in stdout, got:\n{captured!r}"
     assert hint_idx < header_idx, (
@@ -298,7 +298,7 @@ def test_cmd_doctor_prints_hint_at_top_when_check_h_warns(
 # ---------------------------------------------------------------- CheckResult back-compat
 
 def test_check_result_three_arg_constructor_still_works() -> None:
-    """(Rule 1 deviation): adding `status` to CheckResult must NOT
+    """Adding `status` to CheckResult must NOT
     break existing tests that construct it with 3 positional args
     (test_doctor_checklist.py uses the 3-arg form ~14 times).
     """

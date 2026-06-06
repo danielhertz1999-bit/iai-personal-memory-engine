@@ -5,7 +5,7 @@ Tests cover:
 - (n) HID idle source row in the macOS-tools-available case + the
   fallback case where ``ioreg`` is missing (cross-OS portability).
 
-The CONTEXT 10.4 specification requires:
+The specification requires:
 - Row (m): PASS if wrappers dir readable; display "n=X fresh, Y stale,
   Z orphan".
 - Row (n): PASS if ``available_signals`` includes ``"HIDIdleTime"``;
@@ -186,7 +186,7 @@ def test_doctor_row_n_hid_idle_source_missing() -> None:
 def test_run_diagnosis_includes_rows_m_and_n(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """wire-in: run_diagnosis now includes rows (m) and (n)."""
+    """wire-in: run_diagnosis() now includes rows (m) and (n)."""
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
     from iai_mcp.doctor import run_diagnosis
 
@@ -201,7 +201,7 @@ def test_run_diagnosis_includes_rows_m_and_n(
     assert names.index(m_rows[0].name) < names.index(n_rows[0].name)
 
 
-# ----------------- rows (j), (k), (l) ------
+# ----------------- Task 1.3: rows (j), (k), (l) ------
 
 
 @pytest.fixture
@@ -432,14 +432,18 @@ def test_doctor_row_l_quarantine_expired_passes(
 def test_run_diagnosis_includes_rows_j_k_l_in_order(
     lifecycle_state_root: Path,
 ) -> None:
-    """wire-in: run_diagnosis returns 14 rows in correct order."""
+    """wire-in: run_diagnosis returns 15 rows in correct order.
+
+     / D- appended (z) AVX2 CPU support as row 15.
+    """
     from iai_mcp.doctor import run_diagnosis
 
     results = run_diagnosis()
     names = [r.name for r in results]
 
-    # Expect 14 rows: a..i (9), j/k/l (3), m/n (2).
-    assert len(results) == 14, f"expected 14 rows, got {len(results)}: {names}"
+    # Expect 24 rows: a..i (9), j/k/l (3), m/n (2), o/p (2), q (1), r/s/t (3 hippo), u (1 centrality), v (1 native embedder), w (1 permanent-failed), z (1).
+    assert len(results) == 24, f"expected 24 rows, got {len(results)}: {names}"
+    assert any(r.name.startswith("(u)") for r in results), f"missing (u) recall centrality regression row: {names}"
 
     # The new rows are present...
     j_idx = next(i for i, r in enumerate(results) if "(j)" in r.name)
@@ -447,7 +451,7 @@ def test_run_diagnosis_includes_rows_j_k_l_in_order(
     l_idx = next(i for i, r in enumerate(results) if "(l)" in r.name)
     m_idx = next(i for i, r in enumerate(results) if "(m)" in r.name)
 
-    # ...and ordered j < k < l < m so the lifecycle block is contiguous.
+    #...and ordered j < k < l < m so the lifecycle block is contiguous.
     assert j_idx < k_idx < l_idx < m_idx, (
         f"row order broken: j={j_idx} k={k_idx} l={l_idx} m={m_idx}"
     )

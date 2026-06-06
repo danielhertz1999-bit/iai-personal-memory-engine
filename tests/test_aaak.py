@@ -1,11 +1,9 @@
-"""Tests for the AAAK index generator + English-raw enforcement .
+"""Tests for the AAAK index generator + English-raw enforcement.
 
-D-08 constitutional rule:
+Rules:
 - Storage is RAW VERBATIM English always.
 - AAAK is a RETRIEVAL VIEW only: wing/room/entities/tags metadata string.
 - The index MUST NOT contain literal_surface content.
-
-:
 - Non-English literal_surface must be flagged with a `raw:<lang>` tag; unflagged
   non-English content raises ValueError at write time via enforce_english_raw.
 """
@@ -99,7 +97,7 @@ def test_aaak_index_deterministic():
 
 
 def test_aaak_index_does_not_contain_literal_surface():
-    """Constitutional: literal_surface MUST NOT appear anywhere in the index."""
+    """literal_surface MUST NOT appear anywhere in the index."""
     verbatim = "Alice mentioned the SECRET_PASSWORD_ABC_XYZ on day 3"
     r = _make(text=verbatim, tags=["entity:Alice", "project"])
     idx = generate_aaak_index(r)
@@ -152,7 +150,7 @@ def test_enforce_english_raw_accepts_pure_english():
 
 
 def test_enforce_english_raw_rejects_cyrillic_without_tag():
-    r = _make(text="Alice said: пусть сохранится точно", tags=["project"])
+    r = _make(text="Alice сказал: пусть сохранится точно", tags=["project"])
     with pytest.raises(ValueError) as exc:
         enforce_english_raw(r)
     assert "constitutional" in str(exc.value)
@@ -160,7 +158,7 @@ def test_enforce_english_raw_rejects_cyrillic_without_tag():
 
 def test_enforce_english_raw_accepts_cyrillic_with_raw_tag():
     r = _make(
-        text="Alice said: пусть сохранится точно",
+        text="Alice сказал: пусть сохранится точно",
         tags=["raw:ru", "project"],
     )
     # With explicit raw:ru declaration the rule is satisfied.

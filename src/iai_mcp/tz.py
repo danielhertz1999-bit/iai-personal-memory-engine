@@ -1,4 +1,4 @@
-""" IANA timezone handling (, global-product mandate).
+"""IANA timezone handling (global-product mandate).
 
 Every global-ready product must respect user timezone. We store all runtime
 timestamps (events table, BudgetLedger, record created_at, etc.) in UTC and
@@ -10,13 +10,13 @@ as an IANA string (e.g. "America/Los_Angeles", "Europe/Moscow", "Asia/Tokyo",
 thereafter the user can edit config.json to override.
 
 The sleep-cycle scheduler interprets `quiet_window` (22:00-06:00) in the
-user's LOCAL time, not UTC. Multi-tenant architecture-ready: deployments
+user's LOCAL time, not UTC. Multi-tenant architecture-ready: + deployments
 can carry per-user_id tz maps.
 
 Public surface:
-- detect_tz() -> str         -- best-effort IANA key from system
+- detect_tz() -> str -- best-effort IANA key from system
 - load_user_tz() -> ZoneInfo -- read config.json + auto-seed
-- to_local(dt, tz=None)      -- convert UTC (or naive) to local TZ
+- to_local(dt, tz=None) -- convert UTC (or naive) to local TZ
 """
 from __future__ import annotations
 
@@ -32,8 +32,7 @@ CONFIG_FILENAME = "config.json"
 def _config_path() -> Path:
     """Return the path to the user's config.json.
 
-    Honours IAI_MCP_STORE env var so test isolation + multi-tenant layouts
-    can redirect away from ~/.iai-mcp/.
+    Honours IAI_MCP_STORE env var so test isolation + multi-tenant layouts can redirect away from ~/.iai-mcp/.
     """
     env = os.environ.get("IAI_MCP_STORE")
     root = Path(env) if env else Path.home() / ".iai-mcp"
@@ -46,12 +45,12 @@ def detect_tz() -> str:
         tz = datetime.now().astimezone().tzinfo
         if tz is None:
             return "UTC"
-        # ZoneInfo has .key; plain datetime.timezone does not.
+        # ZoneInfo has.key; plain datetime.timezone does not.
         key = getattr(tz, "key", None)
         if key:
             return str(key)
         return "UTC"
-    except Exception:
+    except (OSError, TypeError, ValueError, AttributeError):
         return "UTC"
 
 
@@ -59,7 +58,7 @@ def _seed_config(cfg_path: Path, tz_key: str) -> None:
     """Atomically write user.timezone into config.json.
 
     Preserves any existing keys in the file; only mutates user.timezone.
-    Writes to a .tmp file first and os.replace()s over the target so a
+    Writes to a.tmp file first and os.replace()s over the target so a
     crashed process can never leave a half-written config.
     """
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
@@ -111,7 +110,7 @@ def load_user_tz() -> ZoneInfo:
     detected = detect_tz()
     try:
         zi = ZoneInfo(detected)
-    except Exception:
+    except (KeyError, ValueError, OSError):
         detected = "UTC"
         zi = ZoneInfo("UTC")
     _seed_config(cfg_path, detected)

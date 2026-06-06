@@ -1,16 +1,15 @@
-"""W3 — _tier0_schema_surfacing rewritten on iter_record_columns(["tags_json"]).
+"""_tier0_schema_surfacing rewritten on iter_record_columns(["tags_json"]).
 
-RED phase: tests 1+2 fail until ``sleep._tier0_schema_surfacing`` is rewritten
-to call ``store.iter_record_columns(["tags_json"], batch_size=1024)`` instead
+Tests 1+2 verify that ``sleep._tier0_schema_surfacing`` calls
+``store.iter_record_columns(["tags_json"], batch_size=1024)`` instead
 of ``store.all_records()``. Tests 3-7 lock pre-existing filter semantics that
-the rewrite must preserve byte-for-byte (D-11 in CONTEXT.md is the exact
-template — record-count floor, raw:/domain: filtering, count >= 3 floor,
-defensive JSON parse).
+the rewrite must preserve byte-for-byte — record-count floor, raw:/domain:
+filtering, count >= 3 floor, defensive JSON parse.
 
-Covered contracts (CONTEXT.md W3 slice):
+Covered contracts:
 
   Architecture flip:
-    1. ``_tier0_schema_surfacing`` calls ``iter_record_columns(["tags_json"], ...)``,
+    1. ``_tier0_schema_surfacing`` calls ``iter_record_columns(["tags_json"],...)``,
        not ``all_records()`` — verified via monkeypatched spies on both methods.
 
   Zero AES-GCM cost:
@@ -19,13 +18,13 @@ Covered contracts (CONTEXT.md W3 slice):
        iteration skips encrypted columns entirely (literal_surface,
        provenance_json, profile_modulation_gain_json never touch disk).
 
-  Filter semantics — byte-identical to pre-W3 (preserve all rules):
+  Filter semantics — byte-identical to the prior implementation (preserve all rules):
     3. ``raw:*`` and ``domain:*`` tags are filtered before counting (existing
        contract; new code must not regress).
     4. ``count >= 3`` per-tag floor preserved.
     5. ``len(records) < CLUSTER_MIN_SIZE`` global floor preserved (now expressed
        as ``record_count < CLUSTER_MIN_SIZE`` after single-pass iteration).
-    6. Output dicts are byte-identical to the pre-W3 implementation on a
+    6. Output dicts are byte-identical to the reference implementation on a
        deterministic 20-record fixture (compute expected via the same algorithm
        run inline against ``store.all_records()``).
 
@@ -33,11 +32,10 @@ Covered contracts (CONTEXT.md W3 slice):
     7. Malformed ``tags_json`` rows do NOT raise — defensive try/except absorbs
        JSONDecodeError and treats the row as having zero tags. Verified by
        monkeypatch-wrapping ``iter_record_columns`` to inject a malformed row
-       AFTER the real rows; OLD code is unaffected (it does not call this
-       method) so the test passes RED for the right reason.
+       AFTER the real rows.
 
-plan-checker B-1 lesson: every test uses a real ``MemoryRecord``
-dataclass via ``_make()`` — never a plain dict against attribute-access code.
+Every test uses a real ``MemoryRecord`` dataclass via ``_make()`` — never a
+plain dict against attribute-access code.
 """
 from __future__ import annotations
 
@@ -80,7 +78,7 @@ def _make(
     detail: int = 2,
     language: str = "en",
 ) -> MemoryRecord:
-    """Real-dataclass fixture (NEVER a plain dict — plan-checker B-1)."""
+    """Real-dataclass fixture (NEVER a plain dict)."""
     return MemoryRecord(
         id=uuid4(),
         tier=tier,
@@ -106,12 +104,12 @@ def _make(
 
 @pytest.fixture
 def store(tmp_path: Path) -> MemoryStore:
-    """Fresh MemoryStore in tmp_path/lancedb (one per test, no cross-test bleed)."""
-    return MemoryStore(path=tmp_path / "lancedb")
+    """Fresh MemoryStore in tmp_path/hippo (one per test, no cross-test bleed)."""
+    return MemoryStore(path=tmp_path / "hippo")
 
 
 def _populate_mixed_16(store: MemoryStore) -> None:
-    """16-record fixture with mixed tier/tags payloads (D-23 W3 contract)."""
+    """16-record fixture with mixed tier/tags payloads."""
     # 4 records with tag-a (single user-facing tag)
     for _ in range(4):
         store.insert(_make(text="alpha", tags=["tag-a"]))
@@ -130,15 +128,11 @@ def _populate_mixed_16(store: MemoryStore) -> None:
 def test_tier0_schema_surfacing_uses_iter_record_columns_not_all_records(
     store: MemoryStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """rewritten function uses ``iter_record_columns(['tags_json'], ...)``
+    """The rewritten function uses ``iter_record_columns(['tags_json'],...)``
     and never calls ``all_records()``.
 
-    Pre-W3 (current main): ``_tier0_schema_surfacing`` calls
-    ``store.all_records()`` at line 337 — spy on ``all_records`` fires once
-    and spy on ``iter_record_columns`` fires zero times → assertion fails RED.
-
-    Post-W3: spy on ``iter_record_columns`` fires once and spy on
-    ``all_records`` fires zero times → assertion passes GREEN.
+    Spy on ``iter_record_columns`` must fire once and spy on
+    ``all_records`` must fire zero times.
     """
     _populate_mixed_16(store)
 
@@ -150,12 +144,12 @@ def test_tier0_schema_surfacing_uses_iter_record_columns_not_all_records(
     _tier0_schema_surfacing(store)
 
     assert spy_all.call_count == 0, (
-        f"_tier0_schema_surfacing must NOT call store.all_records() post-W3; "
+        f"_tier0_schema_surfacing must NOT call store.all_records(); "
         f"got {spy_all.call_count} call(s)"
     )
     assert spy_iter.call_count == 1, (
         f"_tier0_schema_surfacing must call store.iter_record_columns() exactly "
-        f"once post-W3; got {spy_iter.call_count} call(s)"
+        f"once; got {spy_iter.call_count} call(s)"
     )
 
     # Defense-in-depth: verify the columns parameter is exactly ["tags_json"]
@@ -178,19 +172,17 @@ def test_tier0_schema_surfacing_uses_iter_record_columns_not_all_records(
 def test_tier0_schema_surfacing_zero_decrypt_calls(
     store: MemoryStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``_decrypt_for_record`` fires zero times during the W3 path.
+    """``_decrypt_for_record`` fires zero times during the projection path.
 
-    The W3 contract is that projection-only iteration with
+    The contract is that projection-only iteration with
     ``columns=["tags_json"]`` skips every encrypted column at the disk-read
-    layer; the W5 cipher cache is short-circuited entirely on this path.
+    layer; the cipher cache is short-circuited entirely on this path.
 
-    Pre-W3 (current main): ``store.all_records()`` round-trips every row
+    An ``all_records()``-based implementation would round-trip every row
     through ``_from_row``, which calls ``_decrypt_for_record`` on each of
     literal_surface + provenance_json + profile_modulation_gain_json (encrypted
-    columns). For a 16-record store: up to 48 calls. Assertion ``call_count == 0``
-    fails RED.
-
-    Post-W3: zero calls — assertion passes GREEN.
+    columns) — up to 48 calls on a 16-record store. The projection path makes
+    zero calls.
     """
     _populate_mixed_16(store)
 
@@ -201,8 +193,8 @@ def test_tier0_schema_surfacing_zero_decrypt_calls(
 
     assert decrypt_spy.call_count == 0, (
         f"_tier0_schema_surfacing must NOT trigger ANY _decrypt_for_record "
-        f"calls post-W3 (-16210 AES-GCM operations on the 8105-record "
-        f"production store); got {decrypt_spy.call_count} call(s)"
+        f"calls (zero AES-GCM cost on the projection path); "
+        f"got {decrypt_spy.call_count} call(s)"
     )
 
 
@@ -287,9 +279,8 @@ def test_tier0_schema_surfacing_below_cluster_min_size_returns_empty(
 ) -> None:
     """Existing contract: when total records < CLUSTER_MIN_SIZE, return [].
 
-    Pre-W3 expressed as ``len(records) < CLUSTER_MIN_SIZE``.
-    Post-W3 expressed as ``record_count < CLUSTER_MIN_SIZE`` after single-pass
-    iteration. Both must return ``[]`` on stores with fewer than
+    Expressed as ``record_count < CLUSTER_MIN_SIZE`` after single-pass
+    iteration. Must return ``[]`` on stores with fewer than
     ``CLUSTER_MIN_SIZE`` records.
     """
     # Insert exactly CLUSTER_MIN_SIZE - 1 records. With CLUSTER_MIN_SIZE = 3
@@ -304,25 +295,25 @@ def test_tier0_schema_surfacing_below_cluster_min_size_returns_empty(
     )
 
 
-# --------------------------------------------------------------------------- byte-identical-to-pre-W3
+# --------------------------------------------------------------------------- byte-identical output
 
 
 def test_tier0_schema_surfacing_byte_identical_to_pre_w3(
     store: MemoryStore,
 ) -> None:
-    """D-11 contract: rewritten function produces byte-identical output to the
-    pre-W3 implementation on a deterministic 20-record fixture.
+    """Contract: the projection-based function produces byte-identical output
+    to the reference algorithm on a deterministic 20-record fixture.
 
-    Compute the expected output inline using the pre-W3 algorithm against
+    Compute the expected output inline using the reference algorithm against
     ``store.all_records()``; assert order-independent equality (sort by pattern)
-    against the W3 implementation's output.
+    against the projection implementation's output.
 
     Fixture (deterministic, 20 records):
       - 5 records with tags=["a"]
       - 5 records with tags=["b"]
       - 4 records with tags=["c"]
-      - 3 records with tags=["a", "raw:noise"]    -> 'a' count + 3
-      - 3 records with tags=["b", "domain:x"]     -> 'b' count + 3
+      - 3 records with tags=["a", "raw:noise"] -> 'a' count + 3
+      - 3 records with tags=["b", "domain:x"] -> 'b' count + 3
 
     Expected counts: a=8, b=8, c=4. All clear the count >= 3 floor.
     """
@@ -337,7 +328,7 @@ def test_tier0_schema_surfacing_byte_identical_to_pre_w3(
     for _ in range(3):
         store.insert(_make(text="bd", tags=["b", "domain:x"]))
 
-    # Compute expected via the pre-W3 algorithm inline.
+    # Compute expected via the reference algorithm inline.
     records = store.all_records()
     tag_counts: dict[str, int] = {}
     for r in records:
@@ -383,25 +374,19 @@ def test_tier0_schema_surfacing_byte_identical_to_pre_w3(
 def test_tier0_schema_surfacing_handles_malformed_tags_json_gracefully(
     store: MemoryStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """D-11 defensive try/except contract: malformed ``tags_json`` rows MUST
+    """Defensive try/except contract: malformed ``tags_json`` rows MUST
     NOT raise — they contribute zero tag counts, valid rows still surface.
 
     Strategy: monkeypatch-wrap ``store.iter_record_columns`` to inject a
-    malformed row AFTER the real rows. OLD pre-W3 code does NOT call this
-    method (it uses ``store.all_records()``) so the wrap is invisible to
-    pre-W3 — test 7 passes RED for the right reason (existing 5-record
-    fixture clears the floor and surfaces ``tag-good``).
+    malformed row AFTER the real rows. The real iter yields 5 valid rows
+    + 1 malformed row; the defensive
+    ``try: json.loads... except json.JSONDecodeError`` in the function body
+    absorbs the malformed row → no exception, candidates still surface for
+    ``tag-good``.
 
-    Post-W3: the real iter yields 5 valid rows + 1 malformed row; the
-    defensive ``try: json.loads ... except json.JSONDecodeError`` in the
-    new function body absorbs the malformed row → no exception, candidates
-    still surface for ``tag-good``.
-
-    NEVER write the malformed row directly to LanceDB — pre-W3
-    ``_from_row`` parses ``tags_json`` without try/except (store.py:1518)
-    and would crash ``all_records()`` on read, breaking test isolation
-    and the RED contract (the failure should be the projection assertions
-    1+2, not a JSON crash on test 7).
+    The malformed row is injected via the iterator wrap, never written to the
+    store directly — ``_from_row`` parses ``tags_json`` without try/except
+    and would crash ``all_records()`` on read, breaking test isolation.
     """
     # 5 valid records — well above CLUSTER_MIN_SIZE = 3.
     for _ in range(5):
@@ -412,16 +397,15 @@ def test_tier0_schema_surfacing_handles_malformed_tags_json_gracefully(
 
     def iter_with_malformed_tail(columns, **kwargs):  # noqa: ANN001 — match arg shape
         yield from real_iter(columns, **kwargs)
-        # Malformed JSON — defensive try/except in W3 must absorb this without
+        # Malformed JSON — the defensive try/except must absorb this without
         # raising. (Real production data with a corrupted row column might look
         # like this if a write was interrupted mid-flush.)
         yield {"tags_json": "not valid json {{{"}
 
     monkeypatch.setattr(store, "iter_record_columns", iter_with_malformed_tail)
 
-    # Must not raise. Pre-W3 path doesn't call iter_record_columns so the
-    # monkeypatch is a no-op for it; test 7 passes RED. Post-W3 path consumes
-    # the malformed row but absorbs the JSONDecodeError.
+    # Must not raise: the projection path consumes the malformed row but
+    # absorbs the JSONDecodeError.
     candidates = _tier0_schema_surfacing(store)
 
     # tag-good still surfaces (5 records, count=5, confidence=0.5).
@@ -438,21 +422,17 @@ def test_tier0_schema_surfacing_handles_malformed_tags_json_gracefully(
 # run_heavy_consolidation single-materialisation invariant
 # ============================================================================
 #
-# After CONTEXT.md amendment (2026-04-29 mid-execution), the W4 ≤1
-# all_records() invariant on run_heavy_consolidation becomes ACHIEVABLE. The
-# original scope was a sleep.py comment marker only; the amendment
-# extends scope to migrate two `all_records()` callers in schema.py
-# (induce_schemas_tier0 + persist_schema) to use iter_record_columns
-# projection.
+# The ≤1 all_records() invariant on run_heavy_consolidation holds once the two
+# `all_records()` callers in schema.py (induce_schemas_tier0 + persist_schema)
+# use iter_record_columns projection instead.
 #
-# Pre-2 calls when only induce_schemas_tier0 fires; 3 calls when
-# persist_schema fires for an auto-status candidate.
-# Post-1 call total (the sleep.py:513 records_by_id materialisation
-# kept by W4 minimum-change branch per CONTEXT.md D-14/D-20).
+# Before that migration: 2 calls when only induce_schemas_tier0 fires; 3 calls
+# when persist_schema fires for an auto-status candidate.
+# After: 1 call total (the records_by_id materialisation in
+# run_heavy_consolidation, kept by the minimum-change branch).
 #
 # These tests ALSO lock the public contract of run_heavy_consolidation's
-# return dict (test 3) — protects against drive-by changes during
-# W4-extended editing.
+# return dict — protects against drive-by changes.
 
 
 @pytest.fixture
@@ -484,8 +464,8 @@ def _populate_for_heavy(store: MemoryStore) -> list[MemoryRecord]:
     floor, (b) per-tag count >= 3 floor, (c) AUTO_INDUCT_COOCCURRENCE = 5 +
     AUTO_INDUCT_CONFIDENCE = 0.85 thresholds (count=10, confidence=1.0). This
     forces the FULL schema-induction path including persist_schema's keeper
-    scan, exercising the W4-extended invariant against ALL three pre-D-26
-    all_records() call sites."""
+    scan, exercising the single-materialisation invariant against all three
+    former all_records() call sites."""
     from iai_mcp.types import EMBED_DIM as _EMBED_DIM
     from datetime import datetime as _dt, timezone as _tz
     from uuid import uuid4 as _uuid
@@ -523,22 +503,21 @@ def test_run_heavy_consolidation_calls_all_records_at_most_once(
     monkeypatch: pytest.MonkeyPatch,
     _patch_schema_embedder,
 ) -> None:
-    """W4-extended invariant (CONTEXT.md + D-26): run_heavy_consolidation
+    """Single-materialisation invariant: run_heavy_consolidation
     calls store.all_records() AT MOST ONCE per invocation.
 
-    Pre- (current main + W3): 2 or 3 calls — one from
-    sleep.py:513 (records_by_id materialisation kept by W4), one from
-    schema.py:89 (induce_schemas_tier0 — D-26-A target), and one from
-    schema.py:267 (persist_schema keeper scan — D-26-B target) when an
+    Before the schema.py migration: 2 or 3 calls — one from the
+    records_by_id materialisation in run_heavy_consolidation, one from
+    induce_schemas_tier0, and one from persist_schema's keeper scan when an
     auto-status candidate is persisted.
 
-    Post-1 call (only sleep.py:513 records_by_id; the schema.py paths
+    After: 1 call (only the records_by_id materialisation; the schema.py paths
     use iter_record_columns instead).
 
     The test seeds 10 records on a single tag pair. count=10, confidence=1.0
-    → status="auto" → persist_schema fires → ALL THREE pre-D-26 call sites
-    are exercised in one heavy invocation. The assertion ``call_count <= 1``
-    fails RED on current main (count=2 or 3), passes GREEN after D-26-A+B.
+    → status="auto" → persist_schema fires → all three former call sites
+    are exercised in one heavy invocation, so the assertion ``call_count <= 1``
+    exercises the full path.
     """
     from iai_mcp.guard import BudgetLedger, RateLimitLedger
     from iai_mcp.sleep import SleepConfig, run_heavy_consolidation
@@ -558,11 +537,10 @@ def test_run_heavy_consolidation_calls_all_records_at_most_once(
     )
 
     assert spy.call_count <= 1, (
-        f"D-13 invariant: run_heavy_consolidation must call store.all_records() "
+        f"run_heavy_consolidation must call store.all_records() "
         f"AT MOST ONCE per invocation; got {spy.call_count} call(s). "
-        f"Pre-D-26 contributors: sleep.py:513 records_by_id (kept by W4), "
-        f"schema.py:89 induce_schemas_tier0 (D-26-A target), "
-        f"schema.py:267 persist_schema keeper scan (D-26-B target)."
+        f"Former contributors: records_by_id materialisation, "
+        f"induce_schemas_tier0, and persist_schema's keeper scan."
     )
 
 
@@ -571,10 +549,11 @@ def test_run_heavy_consolidation_iter_record_columns_called_at_least_once(
     monkeypatch: pytest.MonkeyPatch,
     _patch_schema_embedder,
 ) -> None:
-    """Companion to the W4 invariant: proves the W3 path (and post-D-26
-    schema paths) actually executed via iter_record_columns. Without this
-    companion, a buggy W4 implementation that elided BOTH all_records()
-    AND iter_record_columns would silently pass the ≤1 invariant."""
+    """Companion to the single-materialisation invariant: proves the
+    schema-surfacing and schema.py paths actually executed via
+    iter_record_columns. Without this companion, a buggy implementation that
+    elided BOTH all_records() AND iter_record_columns would silently pass the
+    ≤1 invariant."""
     from iai_mcp.guard import BudgetLedger, RateLimitLedger
     from iai_mcp.sleep import SleepConfig, run_heavy_consolidation
 
@@ -594,8 +573,8 @@ def test_run_heavy_consolidation_iter_record_columns_called_at_least_once(
 
     assert spy.call_count >= 1, (
         f"run_heavy_consolidation must call store.iter_record_columns() at "
-        f"least once per invocation (W3 _tier0_schema_surfacing path + "
-        f"post-D-26 schema.py paths); got {spy.call_count} call(s)."
+        f"least once per invocation (_tier0_schema_surfacing path + "
+        f"schema.py paths); got {spy.call_count} call(s)."
     )
 
 
@@ -604,8 +583,7 @@ def test_run_heavy_consolidation_returns_expected_keys(
     _patch_schema_embedder,
 ) -> None:
     """Lock the public contract of run_heavy_consolidation's return dict.
-    Protects against drive-by changes that could happen during W4-extended
-    editing of the function body."""
+    Protects against drive-by changes to the function body."""
     from iai_mcp.guard import BudgetLedger, RateLimitLedger
     from iai_mcp.sleep import SleepConfig, run_heavy_consolidation
 

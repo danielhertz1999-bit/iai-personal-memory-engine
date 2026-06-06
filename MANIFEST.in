@@ -1,0 +1,4 @@
+recursive-include rust *.rs *.toml *.lock
+recursive-include rust/iai_mcp_native/src *
+recursive-include rust/iai_mcp_embed_core/src *
+recursive-include rust/iai_mcp_graph_core/src *

@@ -1,4 +1,4 @@
-"""Lucid moment orchestration -- ( Option A).
+"""Lucid moment orchestration.
 
 The "main insight of the day": exactly ONE `claude -p` subprocess call per
 night, at the end of the last REM cycle. The prompt is built from 3 locally-
@@ -6,21 +6,19 @@ extracted schema patterns + 1 surprising episode; Claude distils them into a
 single unifying insight of 1-2 sentences which we store as a semantic-tier
 record tagged `overnight_insight`.
 
-Constitutional guards:
+Invariants:
 - LOCAL is the primary worker. This module owns the single surgical
-  Claude call; all other consolidation work is pure-numpy/NetworkX/TF-IDF.
-- the call goes through host_cli.invoke_host_once which scrubs
+  Claude call; all other consolidation work is pure-local (numpy + TF-IDF).
+- The call goes through claude_cli.invoke_claude_once which scrubs
   the paid-API env var and validates the credentials.json subscription mode
   before spawning the subprocess. This module NEVER references the paid-API
   env var by name.
-- pre-flight budget gate via BudgetTracker.can_spend. A call that
-  would exceed the daily cap (overflow into weekly buffer) is silently
-  skipped, queued implicitly for the next night.
-- Bug #43333: cost_usd > 0 from invoke_host_once is recorded by the wrapper
-  (BudgetTracker.disable_host). This module short-circuits on host_disabled
-  so the bad call never repeats.
-- / C5: the inserted MemoryRecord is assembled once from Claude's
-  text response; we do NOT rewrite literal_surface after insert.
+- Pre-flight budget gate via BudgetTracker.can_spend. A call that
+  would exceed the daily cap is silently skipped, queued for the next night.
+- If a previous call returned cost_usd > 0, BudgetTracker.disable_claude is
+  set and this module short-circuits so the call never repeats.
+- The inserted MemoryRecord is assembled once from Claude's text response;
+  literal_surface is NOT rewritten after insert.
 """
 from __future__ import annotations
 
@@ -30,9 +28,9 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from iai_mcp.host_cli import (
+from iai_mcp.claude_cli import (
     BudgetTracker,
-    invoke_host_once,
+    invoke_claude_once,
     verify_credentials_subscription,
 )
 from iai_mcp.daemon_state import load_state
@@ -41,9 +39,9 @@ from iai_mcp.schema import induce_schemas_tier0
 from iai_mcp.tz import load_user_tz
 from iai_mcp.types import MemoryRecord
 
-# Option A prompt template. The fragments "3 locally-found patterns",
-# "1 surprising episode", "unifying insight", and "1-2 sentences" are verbatim
-# per the locked decision; grep tests assert they appear unmodified.
+# Insight prompt template. The fragments "3 locally-found patterns",
+# "1 surprising episode", "unifying insight", and "1-2 sentences" are verbatim;
+# grep tests assert they appear unmodified.
 INSIGHT_PROMPT_TEMPLATE: str = (
     "Here are 3 locally-found patterns from today + 1 surprising episode. "
     "What is the unifying insight? Reply in 1-2 sentences.\n\n"
@@ -73,7 +71,7 @@ def _gather_patterns(store) -> list[str]:
         schemas = []
 
     def _conf(s: Any) -> float:
-        # SchemaCandidate has .confidence; dicts may use the same key.
+        # SchemaCandidate has.confidence; dicts may use the same key.
         val = getattr(s, "confidence", None)
         if val is None and isinstance(s, dict):
             val = s.get("confidence")
@@ -83,7 +81,7 @@ def _gather_patterns(store) -> list[str]:
             return 0.0
 
     def _text(s: Any) -> str:
-        # SchemaCandidate exposes .pattern; dicts use "pattern" / "description".
+        # SchemaCandidate exposes.pattern; dicts use "pattern" / "description".
         for attr in ("pattern", "description", "summary"):
             val = getattr(s, attr, None)
             if val:
@@ -117,16 +115,16 @@ def _gather_surprise(store) -> str:
 
 
 async def generate_overnight_insight(store, session_id: str) -> dict:
-    """Orchestrate the Option A Claude call.
+    """Orchestrate the nightly Claude call.
 
     Returns a structured dict. Shape (always present): ok (bool), reason
     (str | None), text (str | None). Success result also carries
     tokens_in / tokens_out for the caller's bookkeeping.
 
     Pre-flight gate sequence (every one MUST pass before spawning subprocess):
-        1. verify_credentials_subscription (bug #43333 layer 2)
-        2. BudgetTracker.host_disabled_after_billing_event (bug #43333 layer 3)
-        3. BudgetTracker.can_spend(PROMPT_ESTIMATE_TOKENS) ( budget)
+        1. verify_credentials_subscription (subscription check)
+        2. BudgetTracker.claude_disabled_after_billing_event (billing tripwire)
+        3. BudgetTracker.can_spend(PROMPT_ESTIMATE_TOKENS) (budget)
     """
     creds = verify_credentials_subscription()
     if not creds.get("ok"):
@@ -137,7 +135,7 @@ async def generate_overnight_insight(store, session_id: str) -> dict:
             "details": creds,
         }
 
-    state = load_state()
+    state = await asyncio.to_thread(load_state)
     tracker = BudgetTracker(state)
 
     try:
@@ -148,8 +146,8 @@ async def generate_overnight_insight(store, session_id: str) -> dict:
     now = datetime.now(timezone.utc)
     tracker.reset_if_new_day(now, tz)
 
-    if tracker.host_disabled_after_billing_event():
-        return {"ok": False, "reason": "host_disabled_c3", "text": None}
+    if tracker.claude_disabled_after_billing_event():
+        return {"ok": False, "reason": "claude_disabled_c3", "text": None}
 
     if not tracker.can_spend(PROMPT_ESTIMATE_TOKENS):
         return {"ok": False, "reason": "budget_exceeded", "text": None}
@@ -161,9 +159,9 @@ async def generate_overnight_insight(store, session_id: str) -> dict:
         surprise=surprise,
     )
 
-    result = await invoke_host_once(prompt, model="haiku")
+    result = await invoke_claude_once(prompt, model="haiku")
 
-    # Record any tokens the call actually spent (host_cli returns tokens
+    # Record any tokens the call actually spent (claude_cli returns tokens
     # even on non-ok paths when the subprocess completed).
     tokens_in = int(result.get("tokens_in", 0) or 0)
     tokens_out = int(result.get("tokens_out", 0) or 0)
@@ -215,17 +213,17 @@ async def generate_overnight_insight(store, session_id: str) -> dict:
     )
     # Dataclass has `tags` (list) not `tag` (scalar); we also expose `tag`
     # via attribute assignment for callers that prefer the scalar form. This
-    # is NOT a literal_surface mutation so it does not violate C5 .
+    # is NOT a literal_surface mutation so it does not violate C5.
     try:
         object.__setattr__(record, "tag", "overnight_insight")
     except Exception:  # noqa: BLE001 -- attribute attach is best-effort
         pass
 
     try:
-        # R4 (researcher finding #3): wrap bare-sync store.insert
-        # to avoid blocking the asyncio event loop. Reached from
+        # Wrap bare-sync store.insert to avoid blocking the asyncio event
+        # loop. Reached from
         # dream.run_rem_cycle when claude_enabled=True (last cycle of REM).
-        # store.insert touches LanceDB write + encryption — not safe-fast.
+        # store.insert touches store write + encryption — not safe-fast.
         await asyncio.to_thread(store.insert, record)
     except Exception as exc:  # noqa: BLE001 -- store errors must not crash daemon
         try:
@@ -235,7 +233,7 @@ async def generate_overnight_insight(store, session_id: str) -> dict:
                 {"error": str(exc)[:500]},
                 severity="warning",
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 -- event write failure is non-fatal
             pass
         return {
             "ok": False,

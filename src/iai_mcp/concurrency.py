@@ -1,141 +1,47 @@
-"""daemon concurrency primitives (, ).
+"""Daemon control-socket primitives.
 
-Persistent-fd flock wrapper. Hold one instance for process lifetime.
-fcntl.flock (NOT lockf) -- fd-close does not release (see apenwarr 2010, Pitfall 2).
+The daemon's control plane is a Unix-domain NDJSON socket. In-process
+contention is owned by the storage lock (the awake read/write lock) and
+single-machine singleton ownership by the lifecycle marker; this module no
+longer carries a separate process-lifecycle flock.
 
-Constitutional guard:
-- C1 HUMAN-FIRST: ProcessLock.try_acquire_exclusive is non-blocking; daemon
-  yields immediately when any shared lockholder exists.
-- C-USER-CONSENT (formerly C2 per D7-16): the user_initiated_sleep
-  branch of _dispatch_socket_request only sets pending flags after receiving
-  an explicit consent payload from the wrapper; the FSM transition itself is
-  performed by _tick_body, never by the dispatcher (C-DISPATCHER-FSM-ISOLATION).
-- C-DISPATCHER-FSM-ISOLATION (structural; supersedes the bare `C2`
-  inline-comment shorthand previously used at the FSM-yield call sites): the
-  socket dispatcher MUST NOT transition the FSM directly; it only sets pending
-  flags consumed by _tick_body under the FSM lock. New socket_server
-  inherits this invariant.
-- T-04-06 mitigation: flock is bound to process + open-file-description,
-  so closing an unrelated fd (e.g. /etc/passwd) does NOT release our lock.
-- T-04-02 mitigation: cleanup_stale_socket + asyncio cleanup_socket kwarg
-  survive SIGKILL-orphaned sockets.
-- T-04-07 mitigation: lock + socket created with mode 0o600 so cross-user
-  access requires OS privilege escalation (out of scope).
+Guards:
+- User consent: the user_initiated_sleep branch of _dispatch_socket_request
+  only sets pending flags after receiving an explicit consent payload from the
+  wrapper; the FSM transition itself is performed by the per-tick maintenance
+  body, never by the dispatcher.
+- Dispatcher/FSM isolation: the socket dispatcher MUST NOT transition the FSM
+  directly; it only sets pending flags consumed by the per-tick maintenance body
+  under the FSM lock. The socket server inherits this invariant.
+- cleanup_stale_socket + the asyncio cleanup_socket kwarg survive
+  SIGKILL-orphaned sockets.
+- The control socket is created with mode 0o600 so cross-user access requires OS
+  privilege escalation (out of scope).
 
 This module has NO LLM code and NO paid-API env var references.
 """
 from __future__ import annotations
 
 import asyncio
-import errno
-import fcntl
 import json
+import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-LOCK_PATH: Path = Path.home() / ".iai-mcp" / ".lock"
+logger = logging.getLogger(__name__)
+
 SOCKET_PATH: Path = Path.home() / ".iai-mcp" / ".daemon.sock"
 
 
-class ProcessLock:
-    """Persistent-fd flock wrapper.
-
-    Hold one instance per process for the entire process lifetime.
-    fcntl.flock (BSD) NOT lockf (POSIX) -- closing an unrelated fd does NOT
-    release our lock (see apenwarr 2010, Pitfall 2).
-
-    Semantics:
-    - acquire_shared():           blocking LOCK_SH (MCP pattern)
-    - try_acquire_exclusive():    LOCK_EX | LOCK_NB (daemon heavy-op pattern)
-    - holds_exclusive_nb():       cooperative-yield probe
-    - release():                  LOCK_UN (release without closing fd)
-    - close():                    os.close() the fd (shutdown only)
-    """
-
-    def __init__(self, path: Path = LOCK_PATH) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # O_CREAT so lock file is created if missing; mode 0o600 keeps it user-only.
-        self._fd: int | None = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
-        # Ensure mode is actually 0o600 even if umask altered it on create.
-        try:
-            os.chmod(path, 0o600)
-        except OSError:
-            pass
-        self._path = path
-
-    def acquire_shared(self) -> None:
-        """Blocking LOCK_SH. MCP sessions call this at session start."""
-        if self._fd is None:
-            raise RuntimeError("ProcessLock closed; cannot acquire")
-        fcntl.flock(self._fd, fcntl.LOCK_SH)
-
-    def try_acquire_exclusive(self) -> bool:
-        """Non-blocking LOCK_EX | LOCK_NB.
-
-        Returns True if acquired, False if any shared holder blocks us.
-        Daemon calls this before heavy ops; False -> yield to MCP.
-        """
-        if self._fd is None:
-            return False
-        try:
-            fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return True
-        except OSError as exc:
-            if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
-                return False
-            raise
-
-    def holds_exclusive_nb(self) -> bool:
-        """ cooperative-yield probe.
-
-        Non-blocking check: do we still hold the exclusive lock?
-
-        Returns True if our fd has the exclusive lock. Returns False if
-        another process (e.g., MCP) acquired a shared lock while we were
-        working between REM cycles.
-
-        Implementation: fcntl.flock with LOCK_EX | LOCK_NB on our existing fd.
-        On Linux/macOS, re-acquiring an already-held lock is a no-op success.
-        On contention (shared lock held by another process), raises BlockingIOError
-        which we catch and translate to False. EWOULDBLOCK/EAGAIN may surface as
-        OSError on some platforms -- caught the same way.
-        """
-        if self._fd is None:
-            return False
-        try:
-            fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return True
-        except BlockingIOError:
-            return False
-        except OSError as exc:
-            if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
-                return False
-            raise
-
-    def release(self) -> None:
-        """LOCK_UN: release lock but keep fd open for later reacquisition."""
-        if self._fd is None:
-            return
-        fcntl.flock(self._fd, fcntl.LOCK_UN)
-
-    def close(self) -> None:
-        """Close fd. Only call at process shutdown -- closing releases the lock."""
-        if self._fd is not None:
-            try:
-                os.close(self._fd)
-            finally:
-                self._fd = None
-
-
 def cleanup_stale_socket(path: Path = SOCKET_PATH) -> None:
-    """Remove a stale socket file left over from SIGKILL-orphaned daemon.
+    """Remove a stale socket file left over from a SIGKILL-orphaned daemon.
 
-    Pitfall 10 mitigation: the in-process case is handled either by the
-    3.13+ kwarg (see serve_control_socket) or by the 3.12 finally-block
-    emulation, but a prior daemon killed with SIGKILL never got to run its
-    cleanup. Call this BEFORE the server binds.
+    The in-process case is handled either by the 3.13+ cleanup_socket kwarg
+    (see serve_control_socket) or by the 3.12 finally-block emulation, but a
+    prior daemon killed with SIGKILL never got to run its cleanup. Call this
+    BEFORE the server binds.
     """
     try:
         path.unlink()
@@ -187,7 +93,7 @@ def _validate_socket_message(req: dict) -> tuple[bool, str | None]:
                 return False, "seconds must be an int"
         return True, None
 
-    # / D5-05: 7th message type `session_open`.
+    # 7th message type `session_open`.
     # Both session_id and ts are OPTIONAL; when supplied, they must be strings.
     # Absence is tolerated so the TS wrapper can emit a bare ping on MCP boot
     # without stalling on id/ts bookkeeping.
@@ -196,6 +102,12 @@ def _validate_socket_message(req: dict) -> tuple[bool, str | None]:
             return False, "session_id must be a string"
         if "ts" in req and not isinstance(req["ts"], str):
             return False, "ts must be a string"
+        return True, None
+
+    if req_type == "embed_cue":
+        cue = req.get("cue")
+        if not isinstance(cue, str):
+            return False, "cue must be a string"
         return True, None
 
     # Unknown types are not rejected at validation time; the dispatcher
@@ -207,7 +119,6 @@ def _validate_socket_message(req: dict) -> tuple[bool, str | None]:
 async def _dispatch_socket_request(
     req: dict,
     store: Any,
-    lock: ProcessLock,
     state: dict,
 ) -> dict:
     """Default dispatcher for NDJSON socket requests.
@@ -215,8 +126,8 @@ async def _dispatch_socket_request(
     Handles seven message types; mutates `state` in-place and persists via
     `save_state` when the message changes scheduler control flags. The
     dispatcher thread NEVER transitions the FSM directly
-    (C-DISPATCHER-FSM-ISOLATION; renamed from bare `C2` per D7-16) --
-    it only sets pending flags that `_tick_body` reads under the FSM lock.
+    (C-DISPATCHER-FSM-ISOLATION) -- it only sets pending flags that the
+    per-tick maintenance body reads under the FSM lock.
 
     Handled types:
     - status                  -> state snapshot including version
@@ -226,7 +137,6 @@ async def _dispatch_socket_request(
     - pause                   -> scheduler_paused=True
     - resume                  -> scheduler_paused=False
     - session_open            -> set first_turn_pending + hippea_cascade_request
-                                 ( / D5-05)
     - any other               -> {"ok": False, "reason": "unknown_message_type"}
     """
     # Reject non-dict requests (defence-in-depth; caller already json.loaded).
@@ -284,10 +194,9 @@ async def _dispatch_socket_request(
 
         return {
             "ok": True,
-            # Backwards-compat key used by tests/test_concurrency.py Test 6.
+            # Backwards-compat key used by the control-plane status round-trip.
             "state": fsm_state,
             "uptime_sec": uptime_sec,
-            # Gap-fill additions:
             "version": pkg_version,
             "fsm_state": fsm_state,
             "last_tick_at": state.get("last_tick_at"),
@@ -312,12 +221,12 @@ async def _dispatch_socket_request(
             "pending": True,
         }
         try:
-            save_state(state)
+            await asyncio.to_thread(save_state, state)
         except Exception as exc:  # noqa: BLE001 -- socket must never crash daemon
             return {"ok": False, "reason": "state_write_failed", "error": str(exc)[:200]}
         # Tell the caller we queued the transition; the scheduler owns the FSM
         # and will move WAKE->TRANSITIONING->SLEEP on the next tick
-        # (C-DISPATCHER-FSM-ISOLATION; renamed from bare `C2` per D7-16).
+        # (C-DISPATCHER-FSM-ISOLATION).
         return {"ok": True, "state": "TRANSITIONING"}
 
     # ---------------------------------------------------------- force_wake
@@ -325,7 +234,7 @@ async def _dispatch_socket_request(
         ts = str(req.get("ts", ""))
         state["force_wake_request"] = {"ts": ts, "pending": True}
         try:
-            save_state(state)
+            await asyncio.to_thread(save_state, state)
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "reason": "state_write_failed", "error": str(exc)[:200]}
         return {"ok": True, "reason": "wake_queued"}
@@ -335,7 +244,7 @@ async def _dispatch_socket_request(
         ts = str(req.get("ts", ""))
         state["force_rem_request"] = {"ts": ts, "pending": True}
         try:
-            save_state(state)
+            await asyncio.to_thread(save_state, state)
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "reason": "state_write_failed", "error": str(exc)[:200]}
         return {"ok": True, "reason": "rem_queued"}
@@ -344,7 +253,7 @@ async def _dispatch_socket_request(
     if req_type == "pause":
         state["scheduler_paused"] = True
         try:
-            save_state(state)
+            await asyncio.to_thread(save_state, state)
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "reason": "state_write_failed", "error": str(exc)[:200]}
         return {"ok": True, "paused": True}
@@ -352,19 +261,18 @@ async def _dispatch_socket_request(
     if req_type == "resume":
         state["scheduler_paused"] = False
         try:
-            save_state(state)
+            await asyncio.to_thread(save_state, state)
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "reason": "state_write_failed", "error": str(exc)[:200]}
         return {"ok": True, "paused": False}
 
     # ---------------------------------------------------------- session_open
-    # / D5-05: 7th message type. Sets two flags:
+    # 7th message type. Sets two flags:
     #   - first_turn_pending[session_id] = True  -> consumed by core's
     #     _first_turn_recall_hook exactly once per session.
     #   - hippea_cascade_request {pending=True, session_id, ts} -> polled by
-    #     daemon._hippea_cascade_loop which pre-warms the LRU with records
-    #     from the top-K salient communities (Van de Cruys HIPPEA operational
-    #     form).
+    #     the cascade loop which pre-warms the LRU with records from the top-K
+    #     salient communities.
     # Both flags are idempotent under a re-emit: set_overwrite is intentional
     # so a client that retries session_open gets a fresh cascade.
     if req_type == "session_open":
@@ -373,8 +281,8 @@ async def _dispatch_socket_request(
         session_id = str(req.get("session_id", ""))[:128]
         ts = str(req.get("ts", ""))
         state["last_session_open"] = {"session_id": session_id, "ts": ts}
-        # first-turn hook flag. Co-exists with existing dict form
-        # written by daemon_state.mark_session_opened.
+        # First-turn hook flag. Co-exists with existing dict form written by
+        # daemon_state.mark_session_opened.
         first_turn = state.setdefault("first_turn_pending", {})
         now_iso = datetime.now(timezone.utc).isoformat()
         if isinstance(first_turn, dict):
@@ -382,17 +290,43 @@ async def _dispatch_socket_request(
         else:
             # Legacy scalar-bool state -> upgrade in place to the dict form.
             state["first_turn_pending"] = {session_id: now_iso}
-        # cascade flag.
+        # Cascade flag.
         state["hippea_cascade_request"] = {
             "session_id": session_id,
             "ts": ts,
             "pending": True,
         }
         try:
-            save_state(state)
+            await asyncio.to_thread(save_state, state)
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "reason": "state_write_failed", "error": str(exc)[:200]}
         return {"ok": True, "reason": "session_open_queued"}
+
+    # ------------------------------------------------------------ embed_cue
+    # Lightweight warm-embedder RPC (awake-accelerator role).
+    # Takes NO flock, opens NO store. Uses the already-loaded Embedder that
+    # the daemon holds in the warm WAKE state. CLIENT-facing — the client
+    # calls this to embed a cue for a degraded-path ANN lookup; the daemon
+    # memory_recall handler NEVER calls this on itself.
+    if req_type == "embed_cue":
+        cue = str(req.get("cue", ""))
+        try:
+            from iai_mcp.embed import embedder_for_store
+            embedder = embedder_for_store(store)
+            # Dispatch off-loop so a slow embed (e.g. cold JIT) cannot wedge
+            # the event loop. This path is currently inactive (no live caller),
+            # but hardened here for safety if a future caller re-enables it.
+            vec = await asyncio.to_thread(embedder.embed, cue)
+            # Security: validate response length == embed dim.
+            if len(vec) != embedder.DIM:
+                return {
+                    "ok": False,
+                    "reason": "embed_dim_mismatch",
+                    "error": f"embedder returned {len(vec)} dims, expected {embedder.DIM}",
+                }
+            return {"ok": True, "embedding": list(vec)}
+        except Exception as exc:  # noqa: BLE001 -- embedder not ready / cold
+            return {"ok": False, "reason": "daemon_not_ready", "error": str(exc)[:200]}
 
     # ------------------------------------------------------------ unknown
     return {
@@ -404,14 +338,13 @@ async def _dispatch_socket_request(
 
 async def serve_control_socket(
     store: Any,
-    lock: ProcessLock,
     state: dict,
     shutdown: asyncio.Event,
     *,
     dispatcher: Callable[[dict], Awaitable[dict]] | None = None,
     socket_path: Path = SOCKET_PATH,
 ) -> None:
-    """Unix socket NDJSON server at ~/.iai-mcp/.daemon.sock.
+    """Unix socket NDJSON server for the daemon control plane.
 
     Protocol: each line from client is a JSON request; each response is one
     JSON line back. The cleanup_socket kwarg (Python 3.13+) auto-removes the
@@ -419,7 +352,7 @@ async def serve_control_socket(
     Stale-socket pre-cleanup protects against SIGKILL-orphaned files.
 
     Permissions: chmod 0o600 immediately after bind so cross-user access
-    requires privilege escalation (T-04-04 accepted risk).
+    requires OS privilege escalation (out of scope).
 
     When dispatcher is provided it receives only the parsed request dict and
     must return a dict. When None, the default _dispatch_socket_request is used.
@@ -440,7 +373,7 @@ async def serve_control_socket(
             _asyncio_mod.get_event_loop_policy().new_event_loop().create_unix_server
         )
         _supports_cleanup_socket = "cleanup_socket" in _loop_sig.parameters
-    except Exception:
+    except (TypeError, ValueError, AttributeError):
         _supports_cleanup_socket = False
 
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -458,8 +391,9 @@ async def serve_control_socket(
                 if dispatcher is not None:
                     resp = await dispatcher(req)
                 else:
-                    resp = await _dispatch_socket_request(req, store, lock, state)
+                    resp = await _dispatch_socket_request(req, store, state)
             except Exception as exc:  # noqa: BLE001 -- socket must never crash daemon
+                logger.warning("socket_dispatch_error", extra={"err": str(exc)[:200]})
                 resp = {"error": str(exc)}
             writer.write((json.dumps(resp) + "\n").encode("utf-8"))
             await writer.drain()
@@ -467,7 +401,7 @@ async def serve_control_socket(
             try:
                 writer.close()
                 await writer.wait_closed()
-            except Exception:
+            except (OSError, ConnectionError):  # noqa: BLE001 -- cleanup is best-effort
                 pass
 
     # Build server kwargs. The native 3.13+ behaviour is opted in via
@@ -477,7 +411,7 @@ async def serve_control_socket(
     server = await asyncio.start_unix_server(
         handle, path=str(socket_path), **_server_kwargs,
     )
-    # chmod 0o600 immediately after bind (T-04-07 mitigation).
+    # chmod 0o600 immediately after bind.
     try:
         os.chmod(str(socket_path), 0o600)
     except OSError:

@@ -11,7 +11,7 @@ Eight cases:
   8. test_subparser_exposes_sleep_cycle_with_flags
 
 All tests use stub `MemoryStore` + monkeypatched SleepPipeline methods —
-no real LanceDB I/O.
+no real store I/O.
 """
 from __future__ import annotations
 
@@ -71,7 +71,7 @@ def iai_root(tmp_path, monkeypatch):
 
 def _patch_store_open(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     """Replace MemoryStore() with a MagicMock so the CLI can construct
-    a 'store' without touching real LanceDB / embedder.
+    a 'store' without touching the real store / embedder.
     """
     fake_store = MagicMock()
     monkeypatch.setattr(
@@ -84,7 +84,7 @@ def _patch_pipeline_steps_to_noop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Replace every _step_* method on SleepPipeline with a no-op so the
-    real pipeline executes without doing real LanceDB work.
+    real pipeline executes without doing real store work.
     """
     from iai_mcp.sleep_pipeline import SleepPipeline
 
@@ -92,8 +92,37 @@ def _patch_pipeline_steps_to_noop(
         (SleepStep.SCHEMA_MINE, "_step_schema_mine"),
         (SleepStep.KNOB_TUNE, "_step_knob_tune"),
         (SleepStep.DREAM_DECAY, "_step_dream_decay"),
+        (SleepStep.ERASURE_AGENT, "_step_erasure_agent"),
         (SleepStep.OPTIMIZE_LANCE, "_step_optimize_lance"),
         (SleepStep.COMPACT_RECORDS, "_step_compact_records"),
+        # CLUSTER_REPLAY + CRISIS_RECLUSTER real bodies call write_event
+        # against the MagicMock store and crash on store._key() not
+        # returning 32 bytes; noop them here to keep the CLI happy-path /
+        # failure-path tests focused on the CLI surface, not the step
+        # internals (those have dedicated coverage in test_sleep_overhaul.py).
+        (SleepStep.CLUSTER_REPLAY, "_step_cluster_replay"),
+        (SleepStep.CRISIS_RECLUSTER, "_step_crisis_recluster"),
+        # RECONSOLIDATION real body re-embeds via store on success
+        # and writes a reconsolidation_pass event; MagicMock store crashes
+        # the same way; noop here for the same reason.
+        (SleepStep.RECONSOLIDATION, "_step_reconsolidation"),
+        # USER_MODEL_UPDATE real body persists a UserModel JSON +
+        # writes a user_model_aggregate_pass event; same MagicMock crash
+        # surface; noop here.
+        (SleepStep.USER_MODEL_UPDATE, "_step_user_model_update"),
+        # DMN_REFLECTION real body calls MetaAnalyst.snapshot +
+        # ReflectionAgent.synthesize and writes a system_health_report
+        # event; same MagicMock crash surface; noop here so the CLI
+        # tests stay focused on slot numbers / failure semantics rather
+        # than the step internals (covered in test_dmn_meta.py).
+        (SleepStep.DMN_REFLECTION, "_step_dmn_reflection"),
+        # 62-02 appended CLUSTER_SUMMARY and RECALL_INDEX_REBUILD as the
+        # final two REM steps (topology rebuild + generation-epoch stamp).
+        # Real bodies call store.db / runtime_graph_cache which crash on
+        # MagicMock; noop here so the CLI tests stay focused on slot
+        # numbers and failure semantics.
+        (SleepStep.CLUSTER_SUMMARY, "_step_cluster_summary"),
+        (SleepStep.RECALL_INDEX_REBUILD, "_step_recall_index_rebuild"),
     ]:
         def _make_noop(s=step):
             def _impl(self, _interrupt_check):
@@ -104,6 +133,17 @@ def _patch_pipeline_steps_to_noop(
             SleepPipeline, method_name, _make_noop(),
         )
 
+    # _run_essential_variable_tracker_hook fires before the step loop.
+    # It walks records + edges via the MagicMock store and may crash on
+    # .to_pandas() or .open_table(). Replace with a no-op so the CLI tests
+    # stay focused on slot numbers / failure semantics and don't drag the
+    # tracker into scope.
+    monkeypatch.setattr(
+        SleepPipeline,
+        "_run_essential_variable_tracker_hook",
+        lambda self: None,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -113,7 +153,14 @@ def _patch_pipeline_steps_to_noop(
 def test_happy_path_runs_pipeline_and_prints_progress(
     iai_root, monkeypatch, capsys,
 ):
-    """sleep-cycle with no flags + no quarantine -> exit 0, 5 step lines."""
+    """sleep-cycle with no flags + no quarantine -> exit 0, 13 step lines.
+
+    62-02 appended CLUSTER_SUMMARY (12) and RECALL_INDEX_REBUILD (13) as
+    the final two REM steps after CRISIS_RECLUSTER. Full 13-step order:
+    schema_mine, knob_tune, optimize_lance, compact_records, dream_decay,
+    erasure_agent, cluster_replay, reconsolidation, user_model_update,
+    dmn_reflection, crisis_recluster, cluster_summary, recall_index_rebuild.
+    """
     _patch_store_open(monkeypatch)
     _patch_pipeline_steps_to_noop(monkeypatch)
 
@@ -123,11 +170,19 @@ def test_happy_path_runs_pipeline_and_prints_progress(
     assert rc == 0
     out = capsys.readouterr().out
     assert "Sleep cycle started." in out
-    assert "[1/5] schema_mine" in out
-    assert "[2/5] knob_tune" in out
-    assert "[3/5] dream_decay" in out
-    assert "[4/5] optimize_lance" in out
-    assert "[5/5] compact_records" in out
+    assert "[1/13] schema_mine" in out
+    assert "[2/13] knob_tune" in out
+    assert "[3/13] optimize_lance" in out
+    assert "[4/13] compact_records" in out
+    assert "[5/13] dream_decay" in out
+    assert "[6/13] erasure_agent" in out
+    assert "[7/13] cluster_replay" in out
+    assert "[8/13] reconsolidation" in out
+    assert "[9/13] user_model_update" in out
+    assert "[10/13] dmn_reflection" in out
+    assert "[11/13] crisis_recluster" in out
+    assert "[12/13] cluster_summary" in out
+    assert "[13/13] recall_index_rebuild" in out
     assert "Sleep cycle complete" in out
 
 
@@ -165,7 +220,7 @@ def test_quarantined_without_force_returns_nonzero_with_message(
 def test_force_runs_pipeline_when_quarantined(
     iai_root, monkeypatch, capsys,
 ):
-    """--force bypasses quarantine and runs all 5 steps."""
+    """--force bypasses quarantine and runs all 8 steps."""
     _patch_store_open(monkeypatch)
     from iai_mcp.lifecycle_state import LIFECYCLE_STATE_PATH
 
@@ -185,7 +240,8 @@ def test_force_runs_pipeline_when_quarantined(
     rc = cmd_maintenance_sleep_cycle(_make_args(force=True))
     assert rc == 0
     out = capsys.readouterr().out
-    assert "[5/5] compact_records" in out
+    # 62-02: 13 steps total; RECALL_INDEX_REBUILD is now the last slot.
+    assert "[13/13] recall_index_rebuild" in out
     assert "Sleep cycle complete" in out
 
     # force_run leaves quarantine record alone.
@@ -261,11 +317,12 @@ def test_failure_returns_nonzero_with_error_in_stderr(
     rc = cmd_maintenance_sleep_cycle(_make_args())
     assert rc == 1
     captured = capsys.readouterr()
-    # First 3 steps printed to stdout (completed_steps), then FAILED on stderr.
-    assert "[1/5] schema_mine" in captured.out
-    assert "[2/5] knob_tune" in captured.out
-    assert "[3/5] dream_decay" in captured.out
-    assert "[4/5] optimize_lance ... FAILED" in captured.err
+    # 62-02: 13 steps total. OPTIMIZE_LANCE is still slot 3 (NREM position 3).
+    # The first 2 steps print to stdout (completed_steps),
+    # then FAILED on stderr at slot 3/13.
+    assert "[1/13] schema_mine" in captured.out
+    assert "[2/13] knob_tune" in captured.out
+    assert "[3/13] optimize_lance ... FAILED" in captured.err
     assert "synthetic optimize failure" in captured.err
 
 

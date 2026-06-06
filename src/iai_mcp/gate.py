@@ -1,4 +1,4 @@
-""" active-inference retrieval gate (Task 2, ).
+"""Active-inference retrieval gate.
 
 Skip full pipeline_recall when the expected free-energy reduction for the
 current cue is below THETA_SKIP bits. Trivial cues (greetings, "thanks",
@@ -8,11 +8,11 @@ tokens per trivial turn.
 The heuristic uses a simple token-count proxy for EFE:
 - Empty / sub-3-char cues: 0.0 bits (no signal).
 - Greetings ("hi", "hello", "thanks", "ok") in the fixed trivial set: 0.1 bits.
-- Single-token cues not in the trivial set: 0.25 bits (above threshold -- 
+- Single-token cues not in the trivial set: 0.25 bits (above threshold --
   one rare/novel token can still justify a retrieval).
 - General cues: min(2.0, log2(1 + unique_token_count) * 0.5).
 
-note: this is an approximation. can replace with a real
+Note: this is an approximation; can be replaced with a real
 embedding-distance-to-prior computation once the write policy is active.
 """
 from __future__ import annotations
@@ -36,10 +36,10 @@ TRIVIAL_SHORT_CUES: frozenset[str] = frozenset({
 def expected_free_energy_reduction(cue: str) -> float:
     """Estimate the expected free-energy reduction for `cue` (bits).
 
-    - Empty or <3 chars  -> 0.0 (below threshold; skip)
-    - Fixed trivial set  -> 0.1 (below threshold; skip)
+    - Empty or <3 chars -> 0.0 (below threshold; skip)
+    - Fixed trivial set -> 0.1 (below threshold; skip)
     - Single non-trivial -> 0.25 (above threshold; proceed)
-    - General formula    -> min(2.0, log2(1 + unique_token_count) * 0.5)
+    - General formula -> min(2.0, log2(1 + unique_token_count) * 0.5)
     """
     if not cue:
         return 0.0
@@ -65,7 +65,7 @@ def expected_free_energy_reduction(cue: str) -> float:
 
 
 def should_skip_retrieval(cue: str) -> tuple[bool, str]:
-    """Return (skip, reason) per .
+    """Return (skip, reason).
 
     reason is a short English diagnostic suitable for a RecallResponse hint.
     """

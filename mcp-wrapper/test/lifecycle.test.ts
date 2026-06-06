@@ -1,16 +1,16 @@
-// Phase 10.5 — tests for `WrapperLifecycle`.
+// — tests for `WrapperLifecycle`.
 //
-// Eight-test matrix from CONTEXT 10.5:
+// Eight-test matrix:
 //
-//   1. ensureDaemonAlive: socket reachable -> NO subprocess invoked.
-//   2. ensureDaemonAlive: socket unreachable + darwin -> kickstart called.
-//   3. ensureDaemonAlive: kickstart throws -> falls back to wake.signal.
-//   4. ensureDaemonAlive: non-macos -> wake.signal written, no subprocess.
-//   5. registerHeartbeat: file exists with correct schema.
-//   6. heartbeat refresh: small interval -> last_refresh updates.
-//   7. cleanupHeartbeat: file gone, timer cleared.
-//   8. security: source has no `shell: true` and no shell-interpreting
-//      subprocess variant in mcp-wrapper/src/.
+// 1. ensureDaemonAlive: socket reachable -> NO subprocess invoked.
+// 2. ensureDaemonAlive: socket unreachable + darwin -> kickstart called.
+// 3. ensureDaemonAlive: kickstart throws -> falls back to wake.signal.
+// 4. ensureDaemonAlive: non-macos -> wake.signal written, no subprocess.
+// 5. registerHeartbeat: file exists with correct schema.
+// 6. heartbeat refresh: small interval -> last_refresh updates.
+// 7. cleanupHeartbeat: file gone, timer cleared.
+// 8. security: source has no `shell: true` and no shell-interpreting
+// subprocess variant in mcp-wrapper/src/.
 //
 // Test runner: Node's built-in `node:test` (zero new dep — Node 22 has
 // it natively) loaded via the existing `tsx` dev-dep so `.ts` files
@@ -260,7 +260,7 @@ describe("WrapperLifecycle.cleanupHeartbeat", () => {
 
 describe("WrapperLifecycle security invariants", () => {
   it("source contains no shell-true option and no shell-interpreting subprocess variants", async () => {
-    // Walk mcp-wrapper/src/ and assert that no .ts file contains the
+    // Walk mcp-wrapper/src/ and assert that no.ts file contains the
     // forbidden patterns. We allow the safe `execFile` API; we forbid
     // (a) the `shell: true` option anywhere, (b) bare-name calls to
     // the shell-interpreting subprocess variant from node:child_process.
@@ -299,7 +299,7 @@ describe("WrapperLifecycle security invariants", () => {
       const lines = content.split("\n");
       lines.forEach((line, idx) => {
         const trimmed = line.trim();
-        // Strip trailing line comment so an inline `// NEVER ...` mention
+        // Strip trailing line comment so an inline `// NEVER...` mention
         // in a code line doesn't match. Pure-comment lines (codePortion
         // empty after trim) are skipped.
         const codePortion = (trimmed.split("//")[0] ?? "").trim();

@@ -1,0 +1,9 @@
+# nextest configuration for iai_mcp_embed crate.
+
+[profile.default]
+# Serialize lib tests: all 5 BertEmbedder tests call load() which acquires an
+# hf-hub file lock on the cached blob. Running them in parallel causes "Lock
+# acquisition failed" on tests 2-5. test-threads = 1 serializes the suite.
+fail-fast = true
+slow-timeout = { period = "60s", terminate-after = 2 }
+test-threads = 1

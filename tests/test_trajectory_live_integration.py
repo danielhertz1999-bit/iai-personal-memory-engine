@@ -1,4 +1,4 @@
-"""Task 2 Step 8: live integration test (catches false-GREEN trap).
+"""Live integration test (catches false-GREEN trap).
 
 The trap: if M2/M4/M6 unit tests SEED their own retrieval_used / profile_updated
 / session_started events, they will pass even when production code emits
@@ -21,7 +21,7 @@ from uuid import uuid4
 import pytest
 
 from iai_mcp import profile, retrieve
-from iai_mcp.events import query_events
+from iai_mcp.events import flush_event_buffer, query_events
 from iai_mcp.store import MemoryStore
 from iai_mcp.trajectory import (
     m2_precision_at_5_live,
@@ -77,6 +77,10 @@ def test_real_recall_emits_retrieval_used_and_m2_lifts_off_zero(tmp_path):
         session_id="integration-1",
     )
     assert len(resp.hits) > 0  # cosine returns at least one of the seeds
+
+    # retrieval_used is written buffered (deferred write for concurrency);
+    # flush so query_events can see it immediately in this test.
+    flush_event_buffer(store)
 
     events = query_events(store, kind="retrieval_used", limit=20)
     assert events, (

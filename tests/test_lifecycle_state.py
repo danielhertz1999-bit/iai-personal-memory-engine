@@ -1,8 +1,8 @@
-"""Task 1.1 -- lifecycle_state typed schema tests.
+"""lifecycle_state typed schema tests.
 
 Covers the round-trip, atomic-replace crash safety, and schema-validation
 self-heal behaviour of `lifecycle_state.{load_state,save_state}`. Mirrors
-the test layout of `test_daemon_state.py` (-01) since the
+the test layout of `test_daemon_state.py` since the
 persistence pattern is identical.
 """
 from __future__ import annotations
@@ -229,7 +229,13 @@ def test_atomic_replace_old_file_survives_temp_orphan(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_default_path_is_under_iai_mcp_home():
-    assert LIFECYCLE_STATE_PATH.name == "lifecycle_state.json"
-    assert LIFECYCLE_STATE_PATH.parent.name == ".iai-mcp"
-    # Sanity: path is anchored under the user's home, not /tmp or /var.
-    assert str(LIFECYCLE_STATE_PATH).startswith(str(Path.home()))
+    # Read the live module attribute, not the import-time binding: the autouse
+    # fixture redirects the default to a per-test .iai-mcp under the tmp HOME,
+    # and a name imported at module load would not track that setattr.
+    import iai_mcp.lifecycle_state as _ls
+
+    path = _ls.LIFECYCLE_STATE_PATH
+    assert path.name == "lifecycle_state.json"
+    assert path.parent.name == ".iai-mcp"
+    # Anchored under the (redirected) home, not /tmp or /var directly.
+    assert path.is_relative_to(Path.home())

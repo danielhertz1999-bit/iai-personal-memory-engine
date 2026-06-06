@@ -1,4 +1,4 @@
-"""— doctor.py multi-binder detection + repair.
+"""doctor.py multi-binder detection + repair.
 
 Test matrix (8 tests):
   A. _extract_binder_pids parses lsof -F pn output → set[int]
@@ -227,7 +227,7 @@ def test_check_g_two_binders_fails(short_socket_path):
 
     This is exactly the failure mode 's launchd architecture
     structurally prevents in production — the test bypasses launchd by
-    hand-binding sockets in worker processes. On post-production,
+    hand-binding sockets in worker processes. On post- production,
     this scenario can only occur if a user manually bypasses launchd.
     """
     from iai_mcp.doctor import _extract_binder_pids, check_g_no_dup_binders
@@ -314,7 +314,7 @@ def isolated_daemon_paths(tmp_path, monkeypatch):
     """HOME + socket + store + crypto env propagation for real-daemon tests.
 
     Mirrors test_doctor_apply_recovery.py:isolated_daemon_paths verbatim
-    (HIGH-4 LOCK precedent, ). Required because _kill_dup_binders
+    (HIGH-4 LOCK precedent). Required because _kill_dup_binders
     filters by 'iai_mcp.daemon' substring in psutil cmdline — only real
     iai_mcp.daemon subprocesses are killable, so multiprocessing workers
     cannot serve Tests G/H.
@@ -427,7 +427,7 @@ def _spawn_dup_daemons(
 ) -> tuple[subprocess.Popen, subprocess.Popen]:
     """Spawn 2 real iai_mcp.daemon subprocesses both bound to sock_path.
 
-    Race-window simulation per CONTEXT.md hint: spawn daemon #1, wait for
+    Race-window simulation: spawn daemon #1, wait for
     socket, unlink (so daemon #2 can bind a fresh inode at the same path),
     spawn daemon #2, wait for socket. Daemon #1's listening fd still holds
     the original (now unlinked) inode; daemon #2 holds the new inode. lsof
@@ -466,13 +466,12 @@ def _spawn_dup_daemons(
 
 @pytest.mark.skip(
     reason=(
-        "single-machine "
-        "LifecycleLock prevents two daemons from both binding the same "
-        "IAI_MCP_STORE. Daemon #2 raises LifecycleLockConflict and exits "
-        "1 before bind. The dup-binder integration scenario is now "
-        "impossible by design. The unit tests in this file "
-        "(test_extract_binder_pids_*, test_check_g_*) still cover "
-        "check_g's detection logic without spawning two real daemons."
+        "Single-machine LifecycleLock prevents two daemons from both "
+        "binding the same IAI_MCP_STORE. Daemon #2 raises "
+        "LifecycleLockConflict and exits 1 before bind. The dup-binder "
+        "integration scenario is now impossible by design. The unit tests "
+        "in this file (test_extract_binder_pids_*, test_check_g_*) still "
+        "cover check_g's detection logic without spawning two real daemons."
     )
 )
 def test_kill_dup_binders_keeps_oldest(isolated_daemon_paths):
@@ -545,11 +544,11 @@ def test_kill_dup_binders_keeps_oldest(isolated_daemon_paths):
 
 @pytest.mark.skip(
     reason=(
-        "single-machine "
-        "LifecycleLock prevents two daemons from both binding the same "
-        "IAI_MCP_STORE. Daemon #2 raises LifecycleLockConflict and exits "
-        "1 before bind. End-to-end recovery from dup-binders cannot run "
-        "because the dup-binders state is now impossible to construct."
+        "Single-machine LifecycleLock prevents two daemons from both "
+        "binding the same IAI_MCP_STORE. Daemon #2 raises "
+        "LifecycleLockConflict and exits 1 before bind. End-to-end "
+        "recovery from dup-binders cannot run because the dup-binders "
+        "state is now impossible to construct."
     )
 )
 def test_doctor_apply_yes_recovers_from_dup_binders(isolated_daemon_paths):

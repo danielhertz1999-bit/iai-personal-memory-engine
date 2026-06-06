@@ -88,7 +88,7 @@ def test_cli_crypto_redact_undecryptable_smoke(tmp_path: Path) -> None:
     os.chmod(kpath, 0o600)
     store_a = MemoryStore(path=root, user_id="default")
     store_a.insert(_minimal_record("cli-redact-body"))
-    del store_a
+    store_a.close()
     kpath.write_bytes(key_b)
     os.chmod(kpath, 0o600)
 

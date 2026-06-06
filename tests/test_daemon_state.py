@@ -1,6 +1,6 @@
-"""Tests for iai_mcp.daemon_state -- Task 2.
+"""Tests for iai_mcp.daemon_state.
 
-Covers:
+Scope:
 1. save_state atomically persists and load_state round-trips.
 2. File mode is 0o600.
 3. save_state is atomic under simulated mid-write failure (temp file unlinked).
@@ -83,7 +83,7 @@ def test_save_state_atomic_rename_preserves_old_on_failure(isolated_state_path, 
     loaded = load_state()
     assert loaded == original
 
-    # Temp file cleaned up -- no leftover .tmp files in the directory.
+    # Temp file cleaned up -- no leftover.tmp files in the directory.
     leftovers = list(isolated_state_path.parent.glob(".daemon-state.*.tmp"))
     assert leftovers == [], f"temp files not cleaned: {leftovers}"
 
@@ -156,7 +156,7 @@ def test_pending_digest_none_when_not_set(isolated_state_path):
 
 
 # ---------------------------------------------------------------------------
-# prune_stale_first_turn: evicts legacy bool + aged ISO entries
+# prune_stale_first_turn: evicts legacy bool + aged ISO entries (F-02)
 # ---------------------------------------------------------------------------
 
 def test_prune_evicts_legacy_bool_first_turn_pending():

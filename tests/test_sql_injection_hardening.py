@@ -1,9 +1,9 @@
-"""Tests for 02-REVIEW.md CR-01 (SQL predicate injection in sleep._decay_edges)
+"""Tests for 02- (SQL predicate injection in sleep._decay_edges)
 and (migrate.py delete predicate). Both findings share one root cause:
-raw UUIDs interpolated into LanceDB WHERE/DELETE f-strings without
-_uuid_literal validation. bundles into the CR-01 fix.
+raw UUIDs interpolated into store WHERE/DELETE f-strings without
+_uuid_literal validation. bundles into the fix.
 
-Constitutional contract (D-GUARD defence-in-depth):
+Defence-in-depth contract:
     EVERY raw-UUID-WHERE/DELETE site MUST pass through _uuid_literal before
     f-string interpolation. Poisoned inputs raise ValueError; callers wrap
     per-row bodies in try/except ValueError: continue so the whole sweep
@@ -46,11 +46,11 @@ def _insert_raw_edge(
     ])
 
 
-# ==================================================== CR-01: _decay_edges hardening
+# ====================================================: _decay_edges hardening
 
 
 def test_decay_edges_rejects_malformed_uuid(tmp_path):
-    """CR-01: a poisoned src value must NOT reach the LanceDB SQL dialect.
+    """a poisoned src value must NOT reach the store SQL dialect.
 
     Seed 3 stale hebbian edges:
       row 0: clean (canonical UUIDs)
@@ -114,7 +114,7 @@ def test_decay_edges_rejects_malformed_uuid(tmp_path):
 
 
 def test_decay_edges_imports_uuid_literal_at_module_scope():
-    """CR-01 structural check (D-GUARD defence-in-depth): _uuid_literal must be
+    """structural check (defence-in-depth): _uuid_literal must be
     imported into sleep.py at module scope, not re-inlined."""
     from iai_mcp import sleep as sleep_mod
 
@@ -125,7 +125,7 @@ def test_decay_edges_imports_uuid_literal_at_module_scope():
 
 
 def test_decay_edges_single_poisoned_row_does_not_kill_sweep(tmp_path):
-    """CR-01: per-row try/except ValueError must wrap the body, not the whole
+    """per-row try/except ValueError must wrap the body, not the whole
     function. One poisoned row skipped != entire pass aborted.
     """
     from iai_mcp.sleep import _decay_edges
@@ -156,11 +156,11 @@ def test_decay_edges_single_poisoned_row_does_not_kill_sweep(tmp_path):
     assert len(df[df["src"] == poisoned_src]) == 1
 
 
-# ==================================================== migrate delete predicate
+# ====================================================: migrate delete predicate
 
 
 def test_migrate_imports_uuid_literal_at_module_scope():
-    """M-01 structural check: migrate.py must import _uuid_literal so its
+    """structural check: migrate.py must import _uuid_literal so its
     tbl.delete() call cannot carry SQL injection content even if record.id
     shape drifts."""
     from iai_mcp import migrate as migrate_mod

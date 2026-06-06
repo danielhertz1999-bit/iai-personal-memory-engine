@@ -1,4 +1,4 @@
-"""Wave 2 R1 acceptance: LISTEN_FDS inherited-fd protocol.
+"""Acceptance: LISTEN_FDS inherited-fd protocol.
 
 Verifies `_inherit_launchd_socket()` and `SocketServer.serve(sock=inherited)`
 end-to-end without requiring a real launchd LaunchAgent.
@@ -243,9 +243,9 @@ def test_serve_uses_inherited_socket_path(monkeypatch, tmp_path):
       4. core.dispatch is reached -- bogus method returns -32601, not a
          transport error.
     """
-    # Per D7-14 isolate the lancedb store under tmp_path so MemoryStore()
+    # Per isolate the store under tmp_path so MemoryStore()
     # doesn't write to ~/.iai-mcp.
-    store_root = tmp_path / "lancedb_root"
+    store_root = tmp_path / "hippo_root"
     store_root.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("IAI_MCP_STORE", str(store_root))
 
@@ -289,7 +289,7 @@ def test_serve_uses_inherited_socket_path(monkeypatch, tmp_path):
         _cleanup_sock(sock_path)
 
     # Dispatcher reached -- response is a well-formed JSON-RPC 2.0 envelope
-    # with id echoed. Per -02 V3-03 fix, the bogus method now
+    # with id echoed. Per V3-03 fix, the bogus method now
     # raises UnknownMethodError inside core.dispatch and surfaces as a
     # top-level JSON-RPC error -32601 (no in-band-result fallback).
     # The error shape proves the inherited fd carried the request all the

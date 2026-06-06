@@ -1,22 +1,21 @@
 """REM cycle orchestrator. CALLS existing modules -- does not reimplement.
 
 Biological mapping:
-- NREM-2 (Hebbian binding)      = existing hebbian LTP inside sleep.py cluster pass
-- NREM-3 (hippocampal replay)   = sleep.run_heavy_consolidation Tier-0 path
-- REM   (cross-community)       = schema.induce_schemas_tier1(llm_enabled=False)
+- NREM-2 (Hebbian binding) = existing hebbian LTP inside sleep.py cluster pass
+- NREM-3 (hippocampal replay) = sleep.run_heavy_consolidation Tier-0 path
+- REM (cross-community) = schema.induce_schemas_tier1(llm_enabled=False)
 - REM lucid moment (last cycle) = insight.generate_overnight_insight
 
-Constitutional guard:
+Invariants:
 - LOCAL primary worker; llm_enabled ALWAYS False when calling sleep/schema.
 - has_api_key=False always for daemon (zero paid-API path).
 - 15-minute hard cap per cycle (asyncio.timeout context manager).
-- C1: daemon must already hold the fcntl exclusive lock BEFORE calling
-      run_rem_cycle -- this module does NOT acquire locks, that is _tick_body's
-      job. This module is called under the lock.
-- C3: ZERO API cost. The single nightly Claude call is a subprocess, wired
-      by in insight.py. No paid-API env var is referenced here.
-- C5: literal preservation -- we only call modules that modify metadata
-      (FSRS state, edge weights, schema tags). Never assigns to literal_surface.
+- Daemon must already hold the fcntl exclusive lock BEFORE calling
+  run_rem_cycle -- this module does NOT acquire locks.
+- ZERO API cost. The single nightly local-model call is a subprocess,
+  wired in insight.py. No paid-API env var is referenced here.
+- Literal preservation -- we only call modules that modify metadata
+  (FSRS state, edge weights, schema tags). Never assigns to literal_surface.
 """
 from __future__ import annotations
 
@@ -32,7 +31,7 @@ REM_CYCLE_MAX_SEC: int = 15 * 60
 
 
 async def _emit(store, kind: str, data: dict, severity: str | None = None) -> None:
-    """Emit an event off the main loop so LanceDB writes don't block asyncio."""
+    """Emit an event off the main loop so store writes don't block asyncio."""
     if severity is None:
         await asyncio.to_thread(write_event, store, kind, data)
     else:
@@ -56,7 +55,7 @@ async def run_rem_cycle(
 
     Never raises. All failure modes (timeout, module exception) surface as
     event emissions + a partial result dict so the daemon's outer loop
-    cannot crash on cycle-internal exceptions (T-04-12 mitigation).
+    cannot crash on cycle-internal exceptions.
     """
     await _emit(store, "rem_cycle_started", {"n": cycle_num, "of": total_cycles})
 
@@ -86,8 +85,8 @@ async def run_rem_cycle(
 
             # REM cross-community schema induction (explicit Tier-0).
             # Signature: induce_schemas_tier1(store, budget, rate, llm_enabled=True)
-            # -- we force llm_enabled=False so the D-GUARD ladder falls through to
-            # the pure-local Tier-0 path.
+            # -- we force llm_enabled=False so the degradation ladder falls
+            # through to the pure-local Tier-0 path.
             candidates = await asyncio.to_thread(
                 induce_schemas_tier1,
                 store, BudgetLedger(store), RateLimitLedger(store), False,

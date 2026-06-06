@@ -1,17 +1,16 @@
-"""W2 / tests for the dry-size-estimator drop loop in
+"""Tests for the dry-size-estimator drop loop in
 `runtime_graph_cache.save`. Defends against the regression where save()
 materialised a multi-GB intermediate Python string by calling json.dumps
-up to 4 times per save (CONTEXT.md py-spy 2026-04-29 PID 7959
-RSS 7.6GB). After Task 1, json.dumps runs AT MOST once per
-save invocation, regardless of how many fields are dropped.
+up to 4 times per save (a py-spy capture showed RSS at 7.6 GB). json.dumps
+now runs AT MOST once per save invocation, regardless of how many fields are
+dropped.
 
-W3 / cache file is now AES-256-GCM-wrapped. These
-tests use ``_decrypt_cache_for_inspection`` to peek at the JSON shape.
+The cache file is AES-256-GCM-wrapped. These tests use
+``_decrypt_cache_for_inspection`` to peek at the JSON shape.
 """
 from __future__ import annotations
 
 import json as real_json
-import os
 import pathlib
 from types import SimpleNamespace
 from uuid import uuid4
@@ -21,10 +20,12 @@ import pytest
 import iai_mcp.runtime_graph_cache as rgc
 from iai_mcp.community import CommunityAssignment
 
-# W3: encryption key resolves via CryptoKey on a fake-store
-# fallback path; ensure a deterministic passphrase is set for the
-# whole module so save() can encrypt without needing a keyring entry.
-os.environ.setdefault("IAI_MCP_CRYPTO_PASSPHRASE", "test-rgc-size-guard-passphrase")
+# Encryption key resolves via CryptoKey on a fake-store fallback path.
+# The deterministic passphrase is provided per-test by the conftest
+# autouse ``_crypto_passphrase_env`` fixture (any consistent value works
+# for save()'s in-process encrypt round-trip — no subprocess needs a
+# specific shared value). No module-level os.environ write — that would
+# pollute the global env for every subsequently-collected test.
 
 
 def _make_fake_store(tmp_path):
@@ -36,9 +37,9 @@ def _make_fake_store(tmp_path):
 
 
 def _decrypt_cache_for_inspection(store, path: pathlib.Path) -> dict:
-    """W3: read the encrypted sidecar and decode the inner
-    JSON. Used by size-guard tests that previously did
-    ``real_json.load(f)`` directly on the cache file.
+    """Read the encrypted sidecar and decode the inner JSON. Used by
+    size-guard tests instead of ``real_json.load(f)`` directly on the cache
+    file.
     """
     raw = path.read_text(encoding="utf-8")
     if not raw.startswith("iai:enc:v1:"):

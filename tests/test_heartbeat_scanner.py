@@ -1,6 +1,6 @@
-"""— comprehensive tests for ``HeartbeatScanner``.
+"""Comprehensive tests for ``HeartbeatScanner``.
 
-Covers the 9-test matrix from CONTEXT 10.4:
+Covers the 9-test matrix:
 - Empty dir scan returns [].
 - Single fresh heartbeat is FRESH (PID = current process, just-now refresh).
 - Stale heartbeat (last_refresh older than M) is STALE even if PID alive.

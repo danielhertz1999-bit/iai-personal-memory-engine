@@ -1,42 +1,61 @@
-"""Hierarchical community detection ( bootstrap + stable UUIDs + /04).
+"""Hierarchical community detection (bootstrap + stable UUIDs).
 
 Policy:
 - N < SMALL_N_FLAT (200): single flat community. Rich-club coefficient is too noisy
   below this per van den Heuvel & Sporns 2011; Leiden output is unstable too.
-- SMALL_N_FLAT <= N < MID_N_LEIDEN (500): run Leiden; accept only if Q >= 0.2
-  (MODULARITY_FLOOR), else fall back to flat. Protects against Leiden producing
-  visible but unjustified communities in sparse graphs.
+- SMALL_N_FLAT <= N < MID_N_LEIDEN (500): run Leiden; accept only if CPM-Q >=
+  CPM_MODULARITY_FLOOR, else fall back to flat.
+  Protects against Leiden producing visible but unjustified communities in
+  sparse graphs.
 - N >= MID_N_LEIDEN: always run Leiden; accept result regardless of Q
   (graph is big enough that any modular structure is meaningful).
 
 Stable UUIDs:
 - Every community gets a persistent UUID at creation.
-- On re-run, each new community's centroid is matched against prior centroids;
-  the highest cosine >= UUID_ROTATE_COSINE (0.7) reuses the prior UUID.
-  If no prior centroid passes the 0.7 bar, a fresh UUID is allocated.
-- This prevents ID churn on re-runs where Leiden re-orders labels but the
-  cluster membership is essentially the same.
+- continuity is now enforced via the explicit `LineageTracker` event log, which threads prior-UUID birth timestamps through aggregation
+  and uses `pick_merge_survivor` to honour the older-survives policy on merges.
+- The legacy 0.7-cosine centroid-match heuristic (`_map_to_stable_uuids`) was
+  deleted in. The constant
+  `UUID_ROTATE_COSINE = 0.7` is retained because `_flat_assignment` still
+  uses it for single-community continuity across re-runs (a smaller, simpler
+  case that doesn't need full event-driven tracking).
 
- three-level parcellation (approximation):
+Three-level parcellation (approximation):
 - Level 1: top_communities -- top 7 (Yeo-like) by member count.
-- Level 2: mid_regions -- community UUID -> member node UUIDs
-           (Schaefer-scale 200-400 sub-parcellation is a Phase-2 refinement;
-            for we expose the community -> members mapping).
+- Level 2: mid_regions -- community UUID -> member node UUIDs.
 - Level 3: node_to_community -- every leaf record's community assignment.
 
- refresh threshold:
+Refresh threshold:
 - needs_refresh(prior, current_Q) returns True iff |prior.Q - current_Q| > 0.05.
   The pipeline or session-start assembler decides when to re-run detect_communities
   based on this signal.
 """
 from __future__ import annotations
 
+# The CPM-Q mid-N guard imports CPM_MODULARITY_FLOOR from `mosaic_policy`
+# -- legacy `MODULARITY_FLOOR=0.2` was calibrated for
+# ModularityVertexPartition and is NOT comparable to CPM-Q.
+#
+# `leidenalg` and `python-igraph` are no longer imported (top-level OR
+# lazy) in this module; both packages were removed from pyproject.toml.
+#
+# Imports from `mosaic*` modules are DEFERRED to inside
+# `detect_communities` (lazy import) because those modules import
+# `CommunityAssignment` from THIS module -- a top-level import would
+# create a circular dependency at module-load time.
+
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Literal
 from uuid import UUID, uuid4
 
 import numpy as np
 
-from iai_mcp.graph import _HAS_IGRAPH, IGRAPH_THRESHOLD, MemoryGraph
+from iai_mcp.graph import MemoryGraph
+
+if TYPE_CHECKING:
+    # Imported only for type checkers -- the runtime field annotation is a
+    # forward reference string via `from __future__ import annotations`.
+    from iai_mcp.mosaic_lineage import LineageReport
 
 # bootstrap thresholds
 SMALL_N_FLAT = 200
@@ -59,10 +78,15 @@ class CommunityAssignment:
 
     - node_to_community: leaf UUID -> community UUID
     - community_centroids: community UUID -> mean of member embeddings
-    - modularity: Leiden Q (0.0 for flat)
-    - backend: "flat" | "leiden-networkx" | "leiden-igraph"
-    - top_communities: up to MAX_TOP_COMMUNITIES by member count ( L1)
-    - mid_regions: community UUID -> list of member leaf UUIDs ( L2)
+    - modularity: CPM-Q from the MOSAIC backend (0.0 for flat).
+    - backend: "flat" | "leiden-custom"
+    - top_communities: up to MAX_TOP_COMMUNITIES by member count (L1)
+    - mid_regions: community UUID -> list of member leaf UUIDs (L2)
+    - lineage_report: optional event log from the MOSAIC run.
+      Default `None` for backwards compatibility with existing constructors;
+      `detect_communities` populates it on every Leiden path. The flat
+      fallback path also populates it with an empty `LineageReport`
+      (type-stability for downstream consumers).
     """
 
     node_to_community: dict[UUID, UUID] = field(default_factory=dict)
@@ -71,6 +95,9 @@ class CommunityAssignment:
     backend: str = "flat"
     top_communities: list[UUID] = field(default_factory=list)
     mid_regions: dict[UUID, list[UUID]] = field(default_factory=dict)
+    # Forward reference via `from __future__ import annotations`; the
+    # runtime instance is `iai_mcp.mosaic_lineage.LineageReport`.
+    lineage_report: "LineageReport | None" = None
 
 
 # ---------------------------------------------------------------- math helpers
@@ -97,71 +124,12 @@ def _compute_centroid(embeddings: list[list[float]]) -> list[float]:
     return centroid.tolist()
 
 
-def _map_to_stable_uuids(
-    raw_partition: dict[UUID, int],
-    graph: MemoryGraph,
-    prior: CommunityAssignment | None,
-) -> tuple[dict[UUID, UUID], dict[UUID, list[float]]]:
-    """assign UUIDs to raw integer community labels, reusing prior UUIDs
-    when a new centroid matches a prior centroid with cosine >= UUID_ROTATE_COSINE.
-
-    Matching is greedy (descending best-match-first) and one-to-one: each prior
-    UUID is claimed by at most one new community.
-    """
-    # Group nodes by raw integer label.
-    groups: dict[int, list[UUID]] = {}
-    for node, grp in raw_partition.items():
-        groups.setdefault(grp, []).append(node)
-
-    # Compute new centroids per group. Filter out nodes with no embedding
-    # (e.g. sentinel UUIDs like PROFILE_SENTINEL) and zero-pad the remaining
-    # members to the *current* store dim rather than a hardcoded 384d, so the
-    # centroid input stays homogeneous after a 384d -> 1024d re-embed migration.
-    new_centroids: dict[int, list[float]] = {}
-    for grp, nodes in groups.items():
-        valid = [e for n in nodes if (e := graph.get_embedding(n))]
-        if not valid:
-            continue
-        dim = len(valid[0])
-        embs = [graph.get_embedding(n) or [0.0] * dim for n in nodes]
-        new_centroids[grp] = _compute_centroid(embs)
-
-    # Greedy one-to-one assignment: for each new group, pick the best unused
-    # prior UUID with cosine >= UUID_ROTATE_COSINE.
-    uuid_for_group: dict[int, UUID] = {}
-    used_prior: set[UUID] = set()
-    if prior:
-        # Stable ordering: by group id ascending so tie-breaks are deterministic.
-        for grp in sorted(new_centroids.keys()):
-            cent = new_centroids[grp]
-            best_prior: UUID | None = None
-            best_sim: float = -1.0
-            for prior_uuid, prior_cent in prior.community_centroids.items():
-                if prior_uuid in used_prior:
-                    continue
-                s = _cosine(cent, prior_cent)
-                if s > best_sim:
-                    best_sim = s
-                    best_prior = prior_uuid
-            if best_prior is not None and best_sim >= UUID_ROTATE_COSINE:
-                uuid_for_group[grp] = best_prior
-                used_prior.add(best_prior)
-
-    # Allocate fresh UUIDs for groups that didn't match any prior.
-    for grp in groups:
-        if grp not in uuid_for_group:
-            uuid_for_group[grp] = uuid4()
-
-    # Build final maps.
-    node_to_community: dict[UUID, UUID] = {}
-    community_centroids: dict[UUID, list[float]] = {}
-    for grp, nodes in groups.items():
-        u = uuid_for_group[grp]
-        community_centroids[u] = new_centroids[grp]
-        for n in nodes:
-            node_to_community[n] = u
-
-    return node_to_community, community_centroids
+# deleted the legacy `_map_to_stable_uuids(raw_partition, graph, prior)`
+# helper -- continuity is now event-driven via
+# `iai_mcp.mosaic_lineage.LineageTracker` + `pick_merge_survivor`
+#. The flat-path UUID continuity in `_flat_assignment` still
+# uses the cosine threshold UUID_ROTATE_COSINE = 0.7 for single-community
+# matching (simpler case, no aggregation cascade).
 
 
 # ------------------------------------------------------------- flat assignment
@@ -173,8 +141,7 @@ def _flat_assignment(
     """Single flat community covering every node."""
     nodes: list[UUID] = []
     valid_embs: list[list[float]] = []
-    for node in graph._nx.nodes():
-        u = UUID(node)
+    for u in graph.iter_nodes():
         nodes.append(u)
         emb = graph.get_embedding(u)
         if emb:
@@ -186,8 +153,7 @@ def _flat_assignment(
     # stays homogeneous post-re-embed (was hardcoded 384d before 1024d support).
     dim = len(valid_embs[0]) if valid_embs else 0
     embs: list[list[float]] = []
-    for node in graph._nx.nodes():
-        u = UUID(node)
+    for u in graph.iter_nodes():
         emb = graph.get_embedding(u)
         embs.append(emb if emb else [0.0] * dim)
     centroid = _compute_centroid(embs) if dim else []
@@ -213,46 +179,9 @@ def _flat_assignment(
     )
 
 
-# ------------------------------------------------------------------ leiden run
-
-
-def _run_leiden(graph: MemoryGraph) -> tuple[dict[UUID, int], float, str]:
-    """Run leidenalg on a NetworkX graph via an igraph mirror.
-
-    Returns (node_uuid -> int label, modularity Q, backend_label).
-    Backend label reflects which library owns the hot path per :
-    "leiden-igraph" for N >= IGRAPH_THRESHOLD, "leiden-networkx" for smaller graphs
-    (both internally use leidenalg since python-louvain is Louvain, not Leiden).
-    Seed=42 for determinism across calls.
-    """
-    import igraph as ig  # local import so leiden dep is lazy
-    import leidenalg
-
-    g = graph._nx
-    nodes = list(g.nodes())
-    idx = {n: i for i, n in enumerate(nodes)}
-    edges = [(idx[u], idx[v]) for u, v in g.edges()]
-    weights = [float(g[u][v].get("weight", 1.0)) for u, v in g.edges()]
-
-    ih = ig.Graph(n=len(nodes), edges=edges, directed=False)
-    if weights:
-        ih.es["weight"] = weights
-
-    part = leidenalg.find_partition(
-        ih,
-        leidenalg.ModularityVertexPartition,
-        seed=42,
-        weights="weight" if weights else None,
-    )
-    q = float(part.modularity)
-    mapping = {
-        UUID(nodes[i]): int(part.membership[i]) for i in range(len(nodes))
-    }
-
-    # Backend label matches split even though both paths use leidenalg.
-    if _HAS_IGRAPH and graph.node_count() >= IGRAPH_THRESHOLD:
-        return mapping, q, "leiden-igraph"
-    return mapping, q, "leiden-networkx"
+# deleted the legacy `_run_leiden(graph)` shim that wrapped
+# leidenalg + igraph. The production path is `run_mosaic` (pure-MIT,
+# imported lazily inside `detect_communities`).
 
 
 # ------------------------------------------------------------------ public API
@@ -261,59 +190,98 @@ def _run_leiden(graph: MemoryGraph) -> tuple[dict[UUID, int], float, str]:
 def detect_communities(
     graph: MemoryGraph,
     prior: CommunityAssignment | None = None,
+    prior_mode: Literal["seeded", "cold"] = "seeded",
 ) -> CommunityAssignment:
-    """ bootstrap + stable UUIDs + three-level parcellation.
+    """bootstrap + stable UUIDs + three-level parcellation.
+
+    The backend is now `mosaic.run_mosaic`
+    -- the pure-MIT replacement for the `leidenalg` path (renamed
+    `custom_leiden*` -> `mosaic*` as part of the MOSAIC branding). The
+    `prior_mode` argument routes two invocation flavours:
+      - `"seeded"` (default) -- normal recall paths (`retrieve.py`,
+        `sigma.py`); reuse the prior assignment for continuity.
+      - `"cold"` -- crisis_recluster path intentionally discards the
+        prior partition.
 
     Empty graph -> empty CommunityAssignment(backend="flat").
     """
+    # Lazy import to avoid circular dependency at module-load time
+    # (mosaic_* modules import CommunityAssignment from here).
+    from iai_mcp.mosaic import run_mosaic
+    from iai_mcp.mosaic_lineage import LineageReport
+    from iai_mcp.mosaic_policy import CPM_MODULARITY_FLOOR
+
     n = graph.node_count()
     if n == 0:
-        return CommunityAssignment(backend="flat")
+        return CommunityAssignment(
+            backend="flat", lineage_report=LineageReport(events=())
+        )
     if n < SMALL_N_FLAT:
-        return _flat_assignment(graph, prior)
+        flat = _flat_assignment(graph, prior)
+        flat.lineage_report = LineageReport(events=())
+        return flat
 
     try:
-        raw_partition, q, backend = _run_leiden(graph)
-    except Exception:
+        inner_assignment, lineage_report = run_mosaic(
+            graph, prior=prior, prior_mode=prior_mode, seed=42
+        )
+    except (ImportError, RuntimeError, ValueError, TypeError):
         # Leiden unavailable or graph pathological -> degrade gracefully.
-        return _flat_assignment(graph, prior)
+        flat = _flat_assignment(graph, prior)
+        flat.lineage_report = LineageReport(events=())
+        return flat
 
-    # Mid-N guard: Leiden output only acceptable if Q >= 0.2.
-    if n < MID_N_LEIDEN and q < MODULARITY_FLOOR:
-        return _flat_assignment(graph, prior)
+    # Mid-N modularity guard -- imports CPM_MODULARITY_FLOOR from
+    # `mosaic_policy` (calibration: 0.1338). The legacy
+    # `MODULARITY_FLOOR=0.2` was sampled against
+    # `ModularityVertexPartition`; CPM-Q is gamma-dependent and not
+    # comparable to classical-Q at 0.2.
+    if n < MID_N_LEIDEN and inner_assignment.modularity < CPM_MODULARITY_FLOOR:
+        flat = _flat_assignment(graph, prior)
+        flat.lineage_report = LineageReport(events=())
+        return flat
 
-    node_to_community, community_centroids = _map_to_stable_uuids(
-        raw_partition, graph, prior
-    )
+    # Rule 1 auto-fix from integration: a 1-community partition is
+    # semantically flat (CPM-Q can be > 0
+    # for a fully-connected clique at gamma < 1.0, but a single community
+    # covering every node is the same structural outcome as the explicit
+    # _flat_assignment path). Route through `_flat_assignment` so the
+    # backend label, structure, and downstream consumers match the
+    # historical "flat" contract -- preserves
+    # `test_mid_n_non_modular_falls_back_to_flat`.
+    if len(set(inner_assignment.node_to_community.values())) <= 1:
+        flat = _flat_assignment(graph, prior)
+        flat.lineage_report = lineage_report
+        return flat
+
+    # The inner assignment already carries node_to_community,
+    # community_centroids, modularity, and backend="leiden-custom" from
+    # `_build_assignment`. We augment with the lineage_report and
+    # re-derive top_communities + mid_regions to honour caps.
+    inner_assignment.lineage_report = lineage_report
 
     # level 1: top 7 communities by member count.
     counts: dict[UUID, int] = {}
-    for c in node_to_community.values():
+    for c in inner_assignment.node_to_community.values():
         counts[c] = counts.get(c, 0) + 1
     top = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[
         :MAX_TOP_COMMUNITIES
     ]
-    top_communities = [u for u, _ in top]
+    inner_assignment.top_communities = [u for u, _ in top]
 
     # level 2 (mid-regions): community UUID -> member node UUIDs.
     mid_regions: dict[UUID, list[UUID]] = {}
-    for node, comm in node_to_community.items():
+    for node, comm in inner_assignment.node_to_community.items():
         mid_regions.setdefault(comm, []).append(node)
+    inner_assignment.mid_regions = mid_regions
 
-    return CommunityAssignment(
-        node_to_community=node_to_community,
-        community_centroids=community_centroids,
-        modularity=q,
-        backend=backend,
-        top_communities=top_communities,
-        mid_regions=mid_regions,
-    )
+    return inner_assignment
 
 
 def needs_refresh(
     prior: CommunityAssignment, current_modularity: float
 ) -> bool:
-    """: refresh signal when |Δ modularity| > REFRESH_DELTA (0.05).
+    """Refresh signal when |Δ modularity| > REFRESH_DELTA (0.05).
 
     Consumer (session-start assembler / maintenance job) calls this on each
     new Leiden run; a True return triggers a re-assignment + cache invalidation.

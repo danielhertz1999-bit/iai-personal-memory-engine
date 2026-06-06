@@ -1,7 +1,7 @@
-"""bench/neural_map.py -- D-SPEED benchmark.
+"""bench/neural_map.py -- perf benchmark.
 
 Measures recall_for_response latency at store sizes {100, 1k, 5k, 10k}. The
-D-SPEED contract is p95 < 100ms at 10k. The bench seeds a synthetic store,
+perf contract is p95 < 100ms at 10k. The bench seeds a synthetic store,
 builds the runtime graph, runs N iterations of recall_for_response with varied
 cue strings, and reports:
 
@@ -14,8 +14,8 @@ CLI:
                                [--iterations 10]
 
 When the executor hardware cannot meet <100ms at 10k, main() returns 1 so
-CI catches the regression; the user / retro decides whether to
-tune the implementation or accept.
+CI catches the regression; the user decides whether to tune the implementation
+or accept.
 """
 from __future__ import annotations
 
@@ -29,15 +29,25 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+# Resolve iai_mcp.* (via src) AND bench.* (via worktree root) to THIS
+# worktree, not the parent venv's editable install. Idempotent: each
+# `sys.path.insert` is guarded by an "if not already present" check.
+_SRC_PATH = str(Path(__file__).resolve().parent.parent / "src")
+_ROOT_PATH = str(Path(__file__).resolve().parent.parent)
+if _SRC_PATH not in sys.path:
+    sys.path.insert(0, _SRC_PATH)
+if _ROOT_PATH not in sys.path:
+    sys.path.insert(0, _ROOT_PATH)
+
 from iai_mcp.community import CommunityAssignment
 from iai_mcp.graph import MemoryGraph
 from iai_mcp.pipeline import recall_for_response
 from iai_mcp.retrieve import build_runtime_graph
-from iai_mcp.store import MemoryStore
+from iai_mcp.store import MemoryStore, flush_edge_buffer, flush_record_buffer
 from iai_mcp.types import EMBED_DIM, MemoryRecord
 
 
-# D-SPEED: 100ms p95 ceiling at 10k records.
+# 100ms p95 ceiling at 10k records.
 D_SPEED_P95_MS = 100.0
 
 
@@ -108,18 +118,18 @@ def run_neural_map_bench(
     seed: int = 0,
     warm_cascade: bool = False,
 ) -> dict:
-    """Run the D-SPEED benchmark at store size N.
+    """Run the perf benchmark at store size N.
 
     Parameters:
         n: number of records to seed.
         iterations: number of recall_for_response calls to measure.
         store_path: optional MemoryStore directory; defaults to a temp dir.
         seed: RNG base seed for deterministic synthetic data.
-        warm_cascade: — when True, fire the synchronous
-            core-side HIPPEA cascade after seeding but before timing so
-            the measured p95 reflects the warm path, not the cold path.
-            Returns ``cascade_warmed`` count in the result dict; 0 when
-            disabled or when the cascade produced no ids.
+        warm_cascade: when True, fire the synchronous core-side cascade
+            after seeding but before timing so the measured p95 reflects the
+            warm path, not the cold path. Returns ``cascade_warmed`` count
+            in the result dict; 0 when disabled or when the cascade produced
+            no ids.
 
     Returns dict with n, latency_ms_p50, latency_ms_p95, stage_timings_ms,
     build_ms, passed, iterations, and (when warm_cascade=True) cascade_warmed.
@@ -148,16 +158,27 @@ def run_neural_map_bench(
             rec = _make_record(vec, text=f"synthetic fact {i}", tags=tags)
             store.insert(rec)
 
+        # Flush seeded records to SQLite unconditionally so build_runtime_graph
+        # sees a fully populated store regardless of whether the pytest
+        # autoflush fixture is active. This makes the seeding phase
+        # self-contained: IAI_MCP_TEST_NO_AUTOFLUSH=1 (which latency tests
+        # set to prevent the conftest defer_provenance eager-flush from adding
+        # ~15-20ms per recall call) no longer starves the store before timing.
+        try:
+            flush_record_buffer(store)
+            flush_edge_buffer(store)
+        except Exception:
+            pass
+
         # Build runtime graph (timed separately).
         t_build = time.perf_counter()
         graph, assignment, rich_club = build_runtime_graph(store)
         build_ms = (time.perf_counter() - t_build) * 1000.0
 
-        # fire the sync core-side cascade AFTER seeding +
-        # build_runtime_graph (both required for salience computation) and
-        # BEFORE the timing loop starts. Writes into the same process-local
-        # hippea_cascade._warm_lru that recall_for_response consults via
-        # get_warm_record.
+        # Fire the sync core-side cascade AFTER seeding + build_runtime_graph
+        # (both required for salience computation) and BEFORE the timing loop
+        # starts. Writes into the same process-local hippea_cascade._warm_lru
+        # that recall_for_response consults via get_warm_record.
         cascade_warmed = 0
         if warm_cascade:
             try:
@@ -265,16 +286,16 @@ def main(
     ref_claude_mem_p95_ms: float | None = None,
     with_cascade: bool = False,
 ) -> int:
-    """CLI entry. Returns 0 when every N passes the D-SPEED threshold and
+    """CLI entry. Returns 0 when every N passes the perf threshold and
     (when supplied) the comparative-reference gate.
 
-    extension:
+     extension:
     - ``ref_mempalace_p95_ms`` / ``ref_claude_mem_p95_ms`` are the reference
       p95 latencies measured separately for the mempalace / claude-mem
       adapters on this host. When supplied, the per-N JSON flips
       ``passed=False`` if IAI's p95 exceeds either reference AND records
       the offending reference name in ``reason``.
-    - ``with_cascade=True`` attempts to warm the HIPPEA LRU before timing
+    - ``with_cascade=True`` attempts to warm the LRU before timing
       the recall so the test can observe the warm-RAM path latency.
       Graceful no-op when hippea_cascade is unavailable.
     """
@@ -289,7 +310,7 @@ def main(
             warm_cascade=with_cascade,
         )
 
-        # comparative gate — IAI must be <= every supplied ref.
+        # Comparative gate — IAI must be <= every supplied ref.
         refs: dict[str, float] = {}
         reason: str | None = None
         if ref_mempalace_p95_ms is not None:
@@ -326,15 +347,15 @@ def main(
 def _warm_cascade_for_bench(
     n: int, store_path: Path | str | None = None,
 ) -> int:
-    """actually fire the core-side HIPPEA cascade in the bench
-    process so the measured p95 reflects the warm path, not the cold path.
+    """Fire the core-side cascade in the bench process so the measured
+    p95 reflects the warm path, not the cold path.
 
     Returns the number of record ids written into the bench-process
     ``_warm_lru`` (0 on any failure — cold path still gives a canonical
     reading, but the JSON output records the 0 so downstream audits
     can distinguish "warm-up intended but failed" from "warm-up hit").
 
-    Reuses :func:`compute_core_side_warm_snapshot` (sync, no asyncio
+    Reuses:func:`compute_core_side_warm_snapshot` (sync, no asyncio
     dependency) rather than the async ``run_cascade`` — the sync helper
     lets us invoke the cascade inline without event-loop entanglement in
     the bench harness.
@@ -379,7 +400,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="ref_mempalace_p95_ms",
         type=float, default=None,
         help=(
-            "OPS-10 comparative reference p95 (ms) — IAI must be <= this to "
+            "Comparative reference p95 (ms) — IAI must be <= this to "
             "pass the gate."
         ),
     )
@@ -388,7 +409,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="ref_claude_mem_p95_ms",
         type=float, default=None,
         help=(
-            "OPS-10 comparative reference p95 (ms) — IAI must be <= this to "
+            "Comparative reference p95 (ms) — IAI must be <= this to "
             "pass the gate."
         ),
     )
@@ -397,8 +418,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="with_cascade",
         action="store_true",
         help=(
-            "Warm the HIPPEA LRU before each per-N run (Plan 05-04 preview); "
-            "graceful no-op if cascade module unavailable."
+            "Warm the HIPPEA LRU before each per-N run; graceful no-op if "
+            "cascade module unavailable."
         ),
     )
     return parser.parse_args(argv)

@@ -1,43 +1,40 @@
-"""-- single-machine ``~/.iai-mcp/.locked`` lockfile.
+"""Single-machine ``~/.iai-mcp/.locked`` lockfile.
 
-Realises LOCKED contract (single-machine assumption): the
-daemon writes ``~/.iai-mcp/.locked`` on startup with PID + hostname +
+The daemon writes ``~/.iai-mcp/.locked`` on startup with PID + hostname +
 started_at. A second daemon attempt on the same host raises
 ``LifecycleLockConflict``; a daemon on a different host (e.g. via
 iCloud / NFS sync of ``~/.iai-mcp``) detects the foreign hostname and
 takes over with a warning.
 
-This is **distinct from** ``ProcessLock`` (-01,
-``~/.iai-mcp/.lock``): that fcntl flock guards LanceDB writers / heavy
-consolidation against concurrent in-host processes. The ``.locked``
-lockfile is a higher-level, human-readable singleton marker for the
-lifecycle state machine (LSM); it does NOT use ``fcntl.flock`` because
-single-machine is the assumption and the JSON content (PID +
-hostname) is the diagnostic surface that ``iai-mcp lifecycle
-force-unlock`` consumes.
+The ``.locked`` lockfile is a higher-level, human-readable singleton marker
+for the lifecycle state machine; it does NOT use ``fcntl.flock`` because
+single-machine is the assumption and the JSON content (PID + hostname) is the
+diagnostic surface that ``iai-mcp lifecycle force-unlock`` consumes.
 
-Design constraints (carried from CONTEXT 10.6):
+Design constraints:
 
 - stdlib only -- ``os``, ``socket``, ``json``, ``pathlib``, ``datetime``.
 - POSIX-atomic write via ``tempfile.mkstemp`` + ``os.replace`` (same
   pattern as ``daemon_state.save_state`` / ``lifecycle_state.save_state``).
 - 0o600 file mode -- consistent with the rest of the project's state files.
 - Hostname recorded so iCloud / NFS sync of ``~/.iai-mcp`` does NOT
-  produce a deadlock when the user moves to a second Mac.
+  produce a deadlock when the user moves to a second machine.
 - PID-liveness check uses ``os.kill(pid, 0)`` (same trick as
   ``heartbeat_scanner._is_pid_alive``).
-
-Validates: WAKE-13.
 """
 from __future__ import annotations
 
 import json
+import logging
 import os
 import socket
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypedDict
+
+# Module logger for the psutil-fallback debug entry inside _is_pid_alive.
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -48,7 +45,7 @@ def _default_lock_path() -> Path:
     """Resolve the default lockfile path, honoring ``IAI_MCP_STORE``.
 
     Tests + multi-tenant deployments override the iai-mcp data root via
-    the ``IAI_MCP_STORE`` env var ( LOCK precedent, ).
+    the ``IAI_MCP_STORE`` env var.
     Falling back to ``~/.iai-mcp`` keeps the production default
     untouched.
     """
@@ -116,23 +113,78 @@ def _current_hostname() -> str:
 
 
 def _is_pid_alive(pid: int) -> bool:
-    """Return True iff ``pid`` exists in the kernel process table.
+    """Return True iff ``pid`` is a live ``iai_mcp.daemon`` process.
 
-    Mirrors the discipline in ``heartbeat_scanner._is_pid_alive``:
-    ``os.kill(pid, 0)`` sends no signal but raises ``ProcessLookupError``
-    when the PID has been reaped. ``PermissionError`` (EPERM) means the
-    process exists but we cannot signal it -- still alive for liveness
-    purposes. Negative / zero PIDs are dead.
+    Two-stage check to guard against PID-recycle:
+
+    1. ``os.kill(pid, 0)`` -- kernel-level liveness. Raises
+       ``ProcessLookupError`` when the PID has been reaped;
+       ``PermissionError`` (EPERM) means the process exists but is owned
+       by another UID. EPERM is treated as alive (we cannot inspect the
+       cmdline of a foreign-UID process; the lockfile is treated as live
+       defensively rather than overwritten).
+    2. ``psutil.Process(pid).cmdline()`` must contain the substring
+       ``iai_mcp.daemon`` -- rules out a recycled PID belonging to an
+       unrelated process (shell, browser, etc.). Mirrors the discipline
+       in ``doctor``.
+
+    Returns False when:
+      - ``pid`` is non-positive.
+      - ``os.kill(pid, 0)`` raises ``ProcessLookupError``.
+      - ``psutil.Process(pid)`` / ``.cmdline()`` raises one of
+        ``NoSuchProcess`` / ``AccessDenied`` / ``ZombieProcess`` (the PID
+        vanished between ``os.kill`` and ``Process``, or psutil cannot
+        read it -- treat as not-our-daemon so the lockfile is overwriteable).
+      - ``cmdline`` does NOT contain ``iai_mcp.daemon``.
+
+    Defensive future-proofing: if ``import psutil`` itself fails (the
+    library is a hard dep today per ``pyproject.toml:23``, so this is
+    not load-bearing), falls back to the previous ``os.kill``-only
+    semantics with a debug log entry.
     """
     if pid <= 0:
         return False
+
+    # Stage 1: kernel-level liveness via os.kill(pid, 0).
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
+        # EPERM = PID exists but owned by another UID. We cannot inspect
+        # the cmdline of a foreign-UID process; treat as live defensively.
         return True
-    return True
+
+    # Stage 2: psutil cmdline cross-check -- reject recycled PIDs whose
+    # cmdline does not contain 'iai_mcp.daemon'.
+    try:
+        import psutil
+    except ImportError:
+        log.debug(
+            "lifecycle_lock: psutil unavailable; falling back to "
+            "os.kill-only liveness for pid=%d",
+            pid,
+        )
+        return True
+
+    try:
+        proc = psutil.Process(pid)
+        cmdline = " ".join(proc.cmdline() or [])
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+        # PID was alive at os.kill but vanished / unreadable by the time
+        # psutil opened it (race window OR foreign-UID process). Treat
+        # as not-our-daemon: the lockfile is stale and may be force-released.
+        return False
+    except Exception:  # noqa: BLE001 -- defensive against psutil backend quirks
+        log.debug(
+            "lifecycle_lock: psutil.Process(%d).cmdline() raised "
+            "unexpectedly; assuming live",
+            pid,
+            exc_info=True,
+        )
+        return True
+
+    return "iai_mcp.daemon" in cmdline
 
 
 def _validate_payload(raw: object) -> LockPayload:
@@ -302,7 +354,7 @@ class LifecycleLock:
                 os.fsync(f.fileno())
             os.chmod(tmp, 0o600)
             os.replace(tmp, self._lock_path)
-        except Exception:
+        except (OSError, TypeError, ValueError):
             try:
                 os.unlink(tmp)
             except OSError:

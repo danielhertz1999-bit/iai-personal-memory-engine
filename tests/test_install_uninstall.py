@@ -2,7 +2,7 @@
 
 All tests run with DRY_RUN=1 (short-circuits real launchctl + kill + rm calls)
 + IAI_TEST_SKIP_BUILD=1 (short-circuits venv/pip/npm in install.sh) so the
-developer's actual ~/Library/LaunchAgents/ + ~/.iai-mcp/lancedb are NEVER
+developer's actual ~/Library/LaunchAgents/ + ~/.iai-mcp store are NEVER
 touched during pytest runs.
 
 Test matrix:
@@ -49,9 +49,9 @@ def _dry_run_env() -> dict[str, str]:
 def _scripts_exist() -> None:
     """Skip all tests if the scripts haven't been created yet (TDD safety)."""
     if not INSTALL_SH.exists():
-        pytest.skip(f"{INSTALL_SH} missing — run Task 1 first")
+        pytest.skip(f"{INSTALL_SH} missing — create scripts/install.sh first")
     if not UNINSTALL_SH.exists():
-        pytest.skip(f"{UNINSTALL_SH} missing — run Task 2 first")
+        pytest.skip(f"{UNINSTALL_SH} missing — create scripts/uninstall.sh first")
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +196,7 @@ def test_install_renders_template_with_substitutions() -> None:
 @pytest.mark.skipif(not _bash_available(), reason="bash unavailable")
 def test_uninstall_purge_state_dry_run() -> None:
     """`uninstall.sh --purge-state` with DRY_RUN=1 must skip the actual rm
-    of ~/.iai-mcp/.daemon.sock + .daemon-state.json + .lock and emit a
+    of ~/.iai-mcp/.daemon.sock +.daemon-state.json +.lock and emit a
     'skipping rm of state files' marker so the test can verify the gate fired."""
     result = subprocess.run(
         ["bash", str(UNINSTALL_SH), "--purge-state"],

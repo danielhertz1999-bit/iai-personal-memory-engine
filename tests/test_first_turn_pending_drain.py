@@ -1,4 +1,4 @@
-"""-02 R3 unit tests for prune_first_turn_pending pure helper.
+"""Unit tests for prune_first_turn_pending pure helper.
 
 Distinct from tests/test_daemon_state.py::test_prune_* which covers the
 24h-default `prune_stale_first_turn`. This file covers the new 1h-default
@@ -17,7 +17,7 @@ NOW = datetime(2026, 4, 27, 12, 0, tzinfo=timezone.utc)
 
 
 def test_default_ttl_is_3600_seconds() -> None:
-    """D7.2-08: default TTL is 3600s (1h)."""
+    """Default TTL is 3600s (1h)."""
     assert FIRST_TURN_PENDING_TTL_SEC_DEFAULT == 3600.0
 
 
@@ -39,7 +39,7 @@ def test_keeps_fresh_evicts_stale_returns_dropped_ids() -> None:
 
 
 def test_legacy_bool_entries_evict_with_no_timestamp() -> None:
-    """D7.2-07 contract: non-string values treated as stale."""
+    """Non-string values treated as stale."""
     state = {
         "first_turn_pending": {"sess-1": True, "sess-2": False, "sess-3": None},
     }

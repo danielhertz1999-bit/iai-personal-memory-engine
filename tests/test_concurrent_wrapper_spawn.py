@@ -1,20 +1,19 @@
-"""— R5 acceptance: concurrent wrapper cold-start regression trap.
+"""Acceptance: concurrent wrapper cold-start regression trap.
 
-THE regression-trap test that catches the precise scenario 's verifier
-missed: N parallel wrapper cold-starts when no daemon exists.
+The regression-trap test for N parallel wrapper cold-starts when no daemon
+exists.
 
-SPEC R5 / A2 contract:
-    - PASSES on post-Phase-7.1 code (with launchd-managed listener):
+Contract:
+    - PASSES with the launchd-managed listener:
       bridge.ts is a pure connector -> all 5 wrappers connect
       to the SAME launchd-pre-bound socket -> launchd spawns the daemon
       ONCE in response to the first connection -> all 5 wrappers share it.
-    - FAILS deterministically on pre-Phase-7.1 baseline:
+    - FAILS deterministically on the spawn-fallback baseline:
       bridge.ts spawn-fallback wins the TOCTOU race for multiple wrappers,
       2-5 daemons end up bound, the singleton assertion fires.
 
-Without this test, has the same verification gap had:
-architectural code coverage without runtime invariant coverage. This test IS
-the runtime invariant proof.
+This test provides runtime invariant coverage, not just architectural code
+coverage.
 
 Test isolation: a per-test LaunchAgent with a unique Label
 ``com.iai-mcp.daemon.test-<pid>-<tmp_id>`` is rendered into ``tmp_path/
@@ -85,19 +84,17 @@ def test_launchagent(tmp_path):
     internally by its ``Label`` value, which is unique per-test
     (PID + ``tmp_path`` id).
 
-    [Rule 3 deviation] The base template only sets PATH/HOME/
-    IAI_MCP_LAUNCHD_MANAGED in EnvironmentVariables. Without
-    ``IAI_DAEMON_SOCKET_PATH`` in env the launchd-spawned daemon picks up
-    the socket via fd 3 (LISTEN_FDS branch, ), but the
-    psutil-environ filter the test uses to count "daemons bound to this
-    test socket" returns 0 because the env var was never set in the
-    daemon's process environment. Inject ``IAI_DAEMON_SOCKET_PATH`` into
-    the rendered plist's EnvironmentVariables so the daemon process
-    carries it (harmlessly -- the launchd path ignores the env value and
-    uses fd 3) and the test's environ filter works.
+    Injects ``IAI_DAEMON_SOCKET_PATH`` into the plist's EnvironmentVariables
+    so the daemon carries it.  The launchd socket-activation path ignores
+    this env value (uses fd 3 for binding), but the daemon itself reads it
+    and it keeps the wrapper env consistent with the plist.  Teardown uses
+    lsof on the specific tmp socket path to find and kill the test daemon —
+    setproctitle-proof, never touches the production daemon (which binds
+    ``~/.iai-mcp/.daemon.sock``, a different path).
 
-    Yields: ``(sock_path, plist_path, label, env)`` -- env is suitable for
-    spawning wrappers via subprocess.Popen.
+    Yields: ``(sock_path, plist_path, label, env, store_dir)`` -- env is
+    suitable for spawning wrappers via subprocess.Popen; store_dir is the
+    isolated Hippo store root used to identify the test daemon.
     """
     if os.environ.get("IAI_MCP_SKIP_LAUNCHCTL_TESTS") == "1":
         pytest.skip("IAI_MCP_SKIP_LAUNCHCTL_TESTS=1")
@@ -109,6 +106,14 @@ def test_launchagent(tmp_path):
     sock_path = sock_dir / "d.sock"
     if sock_path.exists():
         sock_path.unlink()
+
+    # Isolated store root for the test daemon. Hippo acquires an exclusive
+    # fcntl lock on <store>/hippo/.lock; without this redirect the test
+    # daemon would try to open ~/.iai-mcp and fail with HippoLockHeldError
+    # whenever the production daemon is running. store_dir lives under
+    # tmp_path (pytest auto-cleans it; no path-length constraint here).
+    store_dir = tmp_path / "store"
+    store_dir.mkdir(parents=True, exist_ok=True)
 
     label = f"com.iai-mcp.daemon.test-{os.getpid()}-{id(tmp_path) & 0xFFFFFF:x}"
 
@@ -127,10 +132,18 @@ def test_launchagent(tmp_path):
     #      production label by name).
     #   2. Replace the production socket path with the test socket path.
     #   3. Inject IAI_DAEMON_SOCKET_PATH and PYTHONPATH into
-    #      EnvironmentVariables (Rule 3 fix -- without
-    #      IAI_DAEMON_SOCKET_PATH in the daemon's process env, the
-    #      psutil-environ filter cannot identify the launchd-spawned
-    #      daemon as belonging to this test).
+    #      EnvironmentVariables. IAI_DAEMON_SOCKET_PATH is harmless to the
+    #      launchd path (which uses fd 3 for socket activation, ignoring the
+    #      env value for binding). Previously this tag was needed by the
+    #      psutil-environ teardown filter; teardown now uses lsof on the
+    #      socket path instead (setproctitle-proof), but the injection is
+    #      kept for the daemon's own use and for symmetry with the wrapper
+    #      env below.
+    #   4. Inject IAI_MCP_STORE so the daemon opens an isolated Hippo
+    #      store under tmp_path. Without this, the test daemon races the
+    #      production daemon for the exclusive fcntl lock on
+    #      ~/.iai-mcp/hippo/.lock and crashes with HippoLockHeldError
+    #      whenever production is running.
     template = (REPO / "scripts" / "com.iai-mcp.daemon.plist.template").read_text()
     label_old_xml = "<string>com.iai-mcp.daemon</string>"
     label_new_xml = f"<string>{label}</string>"
@@ -154,7 +167,9 @@ def test_launchagent(tmp_path):
             "<key>IAI_MCP_LAUNCHD_MANAGED</key>\n    <string>1</string>",
             "<key>IAI_MCP_LAUNCHD_MANAGED</key>\n    <string>1</string>\n"
             f"    <key>IAI_DAEMON_SOCKET_PATH</key>\n    <string>{sock_path}</string>\n"
-            f"    <key>PYTHONPATH</key>\n    <string>{REPO / 'src'}</string>",
+            f"    <key>PYTHONPATH</key>\n    <string>{REPO / 'src'}</string>\n"
+            f"    <key>IAI_MCP_STORE</key>\n    <string>{store_dir}</string>\n"
+            "    <key>IAI_MCP_CRYPTO_PASSPHRASE</key>\n    <string>test-cspawn-key</string>",
         )
     )
     plist_path.write_text(rendered)
@@ -194,41 +209,65 @@ def test_launchagent(tmp_path):
         "IAI_MCP_PYTHON": sys.executable,
         "PYTHONPATH": str(REPO / "src") + os.pathsep + os.environ.get("PYTHONPATH", ""),
         "IAI_DAEMON_SOCKET_PATH": str(sock_path),
+        "IAI_MCP_STORE": str(store_dir),
+        "IAI_MCP_CRYPTO_PASSPHRASE": "test-cspawn-key",
     }
 
     try:
-        yield sock_path, plist_path, label, env
+        yield sock_path, plist_path, label, env, store_dir
     finally:
-        # Teardown: unload, kill any spawned test daemon (env-filtered),
-        # remove socket file. The plist itself lives under tmp_path which
-        # pytest cleans up automatically.
+        # Teardown: unload, kill any spawned test daemon, remove socket file.
+        # The plist itself lives under tmp_path which pytest cleans up.
         subprocess.run(
             ["launchctl", "unload", "-w", str(plist_path)],
             capture_output=True, check=False,
         )
-        # Env-filtered daemon kill. NEVER touch the user's real production
-        # daemon (it would be running with the production socket path,
-        # not the tmp test socket path).
-        for proc in psutil.process_iter(["cmdline", "environ"]):
+        # Socket-holder kill — setproctitle-proof and path-exact.
+        #
+        # setproctitle() clobbers the external psutil.Process.environ() view
+        # on macOS, making IAI_DAEMON_SOCKET_PATH invisible to env-based
+        # filters after the title is set.  lsof on the specific tmp socket
+        # path is immune to setproctitle and scopes precisely to this test's
+        # daemon — NEVER the production daemon, which binds a different path
+        # (~/.iai-mcp/.daemon.sock).  We capture PIDs from the SIGTERM pass
+        # and reuse them in the SIGKILL pass so the kill targets the right
+        # processes even after the daemon releases the socket fd on SIGTERM.
+        target = str(sock_path)
+        term_pids: set[int] = set()
+        lsof_res = subprocess.run(
+            ["lsof", "-U", "-F", "pn"],
+            capture_output=True, text=True, check=False,
+        )
+        current: int | None = None
+        for line in lsof_res.stdout.splitlines():
+            if line.startswith("p"):
+                try:
+                    current = int(line[1:])
+                except ValueError:
+                    current = None
+            elif line.startswith("n") and current is not None and line[1:] == target:
+                term_pids.add(current)
+        # Filter to iai_mcp.daemon cmdline (excludes launchd, which may also
+        # hold a pre-bound listener fd for socket-activation).
+        for pid in list(term_pids):
             try:
-                cl = " ".join(proc.info.get("cmdline") or [])
+                cl = " ".join(psutil.Process(pid).cmdline())
                 if "iai_mcp.daemon" not in cl:
+                    term_pids.discard(pid)
                     continue
-                penv = proc.info.get("environ") or {}
-                if penv.get("IAI_DAEMON_SOCKET_PATH") == str(sock_path):
-                    proc.send_signal(signal.SIGTERM)
+                psutil.Process(pid).send_signal(signal.SIGTERM)
             except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
-        # Brief settle, then second-pass SIGKILL on stragglers.
+                term_pids.discard(pid)
+        # Brief settle, then SIGKILL any stragglers by PID (captured above).
+        # We do NOT re-run lsof: SIGTERM'd daemon releases the socket fd
+        # before fully exiting, so a second lsof would miss it.
         time.sleep(0.5)
-        for proc in psutil.process_iter(["cmdline", "environ"]):
+        for pid in term_pids:
             try:
-                cl = " ".join(proc.info.get("cmdline") or [])
-                if "iai_mcp.daemon" not in cl:
-                    continue
-                penv = proc.info.get("environ") or {}
-                if penv.get("IAI_DAEMON_SOCKET_PATH") == str(sock_path):
-                    proc.kill()
+                if psutil.pid_exists(pid):
+                    cl = " ".join(psutil.Process(pid).cmdline())
+                    if "iai_mcp.daemon" in cl:
+                        psutil.Process(pid).kill()
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
         try:
@@ -301,26 +340,41 @@ def _read_initialize_response(
         return None
 
 
-def _count_daemons_for_socket(sock_path: Path) -> int:
-    """Count iai_mcp.daemon processes whose env points at sock_path.
+def _count_daemons_for_socket(sock_path: Path, store_dir: Path) -> int:
+    """Count iai_mcp.daemon processes associated with this test's store_dir.
 
-    The launchd-spawned daemon picks up its socket via fd 3 (LISTEN_FDS),
-    not env -- but the test plist's EnvironmentVariables block sets
-    IAI_DAEMON_SOCKET_PATH so this filter works. The daemon process
-    inherits the env from launchd; the launchd path ignores the env value
-    when binding (uses fd 3), making the env var purely a tag for
-    test isolation.
+    Two signals that are both immune to setproctitle() on macOS:
+
+    1. setproctitle() clobbers the external psutil.Process.environ() view —
+       the daemon's own os.environ is intact but external readers (like
+       psutil) lose injected vars after the title is set.  We cannot use
+       psutil.environ() for scoping.
+
+    2. For launchd socket-activated daemons, the socket fd is inherited from
+       launchd (passed as fd 3 via LISTEN_FDS).  lsof attributes the socket
+       path to launchd, not the daemon — so lsof on sock_path yields 0 for
+       the daemon process in this path.
+
+    The reliable, activation-path-agnostic signal: the daemon opens its Hippo
+    store files directly (hippo/.lock, brain.sqlite3, etc.) regardless of
+    whether it was manually spawned or launchd-activated.  psutil.open_files()
+    sees these and returns them with the correct on-disk path (resolving /tmp
+    → /private/tmp automatically).  We intersect "iai_mcp.daemon" cmdline +
+    open-files-under-store_dir so we never count the production daemon (which
+    opens a different store under ~/.iai-mcp).
     """
+    store_str = str(store_dir.resolve())
     count = 0
-    sock_str = str(sock_path)
-    for proc in psutil.process_iter(["cmdline", "environ"]):
+    for proc in psutil.process_iter(["cmdline"]):
         try:
             cl = " ".join(proc.info.get("cmdline") or [])
             if "iai_mcp.daemon" not in cl:
                 continue
-            env = proc.info.get("environ") or {}
-            if env.get("IAI_DAEMON_SOCKET_PATH") == sock_str:
-                count += 1
+            # Check if any open file lives inside our isolated store_dir.
+            for f in proc.open_files():
+                if str(Path(f.path).resolve()).startswith(store_str):
+                    count += 1
+                    break
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
     return count
@@ -354,7 +408,7 @@ def _count_binders(sock_path: Path) -> int:
 def test_5_concurrent_wrapper_cold_starts_yield_singleton(
     built_wrapper, test_launchagent,
 ):
-    """SPEC R5 / A2: 5 staggered cold-starts -> exactly 1 daemon after settle.
+    """5 staggered cold-starts -> exactly 1 daemon after settle.
 
     Setup (via test_launchagent fixture):
         - Tmp LaunchAgent loaded against an isolated test socket path.
@@ -368,16 +422,17 @@ def test_5_concurrent_wrapper_cold_starts_yield_singleton(
         - Spawn 5 wrapper subprocesses with staggered start times
           (~0/50/100/150/200 ms apart). Each sends MCP initialize.
         - Wait 15s for the daemon to settle (cold-start ~8s embedder
-          load + LanceDB open + buffer).
+          load + Hippo open + buffer).
         - Read each wrapper's initialize response (with 2s readline
           timeout per wrapper -- they should all be ready by t+15s).
         - Terminate wrappers (releases their connect-side fds before the
           binder count assertion).
 
     Assertions:
-        (a) ``_count_daemons_for_socket(sock_path) == 1`` -- exactly one
-            iai_mcp.daemon process bound to this test socket. The
-            singleton invariant.
+        (a) ``_count_daemons_for_socket(sock_path, store_dir) == 1`` -- exactly
+            one iai_mcp.daemon process has the test store open. The
+            singleton invariant (immune to setproctitle and launchd
+            socket-activation path).
         (b) ``_count_binders(sock_path) <= 1`` -- lsof reports at most
             one process holding the socket file. Wrappers are clients
             of the abstract socket connection, not file-holders -- after
@@ -387,27 +442,23 @@ def test_5_concurrent_wrapper_cold_starts_yield_singleton(
         (c) all 5 wrapper subprocesses received a successful MCP
             initialize JSON-RPC response.
 
-    On post-Phase-7.1 code (current main): bridge.ts is a pure connector
-    (deleted spawn-fallback). All 5 wrappers connect to the
-    SAME launchd-pre-bound socket, launchd's spawn-once contract gives
-    them the SAME daemon, all 3 assertions hold. THIS is what the test
-    proves.
+    With bridge.ts as a pure connector (no spawn-fallback): all 5 wrappers
+    connect to the SAME launchd-pre-bound socket, launchd's spawn-once
+    contract gives them the SAME daemon, all 3 assertions hold. THIS is what
+    the test proves.
 
-    Regression-trap caveat: the SPEC framing of "FAILS deterministically
-    on pre-Phase-7.1 baseline" turned out to be platform-conditional. On
-    macOS Sequoia 15.x, ``launchctl load -w`` eagerly spawns the daemon
-    when the plist has Sockets defined (despite RunAtLoad=false). With
-    the launchd-pre-bound socket already up and a daemon already bound,
-    pre-Phase-7.1 bridge.ts would also succeed -- its spawn-fallback
-    would never fire because the initial connect succeeds. This test
-    therefore PROVES the post-Phase-7.1 invariant cleanly (its primary
-    job) but is NOT a deterministic regression trap on macOS Sequoia.
-    On older macOS versions where launchctl-load defers spawn until
-    first connection, the regression-trap behavior would hold. See the
-    SUMMARY's "Regression-trap caveat" section for the deferred-items
-    note on a true-TOCTOU test architecture.
+    Regression-trap caveat: the "FAILS deterministically on the spawn-fallback
+    baseline" framing is platform-conditional. On macOS Sequoia 15.x,
+    ``launchctl load -w`` eagerly spawns the daemon when the plist has Sockets
+    defined (despite RunAtLoad=false). With the launchd-pre-bound socket
+    already up and a daemon already bound, a spawn-fallback bridge.ts would
+    also succeed -- its fallback would never fire because the initial connect
+    succeeds. This test therefore PROVES the connector invariant cleanly (its
+    primary job) but is NOT a deterministic regression trap on macOS Sequoia.
+    On older macOS versions where launchctl-load defers spawn until first
+    connection, the regression-trap behavior would hold.
     """
-    sock_path, plist_path, label, env = test_launchagent
+    sock_path, plist_path, label, env, store_dir = test_launchagent
 
     # Pre-condition: at most 1 daemon bound to this socket. RunAtLoad=false
     # in the plist is documented as "spawn lazily on first connection",
@@ -418,7 +469,7 @@ def test_5_concurrent_wrapper_cold_starts_yield_singleton(
     # singleton invariant -- it just shifts the spawn moment. The
     # critical assertion is the post-condition (`== 1` after 5 wrappers),
     # not whether the daemon was 0 or 1 before.
-    initial_daemon_count = _count_daemons_for_socket(sock_path)
+    initial_daemon_count = _count_daemons_for_socket(sock_path, store_dir)
     assert initial_daemon_count <= 1, (
         f"expected <= 1 daemon before test, found {initial_daemon_count} "
         f"(stale daemons from earlier test? cleanup leak?)"
@@ -435,7 +486,7 @@ def test_5_concurrent_wrapper_cold_starts_yield_singleton(
         procs.append(_spawn_wrapper_send_initialize(built_wrapper, env))
 
     # Wait 15s for the daemon to settle. Cold start = 8s embedder load
-    # + LanceDB open + buffer. Per advisor: do NOT shorten this -- the
+    # + Hippo open + buffer. Per advisor: do NOT shorten this -- the
     # 8s embedder cold-start is the empirical reality.
     time.sleep(15)
 
@@ -447,7 +498,7 @@ def test_5_concurrent_wrapper_cold_starts_yield_singleton(
     # Snapshot the singleton + binder counts BEFORE terminating wrappers.
     # Terminating may take 2s+ per wrapper; we want the assertion to fire
     # against the steady state we just observed.
-    daemon_count = _count_daemons_for_socket(sock_path)
+    daemon_count = _count_daemons_for_socket(sock_path, store_dir)
     binder_count = _count_binders(sock_path)
 
     # Cleanup wrappers (release their connect-side fds; daemon still up
@@ -462,10 +513,10 @@ def test_5_concurrent_wrapper_cold_starts_yield_singleton(
     # Assertion (a) -- THE singleton invariant.
     assert daemon_count == 1, (
         f"singleton invariant violated: {daemon_count} daemons bound to "
-        f"{sock_path} after 5 concurrent wrapper cold-starts. "
-        f"contract: launchd handles the spawn-once; all wrappers join "
-        f"the same daemon. Pre-Phase-7.1 baseline reproduces 2-5 daemons "
-        f"via TOCTOU race in bridge.ts spawn-fallback."
+        f"{sock_path} after 5 concurrent wrapper cold-starts. Contract: "
+        f"launchd handles the spawn-once; all wrappers join the same daemon. "
+        f"The spawn-fallback baseline reproduces 2-5 daemons via a TOCTOU "
+        f"race in bridge.ts."
     )
     # Assertion (b) -- file-holder confirmation. Either 0 (the socket
     # file is owned by launchd's pre-bind, not a daemon process fd entry)
@@ -488,15 +539,15 @@ def test_5_concurrent_wrapper_cold_starts_yield_singleton(
 
 
 @pytest.mark.skip(
-    reason="manual baseline regression check; run only against pre-Phase-7.1 "
-    "(git stash) to demonstrate the regression-trap behavior",
+    reason="manual baseline regression check; run only against the "
+    "spawn-fallback baseline to demonstrate the regression-trap behavior",
 )
 def test_pre_phase_7_1_baseline_fails():
-    """Documentation marker: how to run against the pre-7.1 baseline.
+    """Documentation marker: how to run against the spawn-fallback baseline.
 
     Manual procedure to demonstrate the regression-trap behavior:
 
-        1. ``git stash``  (or ``git checkout <pre-7.1-commit>``)
+        1. Check out a revision with the spawn-fallback bridge.ts.
         2. ``cd mcp-wrapper && npm run build``  (rebuild bridge.ts with
            the spawn-fallback restored)
         3. ``pytest tests/test_concurrent_wrapper_spawn.py::\\
@@ -504,13 +555,10 @@ def test_pre_phase_7_1_baseline_fails():
         4. Expected: assertion (a) FAILS with daemon_count >= 2 (the
            TOCTOU race produces multiple daemons that all bind in
            parallel before any of them notice the others).
-        5. ``git stash pop``  (or ``git checkout main``) to restore
-           .
+        5. Restore the pure-connector bridge.ts.
         6. Rebuild + rerun: assertion passes.
 
-    The executor of cannot easily git-stash mid-execution
-    (stashing would break the test file itself, which lives in the
-    working tree). Future verification: a maintainer who wants to
-    re-prove the regression-trap behavior follows the procedure above.
+    A maintainer who wants to re-prove the regression-trap behavior follows
+    the procedure above.
     """
     pass

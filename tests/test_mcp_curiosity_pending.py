@@ -1,4 +1,4 @@
-"""Tests for curiosity_pending dispatch.
+"""Tests for MCP-07 curiosity_pending dispatch (Task 1).
 
 The `curiosity_pending` method was scaffolded by and is now
 promoted to a first-class MCP tool. Behaviour:

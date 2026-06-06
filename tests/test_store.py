@@ -1,4 +1,4 @@
-"""Tests for types + LanceDB store + ART gate invariants (..03, )."""
+"""Tests for types + store + ART gate invariants."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -21,7 +21,7 @@ def _make(
 ) -> MemoryRecord:
     """Helper shared across test modules (test_art_gate, test_hebbian, test_provenance).
 
-    every MemoryRecord now carries a required `language` tag.
+    : every MemoryRecord now carries a required `language` tag.
     Default "en" keeps fixtures valid without asking each caller to
     supply the tag explicitly.
     """
@@ -65,7 +65,7 @@ def test_query_empty_store_returns_empty_list(tmp_path):
 
 
 def test_detail_level_3_forces_never_decay():
-    """ + detail_level >= 3 always sets never_decay=True."""
+    """+: detail_level >= 3 always sets never_decay=True."""
     r = _make(detail=3)
     assert r.never_decay is True
     # Even if caller tries to override at detail_level 4

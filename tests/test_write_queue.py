@@ -1,8 +1,8 @@
-"""— AsyncWriteQueue unit tests (, M-03).
+"""— AsyncWriteQueue unit tests.
 
-Coalesce window + batched flush against a LanceDB-shaped async table.
+Coalesce window + batched flush against a store-shaped async table.
 Tests use a MockAsyncTable that records each ``add(batch)`` call so we
-can assert batch sizes / call counts without pulling a live LanceDB
+can assert batch sizes / call counts without pulling a live store
 connection for every test.
 
 Contracts covered:
@@ -33,7 +33,7 @@ from iai_mcp.write_queue import AsyncWriteQueue
 
 
 class MockAsyncTable:
-    """Minimal stand-in for lancedb AsyncTable.
+    """Minimal stand-in for the store AsyncTable.
 
     ``add(batch)`` is an awaitable that records every call so tests can
     assert call_count, batch sizes, and ordering. Supports an injected
@@ -43,7 +43,7 @@ class MockAsyncTable:
     def __init__(self, *, raise_on_add: BaseException | None = None) -> None:
         self.calls: list[list] = []
         self.raise_on_add = raise_on_add
-        # Optional delay to simulate LanceDB flush latency (used by W4).
+        # Optional delay to simulate store flush latency (used by W4).
         self._delay_s: float = 0.0
 
     async def add(self, batch) -> None:

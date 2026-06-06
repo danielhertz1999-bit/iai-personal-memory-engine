@@ -1,13 +1,13 @@
 """crypto.py AES-256-GCM primitives + file-backed key storage.
 
-Originally ; updated in W1 to retire the keyring
+Updated to retire the keyring
 backend (which deadlocked the daemon under launchd via the macOS
 Keychain ACL prompt) in favor of a file-backed primary backend at
 `{IAI_MCP_STORE}/.crypto.key` (32 raw bytes, mode 0o600, uid-validated).
 
 Covers:
 - encrypt_field / decrypt_field round-trip (byte-for-byte)
-- Cyrillic / CJK / Arabic round-trip ( across languages)
+- Cyrillic / CJK / Arabic round-trip (across languages)
 - Associated data binding (swapped AD -> InvalidTag)
 - Tamper detection (mutated ciphertext -> InvalidTag)
 - is_encrypted prefix check
@@ -45,7 +45,7 @@ def test_crypto_roundtrip_basic() -> None:
 
 
 def test_crypto_roundtrip_cyrillic() -> None:
-    """Russian text byte-for-byte preserved."""
+    """+: Russian text byte-for-byte preserved."""
     from iai_mcp.crypto import encrypt_field, decrypt_field
     key = b"\x01" * 32
     plaintext = "Привет, мир! Это тест шифрования."
@@ -57,7 +57,7 @@ def test_crypto_roundtrip_cyrillic() -> None:
 
 
 def test_crypto_roundtrip_cjk() -> None:
-    """Japanese / Chinese round-trip."""
+    """+: Japanese / Chinese round-trip."""
     from iai_mcp.crypto import encrypt_field, decrypt_field
     key = b"\x02" * 32
     plaintext = "こんにちは世界。これは暗号化テストです。"
@@ -66,7 +66,7 @@ def test_crypto_roundtrip_cjk() -> None:
 
 
 def test_crypto_roundtrip_arabic() -> None:
-    """Arabic round-trip."""
+    """+: Arabic round-trip."""
     from iai_mcp.crypto import encrypt_field, decrypt_field
     key = b"\x03" * 32
     plaintext = "مرحبا بالعالم. هذا اختبار تشفير."

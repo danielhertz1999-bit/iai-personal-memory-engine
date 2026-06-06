@@ -1,4 +1,4 @@
-""" RED: TEM bind_structure write-time fill side.
+"""RED: TEM bind_structure write-time fill side.
 
 Verifies that store.insert() invokes tem.bind_structure() to populate an
 empty structure_hv, that the result is exactly STRUCTURE_HV_BYTES (1250)
@@ -70,7 +70,7 @@ def test_bind_structure_returns_correct_byte_length(tmp_path, monkeypatch):
 
 def test_insert_fills_empty_structure_hv_via_bind_structure(tmp_path, monkeypatch):
     """When inserting a record with empty structure_hv, store.insert() lazily
-    computes it via tem.bind_structure (D-TEM autopoietic write-time fill)."""
+    computes it via tem.bind_structure (autopoietic write-time fill)."""
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
     from iai_mcp.store import MemoryStore
     from iai_mcp.types import STRUCTURE_HV_BYTES
@@ -103,7 +103,7 @@ def test_insert_preserves_explicit_structure_hv(tmp_path, monkeypatch):
 
 
 def test_round_trip_structure_hv_through_lancedb(tmp_path, monkeypatch):
-    """The pa.binary() column round-trips bytes through LanceDB intact."""
+    """The pa.binary() column round-trips bytes through the store intact."""
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
     from iai_mcp.store import MemoryStore
     from iai_mcp.types import STRUCTURE_HV_BYTES

@@ -26,10 +26,7 @@ Five properties under test:
 
   5. Integration smoke: ``drain_deferred_captures`` mirrors every
      ``status='inserted'`` record into the bank/recent window file
-     for today's UTC date in addition to writing to LanceDB.
-
-  6. Cold reader: AAD derives purely from the window filename,
-     no prior knowledge of record ids is required to decrypt.
+     for today's UTC date in addition to writing to the store.
 """
 from __future__ import annotations
 
@@ -49,24 +46,42 @@ from cryptography.exceptions import InvalidTag
 
 from iai_mcp.capture import drain_deferred_captures
 from iai_mcp.crypto import decrypt_field, encrypt_field, is_encrypted
-from iai_mcp.memory_bank import append_recent_record, prune_recent_windows
+from iai_mcp.memory_bank import append_recent_record, prune_recent_windows  # ImportError until Task 2
 from iai_mcp.store import MemoryStore
 from iai_mcp.types import SCHEMA_VERSION_CURRENT, MemoryRecord
 
 
+# ---------------------------------------------------------------------------
+# Fixture: HOME + keyring isolation + IAI_MCP_STORE under tmp
+# Mirrors the deferred-captures test isolation fixture.
+# ---------------------------------------------------------------------------
+
+
 @pytest.fixture
 def iai_home(tmp_path, monkeypatch):
-    """HOME=tmp_path + keyring fail-backend + crypto passphrase."""
+    """HOME=tmp_path + keyring fail-backend + crypto passphrase.
+
+    Forces the passphrase fallback so the macOS Security
+    framework's interactive keychain prompt never fires.
+    """
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("PYTHON_KEYRING_BACKEND", "keyring.backends.fail.Keyring")
     monkeypatch.setenv("IAI_MCP_CRYPTO_PASSPHRASE", "test-recent-passphrase")
-    monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path / ".iai-mcp" / "lancedb"))
+    monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path / ".iai-mcp" / "hippo"))
 
+    # Force keyring to re-resolve the backend (it caches on first access).
     import keyring.core
 
     keyring.core._keyring_backend = None
     yield tmp_path
     keyring.core._keyring_backend = None
+
+
+# ---------------------------------------------------------------------------
+# Helpers — build MemoryRecord without going through store.insert().
+# Tests 1-4 only need store._key() / store._ad() / store.embed_dim; they do
+# not need the record to be persisted in the store.
+# ---------------------------------------------------------------------------
 
 
 def _recent_dir(home: Path) -> Path:
@@ -134,6 +149,11 @@ def _write_dummy_window_file(path: Path, store: MemoryStore, rec_id: UUID) -> No
         os.close(fd)
 
 
+# ---------------------------------------------------------------------------
+# Test 1 — path, mode, line count
+# ---------------------------------------------------------------------------
+
+
 def test_recent_append_creates_dated_window_file(iai_home):
     store = MemoryStore()
     rec = _make_record(embed_dim=store.embed_dim, text="hello world")
@@ -155,6 +175,11 @@ def test_recent_append_creates_dated_window_file(iai_home):
     assert lines[0].endswith("\n"), "line must be newline-terminated"
 
 
+# ---------------------------------------------------------------------------
+# Test 2 — encrypted format, schema, AAD binding
+# ---------------------------------------------------------------------------
+
+
 def test_recent_append_format_is_iai_enc_v1(iai_home):
     store = MemoryStore()
     rec = _make_record(embed_dim=store.embed_dim, text="hello world")
@@ -168,6 +193,9 @@ def test_recent_append_format_is_iai_enc_v1(iai_home):
     assert raw_line.startswith("iai:enc:v1:"), "ciphertext must carry version prefix"
     assert is_encrypted(raw_line), "is_encrypted() guard must accept the line"
 
+    # AAD is the window-file's date string in UTF-8 bytes -- derivable from
+    # the filename alone, so a cold reader can decrypt without first
+    # knowing any record id.
     window_aad = b"2026-05-13"
     plaintext = decrypt_field(raw_line, store._key(), associated_data=window_aad)
     obj = json.loads(plaintext)
@@ -191,6 +219,8 @@ def test_recent_append_format_is_iai_enc_v1(iai_home):
     round_trip = np.frombuffer(emb_bytes, dtype=np.float32).tolist()
     assert round_trip == rec.embedding, "float32 embedding must round-trip byte-for-byte"
 
+    # AAD binding — wrong AAD (record-id bytes, a different day's date,
+    # arbitrary bytes) MUST raise InvalidTag.
     with pytest.raises(InvalidTag):
         decrypt_field(raw_line, store._key(), associated_data=b"wrong-aad")
     with pytest.raises(InvalidTag):
@@ -199,11 +229,17 @@ def test_recent_append_format_is_iai_enc_v1(iai_home):
         decrypt_field(raw_line, store._key(), associated_data=b"2026-05-12")
 
 
+# ---------------------------------------------------------------------------
+# Test 3 — concurrent appends serialize under module-level Lock
+# ---------------------------------------------------------------------------
+
+
 def test_recent_append_serializes_appends_under_concurrency(iai_home):
     store = MemoryStore()
     fixed_now = datetime(2026, 5, 13, tzinfo=timezone.utc)
     embed_dim = store.embed_dim
 
+    # 4 threads * 10 records = 40 unique records.
     records: list[MemoryRecord] = [
         _make_record(embed_dim=embed_dim, text=f"thread-record-{i}", rec_id=uuid4())
         for i in range(40)
@@ -214,6 +250,7 @@ def test_recent_append_serializes_appends_under_concurrency(iai_home):
         for r in batch:
             append_recent_record(store, r, now=fixed_now)
 
+    # Partition 40 records into 4 batches of 10.
     batches = [records[i : i + 10] for i in range(0, 40, 10)]
     assert len(batches) == 4 and all(len(b) == 10 for b in batches)
 
@@ -228,6 +265,9 @@ def test_recent_append_serializes_appends_under_concurrency(iai_home):
     for ln in lines:
         assert ln.startswith("iai:enc:v1:"), "torn write detected — line missing prefix"
 
+    # All 40 lines share a single AAD (the window-file's date string in
+    # UTF-8 bytes); the record id is recovered from the decrypted JSON
+    # payload, not from the AAD itself.
     window_aad = b"2026-05-13"
     key = store._key()
     seen_ids: set[str] = set()
@@ -242,14 +282,19 @@ def test_recent_append_serializes_appends_under_concurrency(iai_home):
     )
 
 
+# ---------------------------------------------------------------------------
+# Test 4 — prune retention policy uses filename-date, not mtime
+# ---------------------------------------------------------------------------
+
+
 def test_recent_prune_deletes_files_older_than_keep_days(iai_home):
     store = MemoryStore()
     recent = _recent_dir(iai_home)
     fixed_now = datetime(2026, 5, 13, tzinfo=timezone.utc)
 
-    old_file = recent / "window-2025-01-01.jsonl"
-    one_day = recent / "window-2026-05-12.jsonl"
-    today = recent / "window-2026-05-13.jsonl"
+    old_file = recent / "window-2025-01-01.jsonl"   # >30 days old
+    one_day = recent / "window-2026-05-12.jsonl"    # 1 day old
+    today = recent / "window-2026-05-13.jsonl"      # today
 
     rid1, rid2, rid3 = uuid4(), uuid4(), uuid4()
     _write_dummy_window_file(old_file, store, rid1)
@@ -262,9 +307,11 @@ def test_recent_prune_deletes_files_older_than_keep_days(iai_home):
     assert one_day.exists(), "1-day-old window must survive 30-day retention"
     assert today.exists(), "today's window must survive"
 
+    # Idempotent — second call returns 0 with no error.
     deleted_again = prune_recent_windows(keep_days=30, now=fixed_now)
     assert deleted_again == 0
 
+    # Tampered / non-matching filenames must be skipped silently.
     bogus_a = recent / "notawindow.jsonl"
     bogus_b = recent / "window-bogus.jsonl"
     bogus_a.write_text("garbage")
@@ -277,7 +324,13 @@ def test_recent_prune_deletes_files_older_than_keep_days(iai_home):
     assert bogus_a.exists() and bogus_b.exists(), "malformed filenames must be skipped"
 
 
+# ---------------------------------------------------------------------------
+# Test 5 — integration: drain mirrors inserted records into bank/recent
+# ---------------------------------------------------------------------------
+
+
 def test_drain_writes_to_lancedb_and_bank_recent(iai_home):
+    # Stage a deferred-captures JSONL with one header + one event.
     deferred_dir = iai_home / ".iai-mcp" / ".deferred-captures"
     deferred_dir.mkdir(parents=True, exist_ok=True)
     deferred_file = deferred_dir / "test-session.jsonl"
@@ -302,10 +355,13 @@ def test_drain_writes_to_lancedb_and_bank_recent(iai_home):
     assert counts["files_drained"] == 1, f"counts={counts}"
     assert not deferred_file.exists(), "drained file must be unlinked"
 
+    # The store row landed.
     records = store.all_records()
     matching = [r for r in records if r.literal_surface == "integration smoke text"]
     assert len(matching) >= 1, "drain must persist the record in LanceDB"
 
+    # Glob assertion — exactly one window file matches, regardless of the
+    # exact YYYY-MM-DD suffix (safe at the UTC-midnight boundary).
     recent = _recent_dir(iai_home)
     windows = list(recent.glob("window-*.jsonl"))
     assert len(windows) == 1, (
@@ -317,34 +373,50 @@ def test_drain_writes_to_lancedb_and_bank_recent(iai_home):
     lines = [ln for ln in window_file.read_text(encoding="utf-8").splitlines() if ln]
     assert len(lines) == 1, f"expected 1 line in {window_file.name}, got {len(lines)}"
 
+    # Decrypt under the live key + the window file's date-derived AAD.
+    # AAD is derived from the filename (not from the inserted record's id),
+    # so a cold reader can decrypt without prior knowledge of any record.
     name = window_file.name
     date_part = name[len("window-") : -len(".jsonl")]
     window_aad = date_part.encode("utf-8")
     plaintext = decrypt_field(lines[0], store._key(), associated_data=window_aad)
     obj = json.loads(plaintext)
     assert obj["text"] == "integration smoke text"
+    # The record id is recovered from the decrypted payload itself.
     inserted = matching[0]
     assert obj["id"] == str(inserted.id)
 
 
+# ---------------------------------------------------------------------------
+# Test 6 — cold reader: AAD derives purely from the window filename,
+# no prior knowledge of record ids is required to decrypt.
+# ---------------------------------------------------------------------------
+
+
 def test_recent_append_decrypts_without_knowing_record_id(iai_home):
-    """A cold reader must be able to decrypt each window line by deriving the
-    AAD from the filename alone -- never from a record id."""
+    """A cold reader (fallback path that has only the file on disk) must be
+    able to decrypt each window line by deriving the AAD from the filename
+    alone -- never from a record id, never from the live store contents.
+    """
     store = MemoryStore()
     rec = _make_record(embed_dim=store.embed_dim, text="cold reader payload")
     fixed_now = datetime(2026, 5, 13, tzinfo=timezone.utc)
 
     append_recent_record(store, rec, now=fixed_now)
 
+    # Discover the file the way a cold reader would: glob, no record knowledge.
     recent = _recent_dir(iai_home)
     windows = list(recent.glob("window-*.jsonl"))
     assert len(windows) == 1, f"expected one window file, got {len(windows)}"
     window_file = windows[0]
 
+    # Parse the date out of the filename and derive AAD from it. No `rec.id`
+    # or any other in-memory state may participate in this derivation.
     name = window_file.name
     date_part = name[len("window-") : -len(".jsonl")]
     window_aad = date_part.encode("utf-8")
 
+    # Read raw bytes and parse the ciphertext envelope (`iai:enc:v1:<b64>`).
     raw_line = window_file.read_text(encoding="utf-8").rstrip("\n")
     assert raw_line.startswith("iai:enc:v1:"), "envelope prefix missing"
 
@@ -352,7 +424,9 @@ def test_recent_append_decrypts_without_knowing_record_id(iai_home):
     obj = json.loads(plaintext)
 
     assert obj["text"] == "cold reader payload"
-    assert obj["id"] == str(rec.id)
+    assert obj["id"] == str(rec.id)  # learnt AFTER decrypt, not used as input
 
+    # Sanity: the record-id-bytes AAD pattern must NOT decrypt the same line
+    # under this binding (proves we're not silently accepting both).
     with pytest.raises(InvalidTag):
         decrypt_field(raw_line, store._key(), associated_data=store._ad(rec.id))

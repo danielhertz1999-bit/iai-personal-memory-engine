@@ -344,5 +344,5 @@ def test_language_coverage_is_exactly_eight_d11() -> None:
 
 
 def test_gate_minutes_before_is_thirty_d09() -> None:
-    """D-09 dual-gate: 30 minutes before quiet-window start counts as late."""
+    """dual-gate: 30 minutes before quiet-window start counts as late."""
     assert WIND_DOWN_GATE_MINUTES_BEFORE == 30

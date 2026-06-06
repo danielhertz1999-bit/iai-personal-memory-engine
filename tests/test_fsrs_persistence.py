@@ -1,11 +1,11 @@
-"""Tests for 02-REVIEW.md H-01 (FSRS tick not persisted across restart).
+"""Tests for 02- H-01 (FSRS tick not persisted across restart).
 
 Bug: `run_light_consolidation` calls `_apply_fsrs(r, now)` which mutates
 record.stability and record.last_reviewed in-place on the in-memory
 MemoryRecord object. The updated record was never written back to the store.
 Every process restart reset all FSRS fields to their previous checkpoint.
 
-Fix:
+Fix (Task 1):
     - Add MemoryStore.update_record(record) that rewrites ONLY the FSRS
       columns (stability, difficulty, last_reviewed, updated_at) via
       _uuid_literal-safe WHERE predicate. No embedding / provenance /
@@ -14,7 +14,7 @@ Fix:
     - Call store.update_record(r) inside run_light_consolidation after
       _apply_fsrs mutates r.
 
-Constitutional contract ( FSRS biological fidelity + D-STORAGE):
+FSRS biological fidelity contract:
     FSRS stability is the biological decay curve state. Losing it on every
     restart equivalates to wiping short-term memory at every session
     switch -- unacceptable for a system whose promise is "Claude remembers

@@ -1,4 +1,4 @@
-"""bench/trajectory.py -- trajectory benchmark (Plan 02-04 Task 4, D-33).
+"""bench/trajectory.py -- trajectory benchmark (Task 4).
 
 Generates a deterministic 30-session synthetic corpus following autism/NT
 interaction pattern models and runs M1..M6 aggregation across it. Validates:
@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import sys
 import tempfile
@@ -29,15 +30,36 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+# Resolve iai_mcp.* (via src) AND bench.* (via worktree root) to THIS
+# worktree, not the parent venv's editable install. Idempotent: each
+# `sys.path.insert` is guarded by an "if not already present" check.
+import sys
+from pathlib import Path
+_SRC_PATH = str(Path(__file__).resolve().parent.parent / "src")
+_ROOT_PATH = str(Path(__file__).resolve().parent.parent)
+if _SRC_PATH not in sys.path:
+    sys.path.insert(0, _SRC_PATH)
+if _ROOT_PATH not in sys.path:
+    sys.path.insert(0, _ROOT_PATH)
+
+# crypto gate: supply bench passphrase so each ephemeral tmp
+# store derives its own AES key without keychain or file games. Same
+# literal as bench/contradiction_longitudinal_claude.py BENCH_PASSPHRASE
+# so all bench tmp stores derive consistent keys.
+if not os.environ.get("IAI_MCP_CRYPTO_PASSPHRASE"):
+    os.environ["IAI_MCP_CRYPTO_PASSPHRASE"] = (
+        "iai-mcp-bench-falsifiability-deterministic-2026"
+    )
+
 from iai_mcp.events import write_event
 from iai_mcp.store import MemoryStore
 
 
-# reproducible corpus from seed=42.
+#: reproducible corpus from seed=42.
 DEFAULT_SEED = 42
 
 # Diverse-text samples for corpus-shape variance testing.
-# Brain is English-only since Plan 05-08; non-English entries here are
+# Brain is English-only since; non-English entries here are
 # fixture diversity, not a multilingual product feature.
 _LANG_SAMPLES: dict[str, list[str]] = {
     "en": [
@@ -141,7 +163,7 @@ def run_trajectory_bench(
 ) -> dict:
     """Apply the corpus to a fresh store and aggregate M1..M6 trends.
 
-    Returns {m1_trend, m2_trend, ..., m6_trend, passed}. Trends are lists of
+    Returns {m1_trend, m2_trend,..., m6_trend, passed}. Trends are lists of
     floats in session order. `passed` reflects the 6 predicted directions.
     """
     from iai_mcp.trajectory import record_session_metrics

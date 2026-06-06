@@ -9,8 +9,8 @@ systemd invocation, which on macOS is typically the SIP-protected
 `/usr/local/bin/python3` -- different from the venv Python where iai-mcp
 and its dependencies live.
 
-VERIFY result (planner + executor 2026-05-01): production code already
-does the substitution. `src/iai_mcp/cli.py::_render_launchd_plist`
+Production code already does the substitution.
+`src/iai_mcp/cli.py::_render_launchd_plist`
 calls `text.replace("/usr/local/bin/python3", sys.executable)`, and
 `_render_systemd_unit` calls
 `text.replace("/usr/bin/python3", sys.executable)`. The plist template
@@ -22,12 +22,10 @@ for this plan is ZERO LINES; this file is a regression lock so a future
 refactor that hardcodes the path will fail these tests.
 
 Test 3 (`test_install_warns_when_sys_executable_lacks_psutil`) verified
-during Sub-step 1: `cmd_daemon_install` (cli.py 268-362) does NOT carry a
+`cmd_daemon_install` does NOT carry a
 `subprocess.run([sys.executable, "-c", "import psutil"])` probe today.
-Per 07.14-CONTEXT.md ("only if gap-driven patch is needed: ... defer
-adding such a row to a future phase. Do NOT add it speculatively in
-07.14"), the WARN-on-missing-psutil contract is xfail-marked: the
-contract is documented for a future plan to enforce, but adding the
+The WARN-on-missing-psutil contract is xfail-marked: the
+contract is documented for a future addition to enforce, but adding the
 probe speculatively is out of scope.
 """
 from __future__ import annotations
@@ -89,17 +87,13 @@ def test_install_uses_sys_executable_linux(monkeypatch):
 
 
 # ============================================================================
-# Test 3 -- xfail per 07.14-CONTEXT.md deferral
+# Test 3 -- xfail for a deferred probe
 # ============================================================================
-# Sub-step 1 verification (executor 2026-05-01): cmd_daemon_install
-# (src/iai_mcp/cli.py lines 268-362) does NOT contain a
+# cmd_daemon_install in `src/iai_mcp/cli.py` does NOT contain a
 # `subprocess.run([sys.executable, "-c", "import psutil"])` probe today.
+# Adding such a row is deferred; it is not added speculatively.
 #
-# Per 07.14-CONTEXT.md "only if gap-driven patch is needed: ...
-# defer adding such a row to a future phase. Do NOT add it speculatively
-# in 07.14".
-#
-# This xfail documents the contract for a future plan that adds the
+# This xfail documents the contract for a future addition of the
 # probe. If/when the probe lands, the xfail will flip to xpass and the
 # developer un-marks it. `strict=False` so an xpass does not fail the
 # suite during the transition.
@@ -112,7 +106,7 @@ def test_install_uses_sys_executable_linux(monkeypatch):
 def test_plist_keepalive_is_crashed_only(monkeypatch):
     """Plist KeepAlive uses {"Crashed": true} only -- NOT SuccessfulExit=false.
 
-    lifecycle model: graceful exit 0 on HIBERNATION must
+     lifecycle model: graceful exit 0 on HIBERNATION must
     NOT trigger respawn (so the daemon stays dead until wrapper
     kickstart fires). Crashed=true respawns only on non-zero exit
     (the LifecycleLockConflict path); SuccessfulExit=false would
@@ -127,7 +121,7 @@ def test_plist_keepalive_is_crashed_only(monkeypatch):
     assert "<key>Crashed</key>" in rendered
     # Legacy SuccessfulExit=false must be GONE.
     assert "<key>SuccessfulExit</key>" not in rendered, (
-        "removed SuccessfulExit=false from the plist. Its presence "
+        "SuccessfulExit=false was removed from the plist. Its presence "
         "would create a respawn loop because exit 0 is now the steady state."
     )
 
@@ -135,7 +129,7 @@ def test_plist_keepalive_is_crashed_only(monkeypatch):
 def test_plist_lifecycle_env_vars_present(monkeypatch):
     """The plist defines LIFECYCLE_* + sleep-quarantine env vars.
 
-    cadence knobs become production-tunable via the plist
+    Cadence knobs become production-tunable via the plist
     EnvironmentVariables block.
     """
     fake_python = "/path/to/venv/bin/python3"
@@ -157,7 +151,7 @@ def test_plist_legacy_env_vars_removed(monkeypatch):
 
     rendered = _render_launchd_plist()
     assert "<key>IAI_MCP_RSS_RESTART_THRESHOLD_MB</key>" not in rendered, (
-        "RSS-watchdog removed in Task 1.4; env var must be gone "
+        "RSS-watchdog removed; env var must be gone "
         "from the plist."
     )
     assert "<key>IAI_DAEMON_IDLE_SHUTDOWN_SECS</key>" not in rendered
@@ -167,10 +161,8 @@ def test_plist_legacy_env_vars_removed(monkeypatch):
 @pytest.mark.xfail(
     reason=(
         "psutil-availability probe NOT in cmd_daemon_install today. "
-        "Adding speculatively is deferred per 07.14-CONTEXT.md "
-        '("only if gap-driven patch is needed: ... defer adding such a '
-        'row to a future phase"). This xfail documents the contract for '
-        "a future plan."
+        "Adding it speculatively is deferred. This xfail documents the "
+        "contract for a future addition."
     ),
     strict=False,
 )
@@ -180,7 +172,7 @@ def test_install_warns_when_sys_executable_lacks_psutil(
     """When the venv-resolved Python lacks `psutil`, install emits a WARN
     (not FAIL) with a hint to install psutil + re-run.
 
-    NOTE: deferred per CONTEXT.md -- xfail until a future plan adds
+    NOTE: deferred -- xfail until a future change adds
     the psutil-availability probe to `cmd_daemon_install`.
     """
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -190,7 +182,7 @@ def test_install_warns_when_sys_executable_lacks_psutil(
     real_run = subprocess.run
 
     def _fake_run(cmd, **kwargs):
-        # Match: subprocess.run([sys.executable, "-c", "import psutil"], ...)
+        # Match: subprocess.run([sys.executable, "-c", "import psutil"],...)
         if (
             isinstance(cmd, list)
             and len(cmd) >= 3

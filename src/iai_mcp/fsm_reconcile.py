@@ -7,7 +7,7 @@ older vocabulary (WAKE / TRANSITIONING / SLEEP / DREAMING).
 
 Both files coexist during the migration window. ``reconcile_fsm_state``
 compares the two and returns whether the declared states agree according
-to the documented mapping. It is a read-only diagnostic -- the caller
+to the documented mapping. It is a read-only diagnostic — the caller
 decides how to surface a drift report (log, event emission, etc.).
 """
 from __future__ import annotations
@@ -15,6 +15,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+# Pairs of (canonical, legacy) values that are treated as equivalent.
+# Any other (canonical, legacy) combo where both sides are populated counts
+# as drift. HIBERNATION is canonical-only — the legacy file predates it,
+# so any legacy value alongside HIBERNATION is accepted without drift.
 _NO_DRIFT_PAIRS: frozenset[tuple[str, str]] = frozenset(
     {
         ("WAKE", "WAKE"),
@@ -51,15 +55,55 @@ def _read_legacy(path: Path) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+_CANONICAL_TO_LEGACY: dict[str, str] = {
+    "WAKE": "WAKE",
+    "DROWSY": "TRANSITIONING",
+    "SLEEP": "SLEEP",
+    "HIBERNATION": "SLEEP",
+}
+
+
+def _auto_correct_legacy(legacy_path: Path, canonical_state: str) -> bool:
+    """Overwrite legacy fsm_state to match canonical. Returns True on success."""
+    import os
+    import tempfile
+
+    target_legacy = _CANONICAL_TO_LEGACY.get(canonical_state, "WAKE")
+    try:
+        raw: dict = {}
+        if legacy_path.exists():
+            raw = json.loads(legacy_path.read_text())
+            if not isinstance(raw, dict):
+                raw = {}
+    except (OSError, json.JSONDecodeError):
+        raw = {}
+
+    raw["fsm_state"] = target_legacy
+    raw["fsm_corrected_at"] = __import__("datetime").datetime.now(
+        __import__("datetime").timezone.utc
+    ).isoformat()
+
+    try:
+        fd, tmp = tempfile.mkstemp(dir=str(legacy_path.parent), suffix=".tmp")
+        with os.fdopen(fd, "w") as f:
+            json.dump(raw, f)
+        os.replace(tmp, str(legacy_path))
+        return True
+    except OSError:
+        return False
+
+
 def reconcile_fsm_state(
     canonical_path: Path | None = None,
     legacy_path: Path | None = None,
+    *,
+    auto_correct: bool = False,
 ) -> dict[str, str | bool | None]:
     """Return a drift report comparing the canonical and legacy state files.
 
     Both file paths default to the production locations under
-    ``~/.iai-mcp/``. Pure read: never writes, never logs, never emits
-    events. Corrupt or unreadable files are treated as missing.
+    ``~/.iai-mcp/``. When ``auto_correct=True`` and drift is detected,
+    overwrites the legacy file's fsm_state to match the canonical state.
 
     Returns a dict with keys:
       * ``canonical`` -- the canonical lifecycle state name, or ``None``
@@ -67,6 +111,7 @@ def reconcile_fsm_state(
       * ``legacy`` -- the legacy ``fsm_state`` value, or ``None`` likewise.
       * ``drift`` -- ``True`` only when both sides are populated and the
         (canonical, legacy) pair is not in the no-drift mapping table.
+      * ``corrected`` -- ``True`` when auto_correct resolved a drift.
     """
     if canonical_path is None:
         from iai_mcp.lifecycle_state import LIFECYCLE_STATE_PATH
@@ -87,4 +132,8 @@ def reconcile_fsm_state(
     else:
         drift = (canonical, legacy) not in _NO_DRIFT_PAIRS
 
-    return {"canonical": canonical, "legacy": legacy, "drift": drift}
+    corrected = False
+    if drift and auto_correct and canonical is not None:
+        corrected = _auto_correct_legacy(legacy_path, canonical)
+
+    return {"canonical": canonical, "legacy": legacy, "drift": drift, "corrected": corrected}

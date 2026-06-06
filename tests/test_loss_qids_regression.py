@@ -1,8 +1,7 @@
-"""redesign regression-fence tests (post-redesign port).
+"""Regression-fence tests for the recall-loss redesign.
 
-Two layers — synthetic fence (3 parametrized tests) ported to
-recall_for_benchmark; real-data smoke ported to debug_pipeline_loss.py
-(08-02 migrated this script).
+Two layers — a synthetic fence (3 parametrized tests) on
+recall_for_benchmark; a real-data smoke on debug_pipeline_loss.py.
 
   1. Synthetic fence (test_synthetic_*) — fast, no network, no HF cache;
      constructs degenerate cold-start fixtures (gate_coverage < 0.10) on
@@ -11,18 +10,15 @@ recall_for_benchmark; real-data smoke ported to debug_pipeline_loss.py
 
   2. Real-data smoke (test_real_qids_smoke) — env-gated on the HF cache
      being warm; subprocess-runs bench/lme500/debug_pipeline_loss.py
-     against the FULL set of 7 R@5 loss-qids identified in
-     the published LongMemEval-S bench report (extended from the 3-qid v1-trace set
-     to fence the complete unit-level proxy on the construction
-     host) and asserts every verdict reads 'no_loss'.
+     against the full set of 7 R@5 loss-qids and asserts every verdict
+     reads 'no_loss'.
 
-Fences the the published LongMemEval-S bench report regression: Y-X = -0.012 R@5 /
--0.030 R@10 driven by stage_2_community_gate verdicts. The 7 R@5
-loss-qids and 16 R@10 loss-qids all share the same root cause
-(Leiden 1-record-per-community on cold-start stores). redesign
-(D-01 shared-cosine, gate-as-diagnostic, K_CANDIDATES=200,
-D-07 entry-point split) closes the regression by reading the candidate
-pool from cosine top-K instead of gate-restricted candidates.
+Fences the recall-loss regression: Y-X = -0.012 R@5 / -0.030 R@10 driven by
+stage_2_community_gate verdicts. The 7 R@5 loss-qids and 16 R@10 loss-qids all
+share the same root cause (Leiden 1-record-per-community on cold-start
+stores). The redesign (shared-cosine, gate-as-diagnostic, K_CANDIDATES=200,
+entry-point split) closes the regression by reading the candidate pool from
+cosine top-K instead of gate-restricted candidates.
 """
 from __future__ import annotations
 
@@ -105,11 +101,11 @@ def test_synthetic_pipeline_no_regression_vs_baseline(
     """Y (recall_for_benchmark) R@5 must be >= X (retrieve_recall) R@5 on
     the cold-start synthetic fixture that exercises gate_coverage < 0.10.
 
-    redesign port: Wave 1 + Wave 2 split the OLD recall entry
+     redesign port: Wave 1 + Wave 2 split the OLD recall entry
     point into a contract pair — top-K retrieval lives behind
     recall_for_benchmark(k_hits=10), production answer-packing lives
     behind recall_for_response(budget_tokens). The benchmark prong (Y)
-    is what the published LongMemEval-S bench measures, so we fence Y vs X under the
+    is what the benchmark measures, so we fence Y vs X under the
     benchmark-shape entry point.
     """
     import asyncio
@@ -118,7 +114,7 @@ def test_synthetic_pipeline_no_regression_vs_baseline(
     from iai_mcp.retrieve import build_runtime_graph, recall as retrieve_recall
     from iai_mcp.store import MemoryStore
 
-    store = MemoryStore(path=tmp_path / "lancedb")
+    store = MemoryStore(path=tmp_path / "hippo")
     asyncio.run(store.enable_async_writes(coalesce_ms=50, max_batch=128))
     embedder = embedder_for_store(store)
 
@@ -206,7 +202,7 @@ def test_synthetic_pipeline_no_regression_vs_baseline(
     # The fence: Y must not regress against X on this synthetic cold-start fixture.
     assert r5_y >= r5_x, (
         f"recall_for_benchmark R@5 ({r5_y}) regressed against retrieve_recall R@5 ({r5_x}); "
-        f"this is exactly the the published LongMemEval-S bench report regression closed. "
+        f"this is exactly the regression that was previously closed. "
         f"Y record_ids: {y_record_ids[:5]}; X record_ids: {x_record_ids[:5]}; "
         f"gold_sessions: {gold_session_ids}; n_gold_records: {len(gold_record_ids)}; "
         f"n_communities: {len(assignment.mid_regions)}"
@@ -221,15 +217,12 @@ def test_synthetic_pipeline_no_regression_vs_baseline(
 # ============================================================================
 #
 # Subprocess-runs bench/lme500/debug_pipeline_loss.py against the FULL
-# set of 7 R@5 loss-qids identified in the published LongMemEval-S bench report and
-# asserts every SUMMARY-table verdict reads 'no_loss' (post-redesign
-# invariant; hard floor unit-level proxy).
+# set of 7 R@5 loss-qids and asserts every verdict reads 'no_loss'
+# (post-redesign invariant; hard floor unit-level proxy).
 #
-# redesign port: the 3-qid v1-trace set
-# ({726462e0, 06f04340, d3ab962e}) was the originally-traced subset.
-# This test extends to the full 7 R@5 loss-qids per the phase scope so
-# the unit-level proxy fences the complete hard floor on the
-# construction host (08-PLAN-CHECK.md F2 option (a) — non-deferrable).
+# The {726462e0, 06f04340, d3ab962e} subset was the originally-traced set.
+# This test extends to the full 7 R@5 loss-qids so the unit-level proxy
+# fences the complete hard floor.
 #
 # This test is env-gated on the HuggingFace cache containing both the
 # bge-small-en-v1.5 embedder weights and the longmemeval_s dataset
@@ -250,8 +243,8 @@ def test_real_qids_smoke_no_loss_verdict():
     """End-to-end smoke: 7 R@5 loss-qids must all read 'no_loss' post-redesign.
 
     Re-runs bench/lme500/debug_pipeline_loss.py against the full 7-qid
-    R@5 loss set from the published LongMemEval-S bench report. redesign
-    (D-01 shared-cosine + gate-as-diagnostic + K_CANDIDATES=200
+    R@5 loss set. After the redesign
+    (shared-cosine + gate-as-diagnostic + K_CANDIDATES=200
     + entry-point split) every qid must surface gold inside top-10
     via the cosine pool, regardless of the categorical structure
     (Leiden 1-record-per-community on cold-start stores).
@@ -289,7 +282,7 @@ def test_real_qids_smoke_no_loss_verdict():
     )
 
     # Parse the SUMMARY table at the end of stdout. Each row shape:
-    #   <qid> <padded qtype> <padded verdict> <gate->reach> (of N)
+    # <qid> <padded qtype> <padded verdict> <gate->reach> (of N)
     verdicts: dict[str, str] = {}
     for ln in stdout.splitlines():
         for q in qids:

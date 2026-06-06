@@ -1,20 +1,20 @@
-"""Tests for persist_schema hardcoding language='en' (constitutional
-violation for multilingual users).
+"""Tests for 02- (persist_schema hardcodes language='en' --
+ constitutional violation for multilingual users).
 
 Bug: every schema hub record was created with language='en' regardless of
 the language of the source cluster. A user storing Russian records saw
 schema hubs derived from their Russian clusters tagged as English, so
 language-filtered retrieval ('ru' filter) missed their own schemas.
 
-Fix:
+Fix (Task 2):
     - Add helper _majority_language(evidence_ids, store) -> str. Tie-break
       is deterministic (max with key=count on a stable input order).
     - persist_schema derives language from the helper; fallback 'en' only
       when evidence is empty or all evidence records are missing.
 
-Constitutional contract (native-language storage):
+Contract (native-language storage):
     Records are stored in the language they were recorded in. This extends
-    to derived records (schema hubs). mandates 7+ language support;
+    to derived records (schema hubs). The design mandates 7+ language support;
     hardcoded 'en' broke the contract silently.
 """
 from __future__ import annotations
@@ -97,7 +97,7 @@ def test_persist_schema_derives_language_from_majority_evidence(tmp_path):
 
 
 def test_persist_schema_fallback_en_on_empty_evidence(tmp_path):
-    """No evidence -> fallback to 'en' (Phase-1 default, safe)."""
+    """No evidence -> fallback to 'en' (default, safe)."""
     store = MemoryStore(path=tmp_path)
     cand = SchemaCandidate(
         pattern="tags:orphan",
@@ -175,6 +175,7 @@ def test_persist_schema_no_hardcoded_english(tmp_path):
     assert "_majority_language" in src, (
         "persist_schema must call _majority_language to derive schema language"
     )
-    assert hasattr(schema_mod, "_majority_language"), (
-        "_majority_language helper must exist at schema.py module scope"
+    from iai_mcp.lilli.cycle import schema as cycle_schema
+    assert hasattr(cycle_schema, "_majority_language"), (
+        "_majority_language helper must exist at lilli.cycle.schema module scope"
     )

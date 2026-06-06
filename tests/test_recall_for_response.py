@@ -1,16 +1,15 @@
-"""redesign (08-CONTEXT.md ): production answer-packing entry-point contract.
+"""Production answer-packing entry-point contract.
 
-Tests the new public function `recall_for_response(...)` introduced by
-. Contract:
+Tests the public function `recall_for_response(...)`. Contract:
 
 - Signature: store, graph, assignment, rich_club, embedder, cue,
   session_id, budget_tokens=1500, profile_state=None, turn=0, mode='concept'.
 - NO `k_hits` parameter — calling with `k_hits=10` MUST raise TypeError.
 - Returns RecallResponse (not _RecallCoreResult).
-- Packs hits under `budget_tokens` per the pre-Phase-8 production
-  contract: each hit contributes `len(literal_surface) // 4` tokens to
-  the running budget; loop breaks when `budget_used + tokens > budget_tokens`
-  AND `len(hits) >= 1` (always at least one hit when one exists).
+- Packs hits under `budget_tokens`: each hit contributes
+  `len(literal_surface) // 4` tokens to the running budget; loop breaks
+  when `budget_used + tokens > budget_tokens` AND `len(hits) >= 1`
+  (always at least one hit when one exists).
 - mode plumbing: the `mode` parameter threads through to
   `_recall_core` unchanged.
 
@@ -85,7 +84,7 @@ def _build_store_and_graph(
     per-hit token estimate is `surface_len // 4`. Tune `surface_len` to
     control budget-pack behaviour deterministically.
     """
-    store = MemoryStore(path=tmp_path / "lancedb")
+    store = MemoryStore(path=tmp_path / "hippo")
     recs: list[MemoryRecord] = []
     for i in range(n):
         vec = [0.0] * EMBED_DIM
@@ -99,7 +98,7 @@ def _build_store_and_graph(
         graph.add_node(
             rec.id, community_id=None, embedding=list(rec.embedding),
         )
-        graph._nx.nodes[str(rec.id)].update({
+        graph.set_node_payload(rec.id, {
             "embedding": list(rec.embedding),
             "surface": rec.literal_surface,
             "centrality": 0.0,
@@ -172,7 +171,7 @@ def test_recall_for_response_returns_recall_response_type(tmp_path) -> None:
 
 
 def test_recall_for_response_packs_under_budget(tmp_path) -> None:
-    """Test 3: hits packed under `budget_tokens` per the pre-Phase-8 contract.
+    """Test 3: hits packed under `budget_tokens`.
 
     Each record's literal_surface = 200 chars -> tokens = 200 // 4 = 50.
     With budget_tokens=120, the loop breaks after the first hit
@@ -280,13 +279,13 @@ def test_recall_for_response_signature_has_no_k_hits_param() -> None:
     assert "mode" in sig.parameters
     assert "k_hits" not in sig.parameters, (
         "recall_for_response signature must NOT carry a k_hits parameter "
-        "(D-07 contract split — the entry-point split exists so the two "
+        "(the entry-point split exists so the two "
         "response shapes can never silently swap via an optional kwarg)."
     )
 
 
 def test_recall_for_response_default_budget_tokens_1500() -> None:
-    """The default budget_tokens is 1500 (matches pre-Phase-8 production default)."""
+    """The default budget_tokens is 1500 (matches the production default)."""
     import inspect
     from iai_mcp.pipeline import recall_for_response
 
@@ -327,7 +326,7 @@ def test_recall_for_response_shares_core_with_benchmark(tmp_path) -> None:
 
     # Top hit must be the cue-matched record (cosine=1.0 vs orthogonal 0.0
     # for the rest) on both entry points — this is the load-bearing
-    # ranking claim of D-07.
+    # ranking claim.
     assert resp_y.hits[0].record_id == resp_b.hits[0].record_id, (
         "top scored hit (cosine=1.0 cue-match) must be identical across "
         "entry points; only the final pack/cap is supposed to differ"
@@ -342,4 +341,75 @@ def test_recall_for_response_shares_core_with_benchmark(tmp_path) -> None:
         f"same record-id set when neither cap binds; got\n"
         f"  response only: {r_set - b_set}\n"
         f"  benchmark only: {b_set - r_set}"
+    )
+
+
+def test_recall_for_response_budget_enforced_over_pending_markers(tmp_path, monkeypatch) -> None:
+    """Final budget enforcement covers QUAL-02 pending-marker additions.
+
+    Regression test for the overflow bug: QUAL-02 appends embedding_pending
+    rows AFTER the initial scored-hits budget pack, without updating budget_used.
+    This caused the returned budget_used to be inconsistent with the actual
+    total surface of returned hits (underreported), violating the session
+    token-budget invariant.
+
+    Setup:
+    - budget_tokens=50 (tight)
+    - 5 scored records with surface_len=4 (1 token each): all 5 fit under
+      budget, budget_used=5 after scored pack.
+    - recent_pending_markers returns 10 fake pending hits with surface_len=80
+      (20 tokens each). These are appended by QUAL-02 after the scored pack.
+
+    Without the final enforcement pass:
+    - hits = 5 scored + 10 pending = 15 total
+    - budget_used = 5 (from scored pack only — not counting pending)
+    - actual surface tokens = 5 + 10×20 = 205 >> budget_tokens=50
+    - budget_used != actual_tokens → invariant violated
+
+    With the fix:
+    - Final pass re-packs the fully assembled hits under budget_tokens=50.
+    - After 5 scored (5 tokens), 1st pending (20 tokens) → 25 ≤ 50 → keep.
+    - 2nd pending (20 tokens) → 45 ≤ 50 → keep.
+    - 3rd pending (20 tokens) → 65 > 50 AND len≥1 → break.
+    - hits ≤ 7, budget_used = 45, actual_tokens == budget_used.
+    """
+    from iai_mcp.pipeline import recall_for_response
+    from iai_mcp.types import MemoryRecord
+
+    store, graph, recs = _build_store_and_graph(tmp_path, n=5, surface_len=4)
+    assignment = _flat_assignment(recs)
+
+    # Build 10 fake pending-marker records (80 chars surface = 20 tokens each).
+    _large_surface = "x" * 80  # 80 chars = 20 tokens
+    _fake_pending: list[MemoryRecord] = []
+    for _i in range(10):
+        _pm = _make(vec=[0.0] * EMBED_DIM, text=_large_surface)
+        _fake_pending.append(_pm)
+
+    # Monkeypatch store.recent_pending_markers to inject fake pending markers.
+    monkeypatch.setattr(store, "recent_pending_markers", lambda n=50: _fake_pending[:n])
+
+    resp = recall_for_response(
+        store=store, graph=graph, assignment=assignment,
+        rich_club=[], embedder=_FakeEmbedder(),
+        cue="test", session_id="s-pending-budget",
+        budget_tokens=50,
+    )
+
+    # Contract 1: budget_used must equal actual surface tokens of returned hits.
+    # The final enforcement pass re-derives budget_used from the capped list.
+    actual_tokens = sum(len(h.literal_surface) // 4 for h in resp.hits)
+    assert resp.budget_used == actual_tokens, (
+        f"budget_used={resp.budget_used} != actual surface tokens={actual_tokens}; "
+        f"the final enforcement pass is not updating budget_used consistently"
+    )
+
+    # Contract 2: hit count must be far below 15 (5 scored + 10 pending without cap).
+    # With scored=5 (1 token each) and pending at 20 tokens each, after the 5
+    # scored hits (5 tokens) the first 2 pending fit (5+20+20=45 ≤ 50), the
+    # 3rd pending would push to 65 > 50 AND len≥1 → break at 7 hits.
+    assert len(resp.hits) <= 7, (
+        f"len(hits)={len(resp.hits)} exceeds expected cap of 7 "
+        f"(5 scored + 2 pending within budget_tokens=50); "
+        f"pending markers are not being capped"
     )

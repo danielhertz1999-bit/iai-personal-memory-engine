@@ -69,11 +69,11 @@ else
 fi
 
 # Locate the CLI. Lookup order:
-#   1. IAI_MCP_SESSION_RECALL_CLI environment variable (developer override
-#      for non-standard install locations; export in your shell init).
-#   2. ~/.iai-mcp/.cli-path cache file (auto-populated below once the
-#      candidates array finds a working binary).
-#   3. Generic install locations in the candidates array.
+# 1. IAI_MCP_SESSION_RECALL_CLI environment variable (developer override
+# for non-standard install locations; export in your shell init).
+# 2. ~/.iai-mcp/.cli-path cache file (auto-populated below once the
+# candidates array finds a working binary).
+# 3. Generic install locations in the candidates array.
 # Only generic install paths are baked into the source; developer-specific
 # paths belong in the env var or the cache, never here.
 cli_cache="$HOME/.iai-mcp/.cli-path"

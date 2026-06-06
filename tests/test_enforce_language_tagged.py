@@ -1,10 +1,11 @@
-"""Tests for enforce_language_tagged (, constitutional).
+"""Tests for `enforce_language_tagged` (constitutional language-tag guard).
 
-'s enforce_english_raw gated storage to English-only. amends to
-native-language storage: every record carries a language tag; the guard
-function only raises if the tag is missing or auto-detection is low confidence.
+The legacy `enforce_english_raw` gated storage to English-only by script
+codepoints. The modern guard only checks that the language tag is non-empty;
+under the English-Only Brain invariant the surface translates inbound text
+to English on the way in, so the brain never needs to guess.
 
-enforce_english_raw is retained as a backward-compat shim for callers.
+`enforce_english_raw` is retained as a backward-compat shim.
 """
 from __future__ import annotations
 
@@ -85,8 +86,8 @@ def test_enforce_language_tagged_accepts_arabic_with_tag():
     enforce_language_tagged(r)
 
 
-def test_enforce_language_tagged_rejects_missing_language_no_detect():
-    """record.language="" without detect=True must raise."""
+def test_enforce_language_tagged_rejects_missing_language():
+    """record.language="" must raise — the guard has no auto-detect path."""
     from iai_mcp.aaak import enforce_language_tagged
 
     r = _rec("some text", language="")  # simulates un-tagged record
@@ -95,35 +96,13 @@ def test_enforce_language_tagged_rejects_missing_language_no_detect():
     assert "constitutional" in str(exc.value).lower()
 
 
-def test_enforce_language_tagged_auto_detect_sets_language():
-    """When detect=True and language empty, runs langdetect and mutates record."""
+def test_enforce_language_tagged_caller_sets_default_explicitly():
+    """Callers that want a default set it explicitly before calling the guard."""
     from iai_mcp.aaak import enforce_language_tagged
 
-    r = _rec(
-        "This is a reasonable English sentence with enough words for detection.",
-        language="",
-    )
-    enforce_language_tagged(r, detect=True)
-    assert r.language == "en"
-
-
-def test_enforce_language_tagged_auto_detect_russian():
-    from iai_mcp.aaak import enforce_language_tagged
-
-    r = _rec(
-        "Это осмысленное предложение на русском языке с достаточным количеством слов.",
-        language="",
-    )
-    enforce_language_tagged(r, detect=True)
-    assert r.language == "ru"
-
-
-def test_enforce_language_tagged_empty_text_gets_default_en():
-    """Empty literal_surface + detect=True falls through to 'en' default."""
-    from iai_mcp.aaak import enforce_language_tagged
-
-    r = _rec("", language="")
-    enforce_language_tagged(r, detect=True)
+    r = _rec("hello world", language="")
+    r.language = "en"  # caller's explicit default
+    enforce_language_tagged(r)  # should not raise
     assert r.language == "en"
 
 
@@ -131,7 +110,7 @@ def test_enforce_language_tagged_empty_text_gets_default_en():
 
 
 def test_enforce_english_raw_still_importable():
-    """Backward compat: the Phase-1 guard is still a valid import."""
+    """Backward compat: the guard is still a valid import."""
     from iai_mcp.aaak import enforce_english_raw
 
     assert callable(enforce_english_raw)
@@ -141,7 +120,7 @@ def test_enforce_english_raw_with_language_tag_still_phase1_semantics():
     """The shim preserves semantics: even with language='ru' set,
     untagged Cyrillic literal_surface WITHOUT 'raw:<lang>' tag still raises.
 
-    callers who want native-language storage should call
+     callers who want native-language storage should call
     `enforce_language_tagged` instead of this shim.
     """
     from iai_mcp.aaak import enforce_english_raw
@@ -162,7 +141,7 @@ def test_enforce_english_raw_still_blocks_untagged_cyrillic():
 
 
 def test_enforce_english_raw_accepts_cyrillic_with_raw_tag():
-    """Phase-1 raw:<lang> tag exception still works through the shim."""
+    """raw:<lang> tag exception still works through the shim."""
     from iai_mcp.aaak import enforce_english_raw
 
     r = _rec("привет мир", language="", tags=["raw:ru"])

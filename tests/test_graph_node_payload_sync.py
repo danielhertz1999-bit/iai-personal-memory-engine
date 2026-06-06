@@ -1,4 +1,4 @@
-"""— store <-> graph write-sync hook tests (RED scaffold).
+"""Store <-> graph write-sync hook tests.
 
 ``build_runtime_graph`` registers a ``_graph_sync_hook`` on the store so
 every ``insert`` / ``update`` / ``delete`` mutates the in-RAM graph's
@@ -51,7 +51,7 @@ def _isolated_keyring(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.fixture
 def store(tmp_path: Path) -> MemoryStore:
-    s = MemoryStore(path=tmp_path / "lancedb")
+    s = MemoryStore(path=tmp_path / "hippo")
     s.root = tmp_path
     return s
 
@@ -89,44 +89,44 @@ def _make_record(
 
 
 def test_B1_insert_updates_graph_node(store):
-    """B1: store.insert while a hook is registered adds node + payload."""
+    """B1: store.insert while a hook is registered adds node + sidecar payload."""
     # Seed one record so build_runtime_graph has something to register with.
     seed = _make_record(store, "seed", 0.5)
     store.insert(seed)
 
     graph, _a, _rc = retrieve.build_runtime_graph(store)
-    assert str(seed.id) in graph._nx.nodes
+    assert seed.id in set(graph.iter_nodes())
     # Now insert a second record; the hook should mirror it to the graph.
     new_rec = _make_record(store, "freshly-inserted", 0.3)
     store.insert(new_rec)
 
-    assert str(new_rec.id) in graph._nx.nodes
-    node = graph._nx.nodes[str(new_rec.id)]
-    assert node.get("surface") == "freshly-inserted"
-    assert "embedding" in node
+    assert new_rec.id in set(graph.iter_nodes())
+    payload = graph.get_payload(new_rec.id)
+    assert payload.get("surface") == "freshly-inserted"
+    assert "embedding" in payload
 
 
 # ---------------------------------------------------------------- B2: update
 
 
 def test_B2_update_mutates_node_payload(store):
-    """B2: store.update rewrites the node's embedding + surface on the graph."""
+    """B2: store.update rewrites the node's embedding + surface in the sidecar."""
     rec = _make_record(store, "before-update", 0.2)
     store.insert(rec)
     graph, _a, _rc = retrieve.build_runtime_graph(store)
 
-    node_before = graph._nx.nodes[str(rec.id)]
-    assert node_before["surface"] == "before-update"
+    payload_before = graph.get_payload(rec.id)
+    assert payload_before["surface"] == "before-update"
 
     # Mutate surface and embedding.
     rec.literal_surface = "after-update"
     rec.embedding = [0.9] * store.embed_dim
     store.update(rec)
 
-    node_after = graph._nx.nodes[str(rec.id)]
-    assert node_after["surface"] == "after-update"
+    payload_after = graph.get_payload(rec.id)
+    assert payload_after["surface"] == "after-update"
     # embedding replaced (first element is 0.9 now)
-    assert list(node_after["embedding"])[0] == pytest.approx(0.9)
+    assert list(payload_after["embedding"])[0] == pytest.approx(0.9)
 
 
 # ---------------------------------------------------------------- B3: delete
@@ -137,10 +137,10 @@ def test_B3_delete_removes_node(store):
     rec = _make_record(store, "to-be-deleted", 0.4)
     store.insert(rec)
     graph, _a, _rc = retrieve.build_runtime_graph(store)
-    assert str(rec.id) in graph._nx.nodes
+    assert rec.id in set(graph.iter_nodes())
 
     store.delete(rec.id)
-    assert str(rec.id) not in graph._nx.nodes
+    assert rec.id not in set(graph.iter_nodes())
 
 
 # ---------------------------------------------------------------- B4: hook robustness
@@ -157,7 +157,7 @@ def test_B4_hook_exception_does_not_break_store_insert(store, capsys):
     rec = _make_record(store, "store-write-is-authoritative", 0.15)
     store.insert(rec)  # must not raise
 
-    # Verify the record actually landed in LanceDB.
+    # Verify the record actually landed in the store.
     roundtrip = store.get(rec.id)
     assert roundtrip is not None
     assert roundtrip.literal_surface == "store-write-is-authoritative"
@@ -190,12 +190,12 @@ def test_B5_cold_start_restores_node_payload_from_cache(store):
 
     # First build — writes the v2 cache with node_payload blob.
     graph1, _a, _rc = retrieve.build_runtime_graph(store)
-    node1 = graph1._nx.nodes[str(rec.id)]
-    expected_surface = node1["surface"]
-    expected_emb = list(node1["embedding"])
+    payload1 = graph1.get_payload(rec.id)
+    expected_surface = payload1["surface"]
+    expected_emb = list(payload1["embedding"])
 
-    # Inspect via try_load (cache is encrypted under v3 sidecar per
-    # W3 / D-03; raw file is ciphertext, so json.load on it would fail).
+    # Inspect via try_load (cache is encrypted under the v3 sidecar;
+    # the raw file is ciphertext, so json.load on it would fail).
     loaded = runtime_graph_cache.try_load(store)
     assert loaded is not None, "cache must be loadable"
     _assignment, _rich_club, node_payload, _max_degree = loaded
@@ -204,9 +204,9 @@ def test_B5_cold_start_restores_node_payload_from_cache(store):
 
     # Rebuild — cache HIT must rehydrate payload without scanning store.all_records.
     graph2, _a, _rc = retrieve.build_runtime_graph(store)
-    node2 = graph2._nx.nodes[str(rec.id)]
-    assert node2["surface"] == expected_surface
-    assert list(node2["embedding"]) == expected_emb
+    payload2 = graph2.get_payload(rec.id)
+    assert payload2["surface"] == expected_surface
+    assert list(payload2["embedding"]) == expected_emb
 
 
 # ---------------------------------------------------------------- B6: version bump
@@ -238,10 +238,10 @@ def test_B6_cache_version_bump_invalidates_old_cache(store):
             f,
         )
 
-    # CACHE_VERSION constant is the current one (W3 / bump
-    # to "07-09-v3" with AES-256-GCM sidecar). Legacy 05-09 / 05-12 / 05-13
-    # / 06-02 cache files are rejected.
-    assert runtime_graph_cache.CACHE_VERSION == "07-09-v3"
+    # CACHE_VERSION constant is the current one. Version history:
+    # 05-09-v1 → 05-12-v1 → 05-13-v1 → 06-02-v1 → 07-09-v3 → 62-04-v4 → 62-02-v5.
+    # Legacy 05-09 / 05-12 / 05-13 / 06-02 / 07-09 / 62-04 cache files are rejected.
+    assert runtime_graph_cache.CACHE_VERSION == "62-02-v5"
 
     # try_load on the old cache returns None (mismatch).
     assert runtime_graph_cache.try_load(store) is None

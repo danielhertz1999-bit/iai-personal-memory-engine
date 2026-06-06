@@ -1,0 +1,398 @@
+#!/usr/bin/env python3
+"""parity-summary post-processor.
+
+Reads a `contradiction_longitudinal_*.csv` produced by
+`bench/contradiction_longitudinal_claude.py` (the custom_leiden re-run)
+and writes:
+
+  - `contradiction_longitudinal_custom_leiden.json` — schema that
+    `tests/test_custom_leiden_bench_parity.py` enforces.
+  - `PARITY-` — human-readable vs table.
+
+Schema (output JSON):
+
+    {
+      "backend": "leiden-custom",
+      "seeds": [13, 42, 137],
+      "n_recalls": <int>,
+      "per_seed": {
+        "13": {"efe_real_rescue": <f>, "efe_shadow_rescue": <f>, "delta": <f>},
+        ...
+      },
+      "cross_seed_mean_rescue": <f>, # mean of efe_shadow_rescue
+      "cross_seed_mean_delta": <f>, # mean of (real - shadow) deltas
+      "baseline_v7_0": {"13": 1.0, "42": 1.0, "137": 1.0},
+      "parity_gate": {
+        "tolerance": 0.02,
+        "per_seed_pass": {<seed>: <bool>},
+        "cross_seed_pass": <bool>,
+        "verdict": "PARITY_PASS" | "PARITY_FAIL"
+      }
+    }
+
+ baseline values are hardcoded — citation in code comment.
+Source: bench/results//iteration-3/EFE-AB-SUMMARY.json (efe_shadow_rescue).
+
+Usage:
+    python bench/make_parity_summary.py <results-dir>
+
+Exit codes:
+    0 = parity_gate.verdict == PARITY_PASS (unblocked)
+    1 = parity_gate.verdict == PARITY_FAIL (blocked)
+    2 = setup error (no CSV, missing column, etc.)
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import statistics
+import sys
+from pathlib import Path
+from typing import Iterable
+
+# ---------------------------------------------------------------------------
+# Parity gate constants — DUPLICATED in tests/test_custom_leiden_bench_parity.py
+# Keep these in lockstep with that test file's V7_0_BASELINE_PER_SEED.
+# ---------------------------------------------------------------------------
+
+# baseline per-seed efe_shadow_rescue values.
+# Source: bench/results//iteration-3/EFE-AB-SUMMARY.json
+V7_0_BASELINE_PER_SEED: dict[str, float] = {
+    "13": 1.0,
+    "42": 1.0,
+    "137": 1.0,
+}
+
+PARITY_TOLERANCE = 0.02
+K_RESCUE = 10
+REQUIRED_COLS: frozenset[str] = frozenset({
+    "probe_id", "seed", "n_slice", "route", "cue_hash",
+    "pipeline_rank", "pipeline_hit_at_k",
+})
+
+
+# ---------------------------------------------------------------------------
+# Pure-Python core (importable; mirrors analyze_efe_ab.py shape)
+# ---------------------------------------------------------------------------
+
+
+def _is_hit_at_k(rank_str: str, k: int = K_RESCUE) -> bool:
+    """Robust hit-at-k decision from a CSV cell value (same as analyze_efe_ab)."""
+    try:
+        r = int(rank_str)
+    except (TypeError, ValueError):
+        return False
+    return 0 < r <= k
+
+
+def compute_per_route_rescue_at_k(
+    rows: Iterable[dict[str, str]],
+    k: int = K_RESCUE,
+) -> dict[str, dict[str, float]]:
+    """Return `{seed_str: {route: rescue_at_k}}` for attributable rows.
+
+    Mirrors `analyze_efe_ab.compute_per_route_rescue_at_k` so both tools
+    produce identical numbers from the same CSV. Filters non-attributable
+    rows (empty route or `efe_skip`).
+    """
+    attributable = [
+        r for r in rows
+        if r.get("route") in ("efe_real", "efe_shadow")
+    ]
+    by_seed_route: dict[tuple[str, str], list[bool]] = {}
+    for r in attributable:
+        key = (str(r.get("seed", "")), r["route"])
+        by_seed_route.setdefault(key, []).append(
+            _is_hit_at_k(r.get("pipeline_rank", ""), k)
+        )
+    out: dict[str, dict[str, float]] = {}
+    for (seed, route), hits in by_seed_route.items():
+        out.setdefault(seed, {})[route] = (
+            sum(hits) / len(hits) if hits else 0.0
+        )
+    return out
+
+
+def build_parity_summary(
+    per_seed: dict[str, dict[str, float]],
+    n_attributable: int,
+    tolerance: float = PARITY_TOLERANCE,
+) -> dict:
+    """Reduce per-seed Rescue@10 to the parity-summary JSON shape.
+
+    Args:
+        per_seed: {seed_str: {route_name: rescue_at_k}} per
+            `compute_per_route_rescue_at_k`.
+        n_attributable: total attributable rows in the CSV (for n_recalls).
+        tolerance: parity tolerance (default 0.02).
+
+    Returns:
+        The schema documented at the top of this module.
+    """
+    per_seed_block: dict[str, dict[str, float]] = {}
+    deltas: list[float] = []
+    shadow_rescues: list[float] = []
+    per_seed_pass: dict[str, bool] = {}
+
+    for seed_key in sorted(per_seed.keys()):
+        by_route = per_seed[seed_key]
+        real = float(by_route.get("efe_real", 0.0))
+        shadow = float(by_route.get("efe_shadow", 0.0))
+        delta = real - shadow
+        per_seed_block[seed_key] = {
+            "efe_real_rescue": real,
+            "efe_shadow_rescue": shadow,
+            "delta": delta,
+        }
+        deltas.append(delta)
+        shadow_rescues.append(shadow)
+
+        baseline = V7_0_BASELINE_PER_SEED.get(seed_key)
+        if baseline is not None:
+            per_seed_pass[seed_key] = abs(shadow - baseline) <= tolerance
+
+    mean_shadow = statistics.fmean(shadow_rescues) if shadow_rescues else 0.0
+    mean_delta = statistics.fmean(deltas) if deltas else 0.0
+    baseline_mean = (
+        sum(V7_0_BASELINE_PER_SEED.values()) / len(V7_0_BASELINE_PER_SEED)
+    )
+    cross_seed_pass = abs(mean_shadow - baseline_mean) <= tolerance
+    all_per_seed_pass = all(per_seed_pass.values()) if per_seed_pass else False
+    verdict = (
+        "PARITY_PASS"
+        if (all_per_seed_pass and cross_seed_pass)
+        else "PARITY_FAIL"
+    )
+
+    return {
+        "backend": "leiden-custom",
+        "seeds": sorted(int(s) for s in per_seed_block.keys()),
+        "n_recalls": int(n_attributable),
+        "per_seed": per_seed_block,
+        "cross_seed_mean_rescue": mean_shadow,
+        "cross_seed_mean_delta": mean_delta,
+        "baseline_v7_0": dict(V7_0_BASELINE_PER_SEED),
+        "parity_gate": {
+            "tolerance": tolerance,
+            "per_seed_pass": per_seed_pass,
+            "cross_seed_pass": cross_seed_pass,
+            "verdict": verdict,
+        },
+    }
+
+
+def build_markdown(
+    summary: dict, csv_name: str, bench_duration_s: float | None = None,
+) -> str:
+    """Render PARITY- from the JSON summary."""
+    lines = [
+        "# Parity Summary: custom_leiden vs leidenalg",
+        "",
+        "**Implementation:** Custom MIT-Licensed Leiden",
+        "**Bench:** Contradiction-longitudinal Regime 2 "
+        "(`bench/contradiction_longitudinal_claude.py`)",
+        f"**CSV:** `{csv_name}`",
+        "**Gate:** Rescue@10 within ±0.02 of baseline (1.000)",
+        f"**Backend measured:** `{summary['backend']}`",
+        f"**Attributable recalls (n_recalls):** {summary['n_recalls']}",
+        f"**Seeds:** {summary['seeds']}",
+        "",
+        "## Per-Seed Rescue@10",
+        "",
+        "| Seed | leidenalg | custom_leiden | Δ | Within ±0.02? |",
+        "|------|------------------|----------------------|---|---------------|",
+    ]
+    for seed_key in sorted(summary["per_seed"].keys()):
+        seed_block = summary["per_seed"][seed_key]
+        v70 = V7_0_BASELINE_PER_SEED.get(seed_key, float("nan"))
+        v71 = float(seed_block["efe_shadow_rescue"])
+        delta = v71 - v70
+        passed = summary["parity_gate"]["per_seed_pass"].get(seed_key, False)
+        lines.append(
+            f"| {seed_key} | {v70:.4f} | {v71:.4f} | {delta:+.4f} | "
+            f"{'YES' if passed else 'NO'} |"
+        )
+
+    lines += [
+        "",
+        "## Cross-Seed Mean",
+        "",
+        "| | leidenalg | custom_leiden | Δ |",
+        "|---|------|------|---|",
+    ]
+    baseline_mean = (
+        sum(V7_0_BASELINE_PER_SEED.values()) / len(V7_0_BASELINE_PER_SEED)
+    )
+    v71_mean = float(summary["cross_seed_mean_rescue"])
+    delta_mean = v71_mean - baseline_mean
+    lines += [
+        f"| Rescue@10 mean | {baseline_mean:.4f} | {v71_mean:.4f} | "
+        f"{delta_mean:+.4f} |",
+        "",
+        f"**PARITY GATE:** {summary['parity_gate']['verdict']}",
+        "",
+    ]
+
+    if bench_duration_s is not None:
+        baseline_duration_s = 10683.17  # iteration-3 wall-clock
+        delta_pct = (
+            (bench_duration_s - baseline_duration_s) / baseline_duration_s * 100.0
+            if baseline_duration_s > 0
+            else 0.0
+        )
+        lines += [
+            "## Wall-Time",
+            "",
+            "| | Seconds | Δ vs baseline |",
+            "|---|---------|-----------|",
+            f"| leidenalg (iteration-3) | {baseline_duration_s:.1f} | — |",
+            f"| custom_leiden (iteration-0) | {bench_duration_s:.1f} | "
+            f"{delta_pct:+.1f}% |",
+            "",
+            "Wall-time is informational only. Final perf disposition "
+            "is measured AFTER `python-igraph` + `leidenalg` extras are uninstalled. "
+            "The bench above still has those extras installed, "
+            "so C-backed betweenness is active.",
+            "",
+        ]
+
+    lines += [
+        "## Notes",
+        "",
+        "- baseline source: `EFE-AB-SUMMARY.json`",
+        "  (per-seed `efe_shadow_rescue`; cross-seed mean = 1.000).",
+        "- Parity tolerance per Risk row "
+        "'Retrieval Rescue@10 regression > 0.02'.",
+        "- The Leiden-replacement is gated on `PARITY_PASS`.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# CLI plumbing
+# ---------------------------------------------------------------------------
+
+
+def _find_newest_csv(results_dir: Path) -> Path:
+    csvs = sorted(
+        results_dir.rglob("contradiction_longitudinal_*.csv"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not csvs:
+        raise FileNotFoundError(
+            f"no contradiction_longitudinal_*.csv under {results_dir}"
+        )
+    return csvs[0]
+
+
+def _read_bench_duration_from_json(csv_path: Path) -> float | None:
+    """Pull wall_clock_duration_seconds out of the sibling bench JSON."""
+    json_path = csv_path.with_suffix(".json")
+    if not json_path.exists():
+        return None
+    try:
+        data = json.loads(json_path.read_text())
+        env = data.get("env", {})
+        return float(env.get("wall_clock_duration_seconds")) if env.get(
+            "wall_clock_duration_seconds"
+        ) is not None else None
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return None
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Parity-summary post-processor. Reads bench CSV, "
+            "writes contradiction_longitudinal_custom_leiden.json + "
+            "PARITY-SUMMARY.md. Exit 0 = PARITY_PASS, 1 = PARITY_FAIL, "
+            "2 = setup error."
+        ),
+    )
+    parser.add_argument(
+        "results_dir", type=Path,
+        help="Directory containing the bench CSV; newest wins.",
+    )
+    parser.add_argument(
+        "--csv", type=Path, default=None,
+        help="Explicit CSV path (overrides results-dir search).",
+    )
+    parser.add_argument(
+        "--tolerance", type=float, default=PARITY_TOLERANCE,
+        help=f"Parity tolerance (default {PARITY_TOLERANCE}).",
+    )
+    args = parser.parse_args(argv)
+
+    # Resolve CSV path
+    try:
+        csv_path = args.csv if args.csv else _find_newest_csv(args.results_dir)
+    except FileNotFoundError as e:
+        print(f"[make_parity_summary] setup error: {e}", file=sys.stderr)
+        return 2
+
+    if not csv_path.exists():
+        print(
+            f"[make_parity_summary] setup error: CSV path does not exist: {csv_path}",
+            file=sys.stderr,
+        )
+        return 2
+
+    print(f"[make_parity_summary] reading {csv_path}", file=sys.stderr)
+
+    # Column-presence gate
+    with csv_path.open(newline="") as fh:
+        reader = csv.DictReader(fh)
+        fieldnames = set(reader.fieldnames or [])
+        missing = REQUIRED_COLS - fieldnames
+        if missing:
+            print(
+                f"[make_parity_summary] setup error: CSV missing required "
+                f"columns: {sorted(missing)}",
+                file=sys.stderr,
+            )
+            return 2
+        rows = list(reader)
+
+    per_seed = compute_per_route_rescue_at_k(rows)
+
+    # Both-arms gate
+    all_routes_seen = {
+        route for by_route in per_seed.values() for route in by_route
+    }
+    for arm in ("efe_real", "efe_shadow"):
+        if arm not in all_routes_seen:
+            print(
+                f"[make_parity_summary] setup error: missing {arm} rows",
+                file=sys.stderr,
+            )
+            return 2
+
+    n_attributable = sum(
+        1 for r in rows if r.get("route") in ("efe_real", "efe_shadow")
+    )
+    bench_duration_s = _read_bench_duration_from_json(csv_path)
+    summary = build_parity_summary(per_seed, n_attributable, args.tolerance)
+
+    # Write outputs next to the CSV
+    out_dir = csv_path.parent
+    out_json = out_dir / "contradiction_longitudinal_custom_leiden.json"
+    out_md = out_dir / "PARITY-SUMMARY.md"
+    out_json.write_text(json.dumps(summary, indent=2))
+    out_md.write_text(build_markdown(summary, csv_path.name, bench_duration_s))
+
+    print(f"[make_parity_summary] wrote {out_json}", file=sys.stderr)
+    print(f"[make_parity_summary] wrote {out_md}", file=sys.stderr)
+
+    verdict = summary["parity_gate"]["verdict"]
+    print(
+        f"PARITY: cross_seed_mean_rescue={summary['cross_seed_mean_rescue']:.4f} "
+        f"(baseline=1.000, tol=+/-{args.tolerance:.2f}) -> {verdict}"
+    )
+    return 0 if verdict == "PARITY_PASS" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

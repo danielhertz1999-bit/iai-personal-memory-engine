@@ -1,22 +1,11 @@
-"""W1 RED: file-backed crypto key {`_try_file_get`, `_try_file_set`,
+"""File-backed crypto key {`_try_file_get`, `_try_file_set`,
 get_or_create priority, migrate-to-file CLI}.
 
-Locks the executable spec for the file-backed crypto key per CONTEXT.md
-D-05 / / D-11. All 9 tests are RED until W2 (crypto.py file
-backend) and W3 (cmd_crypto_migrate_to_file) land.
-
-Failure shapes that count as a correct RED signal in this plan:
-
-- TypeError: CryptoKey() got an unexpected keyword argument 'store_root'
-  (W2 adds the kwarg)
-- AttributeError: 'CryptoKey' object has no attribute '_try_file_get'
-  / '_try_file_set' / '_key_file_path'
-- ImportError: cannot import name 'cmd_crypto_migrate_to_file'
-  (W3 lands the CLI command)
+Locks the executable spec for the file-backed crypto key backend
+(crypto.py) and the cmd_crypto_migrate_to_file CLI command.
 
 Imports of the new symbols stay INSIDE each test body so module-level
-collection succeeds: pytest must be able to ENUMERATE the 9 tests and
-then fail each one at assertion time, not crash at collection.
+collection succeeds.
 """
 from __future__ import annotations
 
@@ -31,7 +20,7 @@ import pytest
 # ---------------------------------------------------------------- _try_file_get
 
 def test_try_file_get_returns_bytes_on_valid_0o600_file(tmp_path: Path) -> None:
-    """D-11 case 1 — read 32 raw bytes back from a 0o600 key file."""
+    """case 1 — read 32 raw bytes back from a 0o600 key file."""
     from iai_mcp.crypto import CryptoKey
 
     key_bytes = secrets.token_bytes(32)
@@ -47,7 +36,7 @@ def test_try_file_get_returns_bytes_on_valid_0o600_file(tmp_path: Path) -> None:
 
 
 def test_try_file_get_rejects_world_or_group_bits(tmp_path: Path) -> None:
-    """D-06 / case 2 — mode 0o644 is refused with CryptoKeyError ('insecure mode')."""
+    """case 2 — mode 0o644 is refused with CryptoKeyError ('insecure mode')."""
     from iai_mcp.crypto import CryptoKey, CryptoKeyError
 
     key_path = tmp_path / ".crypto.key"
@@ -61,7 +50,7 @@ def test_try_file_get_rejects_world_or_group_bits(tmp_path: Path) -> None:
 
 
 def test_try_file_get_rejects_wrong_length(tmp_path: Path) -> None:
-    """D-05 / case 3 — a 31-byte file is rejected with 'wrong length'."""
+    """case 3 — a 31-byte file is rejected with 'wrong length'."""
     from iai_mcp.crypto import CryptoKey, CryptoKeyError
 
     key_path = tmp_path / ".crypto.key"
@@ -75,7 +64,7 @@ def test_try_file_get_rejects_wrong_length(tmp_path: Path) -> None:
 
 
 def test_try_file_get_rejects_foreign_uid(tmp_path: Path, monkeypatch) -> None:
-    """D-06 / case 4 — st_uid != geteuid() is refused with 'uid' in message.
+    """case 4 — st_uid != geteuid() is refused with 'uid' in message.
 
     The fake_stat is path-scoped: only the key file gets the foreign-uid
     treatment. Any other os.stat call (pytest internals, library imports)
@@ -130,7 +119,7 @@ def test_try_file_get_rejects_foreign_uid(tmp_path: Path, monkeypatch) -> None:
 # ---------------------------------------------------------------- _try_file_set
 
 def test_try_file_set_writes_atomic_with_0o600(tmp_path: Path) -> None:
-    """D-07 / case 5 — atomic write produces a 0o600 file with exact bytes.
+    """case 5 — atomic write produces a 0o600 file with exact bytes.
 
     Also asserts NO `.crypto.key.tmp.<pid>` survives after the call:
     a leaked tmp would prove the rename was non-atomic or the cleanup
@@ -154,7 +143,7 @@ def test_try_file_set_writes_atomic_with_0o600(tmp_path: Path) -> None:
 
 
 def test_try_file_set_cleans_stale_tmp(tmp_path: Path) -> None:
-    """D-07 / case 6 — stale `.crypto.key.tmp.<pid>` is removed before the new write."""
+    """case 6 — stale `.crypto.key.tmp.<pid>` is removed before the new write."""
     from iai_mcp.crypto import CryptoKey
 
     stale_tmp = tmp_path / ".crypto.key.tmp.99999"
@@ -176,7 +165,7 @@ def test_try_file_set_cleans_stale_tmp(tmp_path: Path) -> None:
 def test_get_or_create_prefers_file_over_passphrase(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """D-11 case 7 — file backend wins over passphrase env var.
+    """case 7 — file backend wins over passphrase env var.
 
     Pre-write a valid key file (key A); also set IAI_MCP_CRYPTO_PASSPHRASE
     (which would derive a different key B). get_or_create() must return
@@ -201,7 +190,7 @@ def test_get_or_create_prefers_file_over_passphrase(
 def test_cmd_crypto_migrate_to_file_happy_path(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """D-11 case 8 — migrate-to-file reads keyring, writes file, round-trip OK.
+    """case 8 — migrate-to-file reads keyring, writes file, round-trip OK.
 
     Patches `keyring.get_password` BEFORE importing the command so the
     local `import keyring` inside cmd_crypto_migrate_to_file picks up
@@ -245,7 +234,7 @@ def test_cmd_crypto_migrate_to_file_happy_path(
 def test_cmd_crypto_migrate_to_file_idempotent(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """D-11 case 9 — file already present → no-op success, NO keyring touch.
+    """case 9 — file already present → no-op success, NO keyring touch.
 
     keyring.get_password is patched to raise AssertionError; if the
     idempotent path ever calls it, the test fails with a specific message.

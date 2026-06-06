@@ -1,26 +1,24 @@
-"""— surface-feature formality scorer (Chapman ecological self-regulation).
+"""AUTIST-13 — surface-feature formality scorer (Chapman ecological self-regulation).
 
-Constitutional anchor:
-- Observes ONLY the user's surface lexical features (D-AUTIST13-01).
+Invariants (Chapman ecological self-regulation framing):
+- Observes ONLY the user's surface lexical features.
 - Never models user internal state, never tries to infer "is the user masking".
 - Paired with src/iai_mcp/camouflaging.py which adjusts OUR register in response.
 
 Scientific anchor: Chapman R (2021) "Neurodiversity and the Social Ecology of Mental
-Functions." — the ecological self-regulation framing. Cook 2021 + Raymaker 2020 tell us
-WHAT NOT to model (masking as an inferred user state).
+Functions." Cook 2021 + Raymaker 2020 tell us what NOT to model (masking as an
+inferred user state).
 
-Four surface features (D-AUTIST13-01, weighted sum):
+Four surface features (weighted sum):
 1. Lexical formality (w=0.45) — per-language register-marker density. Strongest signal.
 2. Sentence complexity (w=0.20) — sigmoid on avg chars-per-sentence + clause density.
 3. Hedging density (w=0.15) — hedge markers per 100 tokens.
 4. Punctuation formality (w=0.20) — semicolon + em-dash + full-quote density.
 
 Output: formality_score(text, lang) -> float in [0.0, 1.0]. 0 = fully informal,
-1 = fully formal. Unknown lang returns 0.5 (neutral) with a logged warning; NEVER raises
-(MEMORY.md global-product mandate).
+1 = fully formal. Unknown lang returns 0.5 (neutral) with a logged warning; NEVER raises.
 
-Weight rationale (Pattern 3 proposed
-0.30/0.30/0.20/0.20 as a baseline — fixture-tuned to 0.45/0.20/0.15/0.20 because the lex
+Weight rationale: weights were fixture-tuned to 0.45/0.20/0.15/0.20 because the lex
 dimension is the most unambiguous signal across RU+EN and the shortest formal sentences
 (e.g. "The proposal is, therefore, accepted.") are otherwise penalised by the
 complexity sigmoid. Fixture accuracy: 100% (51/51) with the current weights.
@@ -35,7 +33,6 @@ from typing import Iterable
 
 
 # ------------------------------------------------------------------- constants
-# Grep-discoverable module-scope constants (PATTERNS.md §7).
 
 LEX_MARKERS: dict[str, list[str]] = {
     "en": [
@@ -200,15 +197,15 @@ def formality_score(
     """Return surface-feature formality score in [0.0, 1.0].
 
     0.0 = fully informal, 1.0 = fully formal. Unknown languages get a neutral 0.5
-    with a logged warning (MEMORY.md global-product graceful degradation). NEVER
+    with a logged warning (global-product graceful degradation). NEVER
     raises on bad input.
 
     Args:
-        text: free-form user utterance (SURFACE only, per D-AUTIST13-01).
+        text: free-form user utterance (SURFACE only).
         lang: ISO-639-1 language code ("en", "ru"). Other codes -> neutral + warning.
         weights: optional override {lex, complexity, hedge, punct}.
 
-    Constitutional guard reminder: callers pass user SURFACE text only. The scorer
+    Guard reminder: callers pass user SURFACE text only. The scorer
     does not see any inferred internal state. See camouflaging.py for how the
     score is consumed (to adjust OUR register, never the user's).
     """
@@ -218,7 +215,7 @@ def formality_score(
     if lang not in LEX_MARKERS:
         warnings.warn(
             f"formality_score: lang={lang!r} outside RU+EN baseline; "
-            "returning neutral 0.5 (MEMORY.md global-product graceful degradation)",
+            "returning neutral 0.5",
             stacklevel=2,
         )
         _logger.debug("formality_score unknown lang=%s text_len=%d", lang, len(text))

@@ -1,20 +1,13 @@
-"""Task 1.8 -- rewritten contract tests.
+"""Daemon shutdown exit-code contract tests.
 
-Old contract (+ bug-fix 2026-05-01):
-    Every non-RSS, non-user shutdown path returned exit 75. The
-    `user_requested_shutdown` sentinel + `_resolve_shutdown_exit_code`
-    helper differentiated explicit `iai-mcp daemon stop` (exit 0,
-    plist suppresses respawn) from every other shutdown path
-    (exit 75, plist respawns).
-
-New contract:
+Contract:
     Daemon main() exits 0 uniformly on graceful shutdown, regardless
     of who triggered it. The plist's `KeepAlive={"Crashed": true}`
     ensures graceful exit 0 stays DEAD until wrapper kickstart fires.
-    Only path returning a non-zero exit is `LifecycleLockConflict`
+    The only path returning a non-zero exit is `LifecycleLockConflict`
     (a same-host live-PID conflict) which returns 1.
 
-Cross-process invariant PRESERVED from 541c874:
+Cross-process invariant:
     The CLI `iai-mcp daemon stop` runs in a SEPARATE process from
     the daemon. CLI writes the `user_requested_shutdown=True`
     sentinel to `.daemon-state.json` BEFORE sending SIGTERM. The
@@ -25,12 +18,9 @@ Cross-process invariant PRESERVED from 541c874:
       2. Pops the sentinel from disk + memory.
       3. Re-saves the cleaned state record.
 
-The sentinel is now informational rather than control: its presence
-on disk no longer changes the exit code. Tests E + F still verify
-the CLI write-before-SIGTERM ordering -- that ordering is what
-makes the daemon's later cleanup symmetric across boots.
-
-Validates: WAKE-14.
+The sentinel is informational rather than control: its presence
+on disk does not change the exit code. The write-before-SIGTERM
+ordering is what makes the daemon's later cleanup symmetric across boots.
 """
 from __future__ import annotations
 
@@ -167,11 +157,11 @@ def test_e_cmd_daemon_stop_writes_sentinel_before_launchctl(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Cross-process invariant from 541c874 PRESERVED:
+    """Cross-process invariant:
     `iai-mcp daemon stop` writes user_requested_shutdown=True to
     .daemon-state.json BEFORE sending SIGTERM. The daemon's later
-    `_clear_user_shutdown_sentinel` then cleans up.
-    no longer branches the exit code on the sentinel, but the
+    `_clear_user_shutdown_sentinel` then cleans up. The exit code
+    no longer branches on the sentinel, but the
     write-before-SIGTERM ordering is still part of the wakeup-
     safe shutdown protocol (a hung CLI write must not delay the
     SIGTERM the user expects).
@@ -196,6 +186,13 @@ def test_e_cmd_daemon_stop_writes_sentinel_before_launchctl(
         return type("R", (), {"returncode": 0})()
 
     monkeypatch.setattr(cli_mod.subprocess, "run", fake_run)
+
+    # Hermeticity: the macOS stop reads the lifecycle lockfile + may signal
+    # the daemon PID. Stub the read to None so the stop is bootout-only and
+    # never reads the real ~/.iai-mcp/.locked or signals a real PID.
+    import iai_mcp.lifecycle_lock as lifecycle_lock
+
+    monkeypatch.setattr(lifecycle_lock.LifecycleLock, "read", lambda self: None)
 
     rc = cli_mod.main(["daemon", "stop"])
     assert rc == 0
@@ -276,6 +273,6 @@ def test_f_cmd_daemon_stop_writes_sentinel_before_systemctl(
 def test_g_user_shutdown_flag_constant_is_stable() -> None:
     """The CLI (separate process) and daemon both reference this
     string literal in different code paths; renaming it would silently
-    break the cross-process protocol from 541c874.
+    break the cross-process protocol.
     """
     assert daemon_mod._USER_SHUTDOWN_FLAG == "user_requested_shutdown"

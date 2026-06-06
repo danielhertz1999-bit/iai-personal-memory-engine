@@ -1,4 +1,4 @@
-"""LongMemEval adapter — / external-bench gate.
+"""LongMemEval adapter — external-bench gate.
 
 Wires the public LongMemEval memory benchmark (Xie et al., 2024) into the
 IAI-MCP public API (MemoryStore.insert + retrieve.recall). Strict blind-run
@@ -8,11 +8,10 @@ downstream is stock IAI-MCP.
 
 ## Dataset source
 
-The plan text (05-11-PLAN.md) cites ``lxucs/longmemeval`` — that repo does
+The plan text (05-11-) cites ``lxucs/longmemeval`` — that repo does
 NOT exist on HuggingFace Hub (returns 401/Not Found). The canonical public
 mirror shipped by the paper authors is ``xiaowu0162/longmemeval``.
-Discovered mid-execution; documented as a Rule 3 deviation in the Plan
-05-11 SUMMARY. DATASET_ID points at the live mirror; PINNED_REVISION is
+Discovered mid-execution; documented as a Rule 3 deviation in the SUMMARY. DATASET_ID points at the live mirror; PINNED_REVISION is
 the 40-char commit hash resolved at execution time so numbers reproduce.
 
 ## Row schema (longmemeval_s split, 500 rows)
@@ -20,18 +19,18 @@ the 40-char commit hash resolved at execution time so numbers reproduce.
 Each row is:
 
     {
-      "question_id":       str (8-hex),
-      "question_type":     str (single-session-user, multi-session, ...),
-      "question":          str,
-      "answer":            str,
-      "question_date":     str ("YYYY/MM/DD (Day) HH:MM"),
-      "haystack_dates":    list[str],
-      "haystack_session_ids": list[str]   # len ~54
+      "question_id": str (8-hex),
+      "question_type": str (single-session-user, multi-session,...),
+      "question": str,
+      "answer": str,
+      "question_date": str ("YYYY/MM/DD (Day) HH:MM"),
+      "haystack_dates": list[str],
+      "haystack_session_ids": list[str] # len ~54
       "haystack_sessions": list[list[{"role","content"}]]
-      "answer_session_ids": list[str]     # gold evidence (len typically 1)
+      "answer_session_ids": list[str] # gold evidence (len typically 1)
     }
 
-## LMESession mapping (Plan 05-11 deviation, Rule 1/3)
+## LMESession mapping (deviation, Rule 1/3)
 
 The plan's interface says "one session -> many queries". The actual dataset
 is "one query -> many haystack sessions". We therefore flatten each row to
@@ -65,9 +64,8 @@ from iai_mcp.types import MemoryRecord
 
 
 DATASET_ID: str = "xiaowu0162/longmemeval"
-# Pinned at execution time (2026-04-20) against the
-# canonical LongMemEval HuggingFace mirror. Reproducers MUST load this
-# exact revision or disclose the drift.
+# Pinned against the canonical LongMemEval HuggingFace mirror.
+# Reproducers MUST load this exact revision or disclose the drift.
 PINNED_REVISION: str = "2ec2a557f339b6c0369619b1ed5793734cc87533"
 # Split -> filename (the repo ships configs ``longmemeval_s``,
 # ``longmemeval_m``, ``longmemeval_oracle``). runs the S split.

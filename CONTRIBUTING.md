@@ -24,8 +24,8 @@ If you're not sure, open an issue first to discuss before writing code.
 ## Development setup
 
 ```bash
-git clone https://github.com/CodeAbra/iai-mcp.git
-cd iai-mcp
+git clone https://github.com/CodeAbra/iai-personal-memory-engine.git
+cd iai-personal-memory-engine
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"

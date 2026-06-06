@@ -1,4 +1,4 @@
-"""Tests for 02-REVIEW.md H-03 (CLS heavy cycle missing Hebbian LTP).
+"""Tests for 02- H-03 (CLS heavy cycle missing Hebbian LTP).
 
 Bug: run_heavy_consolidation creates `consolidated_from` edges for cluster
 members (LTD-side write) but does NOT strengthen existing hebbian edges
@@ -7,7 +7,7 @@ sides -- frequently-traversed edges strengthen; old rarely-traversed fade.
 Pre-fix, the only LTP source was store.boost_edges inside pipeline_recall,
 which fires on explicit user retrieval, never during offline consolidation.
 
-Fix:
+Fix (Task 2):
     - Add module constant HEAVY_LTP_DELTA = 0.05 in sleep.py.
     - In run_heavy_consolidation, after _create_semantic_summary runs for a
       cluster, call store.boost_edges(combinations(cluster_ids, 2),
@@ -15,7 +15,7 @@ Fix:
       between co-cluster members are potentiated.
     - Non-cluster edges remain untouched.
 
-Constitutional contract ( biological fidelity + symmetry):
+Contract (biological fidelity + symmetry):
     Hebbian LTP/LTD symmetry is the core Hebbian-learning invariant. Without
     LTP during consolidation the graph drifts monotonically weaker. Matches
     Woz 2022 SRS reinforcement on co-retrieval.
@@ -213,18 +213,30 @@ def test_heavy_cycle_does_not_touch_non_cluster_edges(tmp_path):
 
 
 def test_heavy_cycle_boost_edges_uses_hebbian_type(tmp_path):
-    """Structural check: run_heavy_consolidation source MUST call
-    boost_edges with edge_type='hebbian' (not consolidated_from). Prevents a
-    regression where someone 'fixes' this by just reusing the consolidated_from
-    write path."""
+    """Structural check: the cluster-summary helper (single-source, called by
+    run_heavy_consolidation) MUST call boost_edges with edge_type='hebbian'
+    (not consolidated_from). Prevents a regression where someone 'fixes' this
+    by just reusing the consolidated_from write path.
+
+    After extraction, the hebbian LTP logic lives in _process_cluster_summaries
+    (the shared helper called by both run_heavy_consolidation and the canonical
+    CLUSTER_SUMMARY step). The structural assertion is updated accordingly.
+    """
     import inspect
     from iai_mcp import sleep as sleep_mod
 
-    src = inspect.getsource(sleep_mod.run_heavy_consolidation)
-    assert "edge_type=\"hebbian\"" in src or "edge_type='hebbian'" in src, (
-        "run_heavy_consolidation must boost hebbian edges (LTP), not only "
+    # The hebbian LTP boost lives in the extracted helper (single-source).
+    helper_src = inspect.getsource(sleep_mod._process_cluster_summaries)
+    assert 'edge_type="hebbian"' in helper_src or "edge_type='hebbian'" in helper_src, (
+        "_process_cluster_summaries must boost hebbian edges (LTP), not only "
         "create consolidated_from edges"
     )
-    assert "HEAVY_LTP_DELTA" in src, (
-        "run_heavy_consolidation must use the named HEAVY_LTP_DELTA constant"
+    assert "HEAVY_LTP_DELTA" in helper_src, (
+        "_process_cluster_summaries must use the named HEAVY_LTP_DELTA constant"
+    )
+
+    # run_heavy_consolidation must CALL the helper (single-source invariant).
+    wrapper_src = inspect.getsource(sleep_mod.run_heavy_consolidation)
+    assert "_process_cluster_summaries" in wrapper_src, (
+        "run_heavy_consolidation must delegate cluster LTP to _process_cluster_summaries"
     )

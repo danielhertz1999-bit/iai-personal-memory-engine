@@ -1,8 +1,7 @@
-"""lint + structural assertions for the LaunchAgent
-plist template.
+"""Lint + structural assertions for the LaunchAgent plist template.
 
 The template ``scripts/com.iai-mcp.daemon.plist.template`` is rendered by
-``scripts/install.sh`` (Wave 2): ``{PYTHON_PATH}`` and ``{HOME}`` are
+``scripts/install.sh``: ``{PYTHON_PATH}`` and ``{HOME}`` are
 substituted, then the result is written to
 ``~/Library/LaunchAgents/com.iai-mcp.daemon.plist`` and registered with
 ``launchctl load -w``.
@@ -13,7 +12,7 @@ These tests guard the *template itself*:
     with realistic values, write to a tmp file, run ``plutil -lint``, and
     assert exit 0 + ``OK`` in stdout.
   * ``test_template_has_required_keys`` — string-level presence of every
-    D7.1-01 field (Sockets, RunAtLoad, SockPathMode=384, KeepAlive,
+    required field (Sockets, RunAtLoad, SockPathMode=384, KeepAlive,
     IAI_MCP_LAUNCHD_MANAGED).
   * ``test_template_does_not_have_RunAtLoad_true`` — regression trap: the
     legacy ``deploy/launchd/com.iai-mcp.daemon.plist`` uses
@@ -64,7 +63,7 @@ def test_template_renders_to_valid_plist(tmp_path: Path) -> None:
 
 
 def test_template_has_required_keys() -> None:
-    """All D7.1-01 fields present (string-level, no regex)."""
+    """All required fields present (string-level, no regex)."""
     text = TEMPLATE.read_text()
     required_markers = [
         "<key>Sockets</key>",

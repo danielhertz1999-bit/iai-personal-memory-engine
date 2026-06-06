@@ -1,7 +1,7 @@
 """Processed memory-bank writers.
 
 Writes denormalized read-side caches under ~/.iai-mcp/.memory-bank/processed/.
-Read-side decoupled from write-side: the live LanceDB store remains the
+Read-side decoupled from write-side: the live store remains the
 authoritative writer; this module produces stable read-side snapshots for
 cache-warmer and fallback paths.
 """
@@ -59,19 +59,27 @@ def write_processed_salience_top_n(store: Any, n: int = 1000) -> None:
         exist the file holds all available records without padding.
     """
     try:
+        # Lazy import keeps module import cheap and avoids a circular
+        # dependency at startup. monkeypatch.setattr on the module
+        # attribute works because the lookup happens here, not at
+        # module-load time.
         from iai_mcp import retrieve
 
         embed_dim = int(store.embed_dim)
         graph, _assignment, _rc = retrieve.build_runtime_graph(store)
 
         centrality_by_id: dict[str, float] = {
-            str(nid): float(attrs.get("centrality", 0.0) or 0.0)
-            for nid, attrs in graph._nx.nodes(data=True)
+            str(nid): graph.get_centrality(nid) for nid in graph.iter_nodes()
         }
 
+        # Path.home() must resolve inside the function so that
+        # HOME-env redirection in tests takes effect.
         processed_dir = Path.home() / ".iai-mcp" / ".memory-bank" / "processed"
-        processed_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(processed_dir, 0o700)
+        # Owner-only (0o700) is the cortex-layer convention for a single-user
+        # local memory bank — see write_processed_batch_results below for the
+        # full rationale. nosemgrep: python.lang.security.audit.insecure-file-permissions
+        processed_dir.mkdir(parents=True, exist_ok=True, mode=0o700)  # nosemgrep
+        os.chmod(processed_dir, 0o700)  # nosemgrep — fix umask-clobber on a pre-existing dir
         target = processed_dir / "salience-top-N.jsonl"
 
         entries: list[tuple[float, dict[str, Any]]] = []
@@ -122,6 +130,7 @@ def write_processed_salience_top_n(store: Any, n: int = 1000) -> None:
         if payload_lines:
             body += "\n"
 
+        # Atomic 5-step write — mirrors lifecycle_state.save_state.
         fd, tmp = tempfile.mkstemp(
             prefix=".salience-top-n.",
             suffix=".tmp",
@@ -134,7 +143,7 @@ def write_processed_salience_top_n(store: Any, n: int = 1000) -> None:
                 os.fsync(f.fileno())
             os.chmod(tmp, 0o600)
             os.replace(tmp, target)
-        except Exception:
+        except (OSError, ValueError, TypeError):
             try:
                 os.unlink(tmp)
             except OSError:
@@ -142,6 +151,91 @@ def write_processed_salience_top_n(store: Any, n: int = 1000) -> None:
             raise
     except Exception as exc:  # noqa: BLE001 -- best-effort fail-safe boundary
         log.warning("processed salience writer failed: %s", exc)
+
+
+def write_processed_batch_results(
+    batch_id: str,
+    content_hash: str,
+    results: list[dict],
+) -> Path | None:
+    """Write Anthropic batch results to bank/processed/ as one JSONL file per batch.
+
+    Mirrors `write_processed_salience_top_n`'s atomic 5-step write +
+    chmod 0o600 posture: results land as plaintext (cortex-layer
+    convention) restricted to the owning user. Each line of the JSONL
+    is one task result as returned by the SDK's results iterator.
+
+    Returns the resolved target path on success, ``None`` on any
+    failure (this writer is best-effort — daemon callers must never
+    crash on its failure).
+    """
+    try:
+        processed_dir = Path.home() / ".iai-mcp" / ".memory-bank" / "processed"
+        # Owner-only (0o700) is the cortex-layer convention for a single-user
+        # local memory bank — same mode as write_processed_salience_top_n
+        # above. Broadening to 0o755 / 0o644 would expose private memory to
+        # other users on the host, contradicting the local-first
+        # invariant. nosemgrep: python.lang.security.audit.insecure-file-permissions
+        processed_dir.mkdir(parents=True, exist_ok=True, mode=0o700)  # nosemgrep
+        os.chmod(processed_dir, 0o700)  # nosemgrep
+        target = processed_dir / f"batch-{batch_id}.jsonl"
+
+        # Wrap each result with the batch's content_hash so consumers can
+        # join back to the EVENTS-table ledger from disk-only reads.
+        payload_lines = [
+            json.dumps(
+                {
+                    "batch_id": batch_id,
+                    "content_hash": content_hash,
+                    "result": r,
+                },
+                separators=(",", ":"),
+                default=str,
+            )
+            for r in results
+        ]
+        body = "\n".join(payload_lines)
+        if payload_lines:
+            body += "\n"
+
+        fd, tmp = tempfile.mkstemp(
+            prefix=f".batch-{batch_id}.",
+            suffix=".tmp",
+            dir=str(processed_dir),
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(body)
+                f.flush()
+                os.fsync(f.fileno())
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, target)
+        except (OSError, ValueError, TypeError):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        return target
+    except OSError as exc:
+        # Distinguish ENOSPC (disk full) from other I/O errors so operator
+        # log-grep can spot it quickly under hot-loop conditions.
+        import errno
+        if getattr(exc, "errno", None) == errno.ENOSPC:
+            log.warning(
+                "batch results writer ENOSPC (disk full) for %s: %s — "
+                "operator: free space under ~/.iai-mcp/.memory-bank/processed/",
+                batch_id, exc,
+            )
+        else:
+            log.warning(
+                "batch results writer OS error for %s (%s): %s",
+                batch_id, errno.errorcode.get(getattr(exc, "errno", 0), "?"), exc,
+            )
+        return None
+    except Exception as exc:  # noqa: BLE001
+        log.warning("batch results writer failed for %s: %s", batch_id, exc)
+        return None
 
 
 def append_recent_record(
@@ -177,15 +271,23 @@ def append_recent_record(
         UTC datetime; if ``None``, defaults to ``datetime.now(timezone.utc)``.
         Tests inject a deterministic clock; production passes ``None``.
     """
+    # Resolve dir at call time so HOME monkeypatching wins in tests.
     recent_dir = Path.home() / ".iai-mcp" / ".memory-bank" / "recent"
-    recent_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(recent_dir, 0o700)
+    # Owner-only (0o700) is the bank/recent transit-layer convention; combined
+    # with AES-256-GCM at-rest encryption it gives the maximum-paranoia posture
+    # for the cross-session memory window. nosemgrep: python.lang.security.audit.insecure-file-permissions
+    recent_dir.mkdir(parents=True, exist_ok=True, mode=0o700)  # nosemgrep
+    os.chmod(recent_dir, 0o700)  # nosemgrep — fix umask-clobber on a pre-existing dir
 
     ts = now or datetime.now(timezone.utc)
     date_str = ts.strftime("%Y-%m-%d")
     target = recent_dir / f"{_RECENT_WINDOW_PREFIX}{date_str}{_RECENT_WINDOW_SUFFIX}"
+    # AAD binds the ciphertext to the window-file's date so a
+    # cold reader (fallback path with only the file on disk) can derive
+    # AAD from the filename without first knowing any record id.
     window_aad = date_str.encode("utf-8")
 
+    # extract role from the last provenance entry (capture_turn writes it there)
     role = "user"
     if record.provenance:
         role = record.provenance[-1].get("role", "user") or "user"
@@ -211,6 +313,8 @@ def append_recent_record(
 
     line = (ciphertext + "\n").encode("utf-8")
 
+    # O_APPEND atomic per-write only for writes <= PIPE_BUF; serialize
+    # multi-threaded appends inside the daemon process via _RECENT_APPEND_LOCK.
     with _RECENT_APPEND_LOCK:
         fd = os.open(
             str(target),
@@ -218,7 +322,7 @@ def append_recent_record(
             0o600,
         )
         try:
-            os.fchmod(fd, 0o600)
+            os.fchmod(fd, 0o600)  # defensive: fix mode on pre-existing files
             os.write(fd, line)
             os.fsync(fd)
         finally:
@@ -232,7 +336,7 @@ def prune_recent_windows(
 ) -> int:
     """Unlink window files whose filename-date is older than now - keep_days.
 
-    Filename-date is canonical (NOT mtime -- a backup tool could touch the
+    Filename-date is canonical (NOT mtime — a backup tool could touch the
     file's mtime and break retention). Files that don't match the
     ``window-YYYY-MM-DD.jsonl`` shape are skipped silently. Returns the
     count of files unlinked. Caller (drain) wraps in try/except.
@@ -256,6 +360,7 @@ def prune_recent_windows(
         try:
             file_date = datetime.strptime(date_part, "%Y-%m-%d").date()
         except ValueError:
+            # malformed window-*.jsonl -- skip, don't delete
             continue
         if file_date < cutoff_date:
             try:
@@ -264,6 +369,12 @@ def prune_recent_windows(
             except OSError:
                 log.warning("prune_recent_windows: failed to unlink %s", fpath)
     return deleted
+
+
+# Read-side substring fallback over bank/processed + bank/recent.
+# These helpers exist so the wrapper can degrade gracefully to a
+# substring scan over the disk-side bank artifacts when the daemon
+# socket is dead. No embedder, no store, no daemon.
 
 
 def read_processed_records() -> Iterator[dict[str, Any]]:
@@ -310,7 +421,7 @@ def read_recent_records(*, key: bytes | None = None) -> Iterator[dict[str, Any]]
     Iterates ``~/.iai-mcp/.memory-bank/recent/window-YYYY-MM-DD.jsonl``
     files in newest-first filename order. The AAD passed to
     ``decrypt_field`` is the window-file's date portion encoded as
-    UTF-8 bytes -- matching the write-side at ``append_recent_record``.
+    UTF-8 bytes — matching the write-side at ``append_recent_record``.
 
     When ``key`` is None, the master key is derived lazily via
     ``CryptoKey(user_id="default").get_or_create()`` so that the CLI
@@ -340,12 +451,14 @@ def read_recent_records(*, key: bytes | None = None) -> Iterator[dict[str, Any]]
         ):
             continue
         date_part = name[len(_RECENT_WINDOW_PREFIX) : -len(_RECENT_WINDOW_SUFFIX)]
+        # Mirror the prune-side filter: reject anything that isn't a real date.
         try:
             datetime.strptime(date_part, "%Y-%m-%d")
         except ValueError:
             continue
         candidates.append((fpath, date_part.encode("utf-8")))
 
+    # Newest first — date strings sort lexically equal to chronologically.
     candidates.sort(key=lambda pair: pair[0].name, reverse=True)
 
     for fpath, window_aad in candidates:
@@ -404,7 +517,7 @@ def bank_recall_substring(
     shape so the wrapper's bank-fallback path is wire-compatible:
 
         {
-            "hits": [...],           # ranked: processed then recent
+            "hits": [...], # ranked: processed then recent
             "anti_hits": [],
             "activation_trace": [],
             "budget_used": 0,
@@ -461,6 +574,7 @@ def bank_recall_substring(
             }
             recent_hits.append((ts, hit))
 
+    # Sort: processed by salience DESC, recent by ts DESC.
     processed_hits.sort(key=lambda pair: pair[0], reverse=True)
     recent_hits.sort(key=lambda pair: pair[0], reverse=True)
 

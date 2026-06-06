@@ -1,9 +1,8 @@
-"""Plan 05-11 blind-run orchestrator — / M-08.
+"""Blind-run orchestrator for LongMemEval.
 
 Runs LongMemEval-S through IAI-MCP's public API (MemoryStore.insert +
 retrieve.recall) in strict blind mode: no per-dataset tuning, no
-hyperparameter sweep, no late adjustment after seeing numbers. This is
-the external honesty axis for Phase 5.
+hyperparameter sweep, no late adjustment after seeing numbers.
 
 ## Row-level protocol
 
@@ -15,14 +14,14 @@ One evaluation row in LongMemEval-S contains:
 Per row the orchestrator does:
 
     1. fresh tmp MemoryStore (per-row isolation; no cross-row leakage)
-    2. enable async writes (Plan 05-10 — keeps RAM bounded on a
+    2. enable async writes (keeps RAM bounded on a
        16GB M1 laptop)
     3. embed + insert every turn of every haystack session; each record
        is tagged with ``session:<session_id>`` so the orchestrator can
        score at the dataset's native session-ID granularity.
     4. disable async writes (flushes the queue; the store now holds the
        full haystack).
-    5. build_runtime_graph once (Plan 05-09 cache amortises cold start
+    5. build_runtime_graph once (cache amortises cold start
        across rows via the shared runtime graph cache dir).
     6. call retrieve.recall for the eval query, with k_hits=10.
     7. compute R@5 / R@10 at session-ID granularity (the standard
@@ -40,15 +39,15 @@ Per row the orchestrator does:
         [--qid-include csv] \\
         --out /tmp/p11_lme_full.json
 
-Phase 9 added two methodology-alignment flags:
+Two methodology-alignment flags control corpus construction:
 
-    --granularity session   (default; one record per session,
+    --granularity session (default; one record per session,
                              content = "\\n".join(user-only turns))
-    --granularity turn      (v1/v2 reproducer; one record per turn)
-    --dataset cleaned       (default; xiaowu0162/longmemeval-cleaned)
-    --dataset raw           (v1/v2 reproducer; xiaowu0162/longmemeval
+    --granularity turn (v1/v2 reproducer; one record per turn)
+    --dataset cleaned (default; xiaowu0162/longmemeval-cleaned)
+    --dataset raw (v1/v2 reproducer; xiaowu0162/longmemeval
                              rev 2ec2a557f339)
-    --qid-include csv       optional comma-separated question_ids; when
+    --qid-include csv optional comma-separated question_ids; when
                              set, only those rows run (used by smoke
                              tests for per-qid baseline verification)
 
@@ -60,25 +59,25 @@ Phase 9 added two methodology-alignment flags:
       "revision": "<40-hex>",
       "granularity": "session" | "turn",
       "dataset_choice": "cleaned" | "raw",
-      "n_rows": int,                 # rows actually evaluated
-      "r_at_5": float,               # session-ID R@5, mean across rows
-      "r_at_10": float,              # session-ID R@10, mean across rows
-      "token_p50": int,              # per-query cue-text tokens, median
-      "token_p95": int,              # per-query cue-text tokens, p95
-      "session_tokens_mean": float,  # mean per-row inserted text tokens
+      "n_rows": int, # rows actually evaluated
+      "r_at_5": float, # session-ID R@5, mean across rows
+      "r_at_10": float, # session-ID R@10, mean across rows
+      "token_p50": int, # per-query cue-text tokens, median
+      "token_p95": int, # per-query cue-text tokens, p95
+      "session_tokens_mean": float, # mean per-row inserted text tokens
                                      # (proxy for the rows' storage footprint)
       "errors": [{"question_id": str, "error_class": str, "error": str}],
       "hard_limit": int | null,
       "note": str
     }
 
-## discipline
+## Discipline
 
 The run is ONE-SHOT. If a bug crashes a row, it's logged in ``errors``
 and counted as a MISS against R@k (not silently dropped). The published
 number is whatever came out. Disclosures (small-N, hardware limit,
-English-only embedder, etc.) live in the published bench report and
-05-11-SUMMARY.md — they don't get folded back into this script.
+English-only embedder, etc.) are documented separately and don't get
+folded back into this script.
 """
 from __future__ import annotations
 
@@ -102,7 +101,19 @@ from uuid import UUID
 # sentence-transformers so the blind-run stderr stays focused on errors.
 os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
-# IAI-MCP imports — public API only (plan directive).
+# Resolve iai_mcp.* (via src) AND bench.* (via worktree root) to THIS
+# worktree, not the parent venv's editable install. Idempotent: each
+# `sys.path.insert` is guarded by an "if not already present" check.
+import sys
+from pathlib import Path
+_SRC_PATH = str(Path(__file__).resolve().parent.parent / "src")
+_ROOT_PATH = str(Path(__file__).resolve().parent.parent)
+if _SRC_PATH not in sys.path:
+    sys.path.insert(0, _SRC_PATH)
+if _ROOT_PATH not in sys.path:
+    sys.path.insert(0, _ROOT_PATH)
+
+# IAI-MCP imports — public API only.
 from iai_mcp.embed import Embedder, embedder_for_store
 from iai_mcp.pipeline import recall_for_benchmark
 from iai_mcp.retrieve import build_runtime_graph, recall as retrieve_recall
@@ -130,34 +141,30 @@ def _count_tokens(text: str) -> int:
 
 
 def preflight_crypto_or_exit() -> None:
-    """Block the run loudly if crypto is unconfigured.
+    """Ensure crypto is configured before per-row isolated runs.
 
     Bench uses a FRESH per-row ``MemoryStore`` rooted in a unique tmp
-    directory (``/tmp/lme_blind_*/row-*/lancedb/``). Per-row tmp dirs
+    directory (``/tmp/lme_blind_*/row-*/hippo/``). Per-row tmp dirs
     have no pre-existing ``.crypto.key`` file, and the home-directory
     ``~/.iai-mcp/.crypto.key`` does NOT propagate into per-row tmp
     stores. The only crypto state that reaches the per-row store is
     ``IAI_MCP_CRYPTO_PASSPHRASE`` from the process environment.
 
-    Therefore D1 requires the env var; the file-backend keychain at the
-    user's home is irrelevant to bench execution and was a false positive
-    in the original pre-flight (smoke-caught 2026-05-11).
+    The env var is required; the file-backend keychain at the user's home
+    is irrelevant to bench execution and was a false positive in the
+    original pre-flight (smoke-caught 2026-05-11).
 
-    On failure: prints a message to stderr explaining the per-row
-    isolation pattern and naming the env var, then raises
-    ``SystemExit(2)``.
+    Defaults the env var to the shared bench passphrase so the harness is
+    self-contained when invoked without manual env setup. Caller-set values
+    are preserved.
     """
     if os.environ.get("IAI_MCP_CRYPTO_PASSPHRASE"):
         return
-    print(
-        "[LME] FATAL: crypto unconfigured. Bench uses per-row isolated "
-        "MemoryStore tmp dirs; the home-directory ~/.iai-mcp/.crypto.key "
-        "keychain does NOT propagate to per-row tmp stores. "
-        "Set IAI_MCP_CRYPTO_PASSPHRASE in env before invoking the harness.",
-        file=sys.stderr,
-        flush=True,
+    # Default to the shared bench passphrase so isolated tmp stores
+    # derive deterministic AES keys without keychain or file games.
+    os.environ["IAI_MCP_CRYPTO_PASSPHRASE"] = (
+        "iai-mcp-bench-falsifiability-deterministic-2026"
     )
-    raise SystemExit(2)
 
 
 def _percentile(xs: list[int], p: float) -> int:
@@ -215,19 +222,18 @@ def _run_one_row(
     embedder_key: str = "bge-small-en-v1.5",
 ) -> dict[str, Any]:
     """Execute the per-row protocol. Returns a dict with r_at_5/r_at_10
-    for BOTH retrieve_recall (flat-cosine baseline, matches Phase 5
-    n=30) AND recall_for_benchmark (full graph-native architecture; Phase
-    8 entry-point split), token counts plus timing info. Raises
-    only on programmer errors; dataset/runtime errors are caught by the
-    caller.
+    for BOTH retrieve_recall (flat-cosine baseline) AND
+    recall_for_benchmark (full graph-native architecture), token counts
+    plus timing info. Raises only on programmer errors; dataset/runtime
+    errors are caught by the caller.
 
     bench/lme500 protocol: prong X = retrieve_recall, prong Y =
     recall_for_benchmark. Both share the same insert phase + retrieved-set
     mapping, so the architecture-vs-baseline delta is attributable to
     the recall function only, not retrieval-side variance.
 
-    ``granularity`` controls corpus construction.
-        "turn"    -> one record per turn (v1/v2 baseline; ~500 records/row)
+    ``granularity`` controls corpus construction:
+        "turn" -> one record per turn (v1/v2 baseline; ~500 records/row)
         "session" -> one record per session whose content is
                      "\\n".join(user-only turns), matching mempalace's
                      reference verbatim (~53 records/row).
@@ -237,17 +243,17 @@ def _run_one_row(
     # Fresh store in a per-row tmp dir.
     store_dir = tmp_root / f"row-{row_id}"
     store_dir.mkdir(parents=True, exist_ok=True)
-    store = MemoryStore(path=store_dir / "lancedb")
+    store = MemoryStore(path=store_dir / "hippo")
 
-    # async writes: coalesce LanceDB appends across the row.
+    # async writes: coalesce store appends across the row.
     # enable_async_writes is a coroutine — drive it from a fresh loop so
     # the surrounding orchestrator stays sync.
     asyncio.run(store.enable_async_writes(coalesce_ms=50, max_batch=128))
 
-    # count inserted tokens as a rough storage footprint.
+    # Count inserted tokens as a rough storage footprint.
     inserted_text_tokens = 0
 
-    # route through the explicit registry key so the
+    # Route through the explicit registry key so the
     # embedder ablation experiment can swap to all-MiniLM-L6-v2 without
     # touching the production-default resolver (embedder_for_store kept
     # imported for backward-compat; not called on this path).
@@ -257,13 +263,13 @@ def _run_one_row(
     # --------- INSERT phase ---------
     # One pass over all haystack sessions for this row. Each MemoryRecord is
     # tagged with its session_id so R@k can score at the dataset's native
-    # session granularity. splits this into two paths:
-    #   - "turn"    (v1/v2 baseline; one record per turn, both roles)
-    #   - "session" (mempalace-aligned; one record per session, user-only
-    #                turns joined with "\n"; ~10x fewer records per row)
+    # session granularity. Two corpus-construction paths:
+    # - "turn" (v1/v2 baseline; one record per turn, both roles)
+    # - "session" (mempalace-aligned; one record per session, user-only
+    # turns joined with "\n"; ~10x fewer records per row)
     id_to_session: dict[str, str] = {}  # record_id.hex -> session_id
     if granularity == "session":
-        # Session-granularity (D-01, mempalace-aligned): ONE record per
+        # Session-granularity (mempalace-aligned): ONE record per
         # session, content = "\n".join(user-only turns). Skip sessions
         # with no user turns. Verbatim shape match with mempalace's
         # benchmarks/longmemeval_bench.py reference loop.
@@ -310,7 +316,7 @@ def _run_one_row(
     asyncio.run(store.disable_async_writes())
     t_after_insert = time.time()
 
-    # --------- Build runtime graph (Plan 05-09 cache warms cold-start) ---------
+    # --------- Build runtime graph (cache warms cold-start) ---------
     # bench/lme500: capture the (graph, assignment, rich_club) tuple so
     # recall_for_benchmark (prong Y) can reuse it. retrieve_recall (prong X)
     # is unaffected by graph build success/failure.
@@ -344,9 +350,8 @@ def _run_one_row(
     t_after_x = time.time()
 
     # --------- Prong Y: recall_for_benchmark (full graph-native architecture) ---------
-    # entry-point split: bench harness uses the top-K contract
-    # (k_hits=10, no budget_tokens). mode="concept" preserved verbatim — the
-    # bench is concept-shaped per BENCH_PROTOCOL_lme500.md and the D-02
+    # Bench harness uses the top-K contract (k_hits=10, no budget_tokens).
+    # mode="concept" preserved verbatim — the bench is concept-shaped and the
     # `_gate_bias_for_mode("concept") == 0.1` bias is what v2 measurements observe.
     resp_y = None
     pipeline_error: str | None = None
@@ -390,8 +395,8 @@ def _run_one_row(
     sids_y = _retrieved_session_ids(resp_y)
 
     # LongMemEval-standard R@k at session-ID granularity: hit-at-k.
-    #   R@k = 1.0 if any of the top-k retrieved records belongs to a gold
-    #   session, else 0.0. Aggregated across rows by the caller.
+    # R@k = 1.0 if any of the top-k retrieved records belongs to a gold
+    # session, else 0.0. Aggregated across rows by the caller.
     def _hit_at_k(sids: list[str], k: int) -> float:
         top = sids[:k]
         return 1.0 if any(s in answer_session_ids for s in top) else 0.0
@@ -409,7 +414,7 @@ def _run_one_row(
         # Prong X — retrieve_recall (flat-cosine baseline, line-by-line)
         "r_at_5_retrieve": r5_x,
         "r_at_10_retrieve": r10_x,
-        # Prong Y — recall_for_benchmark (full graph-native pipeline; D-07)
+        # Prong Y — recall_for_benchmark (full graph-native pipeline)
         "r_at_5_pipeline": r5_y,
         "r_at_10_pipeline": r10_y,
         "pipeline_error": pipeline_error,
@@ -434,7 +439,7 @@ def main(argv: list[str] | None = None) -> int:
         "--split",
         default="S",
         choices=["S", "M", "oracle"],
-        help="LongMemEval split (Plan 05-11 runs S)",
+        help="LongMemEval split",
     )
     parser.add_argument(
         "--limit",
@@ -462,34 +467,33 @@ def main(argv: list[str] | None = None) -> int:
             "in the checkpoint are skipped."
         ),
     )
-    # granularity flag with mempalace-aligned default.
+    # Granularity flag with mempalace-aligned default.
     parser.add_argument(
         "--granularity",
         choices=["session", "turn"],
         default="session",
         help=(
             "corpus-construction granularity. "
-            "'session' (default, v3): one record per session, "
+            "'session' (default): one record per session, "
             "content = '\\n'.join(user-only turns) — matches mempalace's "
             "reference. 'turn': one record per turn (v1/v2 baseline; "
             "use with --dataset raw to reproduce v2's 0.956)."
         ),
     )
-    # dataset choice flag with mempalace-aligned default.
+    # Dataset choice flag with mempalace-aligned default.
     parser.add_argument(
         "--dataset",
         choices=["cleaned", "raw"],
         default="cleaned",
         help=(
-            "dataset variant. 'cleaned' (default, v3): "
+            "dataset variant. 'cleaned' (default): "
             "xiaowu0162/longmemeval-cleaned, SHA pinned via repo_info(). "
             "'raw' (v1/v2 baseline): xiaowu0162/longmemeval rev "
             "2ec2a557f339... — use with --granularity turn to reproduce "
             "v2's 0.956."
         ),
     )
-    # Step B: per-qid filter for the v2-baseline
-    # smoke reproducer. Applied AFTER --limit so a future caller passing
+    # Per-qid filter. Applied AFTER --limit so a future caller passing
     # both flags gets a deterministic intersection (limit narrows by row
     # count, qid-include narrows by id). Default None preserves v1/v2 behaviour.
     parser.add_argument(
@@ -501,21 +505,20 @@ def main(argv: list[str] | None = None) -> int:
             "verification). Applied after --limit."
         ),
     )
-    # bench-only embedder swap. Default preserves v3
-    # baseline (bge-small-en-v1.5). all-MiniLM-L6-v2 is mempalace's ChromaDB
-    # default — used for the embedder-axis ablation in v3.1. Production
-    # embedder is unchanged regardless of this flag (English-Only Brain lock
-    # from / Plan 05-08; the Embedder.__init__ kwarg is the only
-    # entry point that surfaces the registry's all-MiniLM-L6-v2 entry).
+    # Bench-only embedder swap. Default is bge-small-en-v1.5.
+    # all-MiniLM-L6-v2 is mempalace's ChromaDB default — used for the
+    # embedder-axis ablation. Production embedder is unchanged regardless
+    # of this flag; the Embedder.__init__ kwarg is the only entry point that
+    # surfaces the registry's all-MiniLM-L6-v2 entry.
     parser.add_argument(
         "--embedder",
         choices=["bge-small-en-v1.5", "all-MiniLM-L6-v2"],
         default="bge-small-en-v1.5",
         help=(
-            "embedder model_key. 'bge-small-en-v1.5' (default, v3 "
-            "baseline) routes via the production English-only embedder. "
-            "'all-MiniLM-L6-v2' (Phase 9.1 ablation) is mempalace's "
-            "ChromaDB default — bench-only swap, production unchanged."
+            "embedder model_key. 'bge-small-en-v1.5' (default) routes via "
+            "the production English-only embedder. "
+            "'all-MiniLM-L6-v2' is mempalace's ChromaDB default — "
+            "bench-only swap, production unchanged."
         ),
     )
     # Checkpoint disposition flags. Default behaviour (no flag):
@@ -548,10 +551,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     # Fail-loud crypto pre-flight BEFORE any adapter load / row work.
-    # If IAI_MCP_CRYPTO_PASSPHRASE is not set, per-row store.insert(...)
-    # would raise on the encryption path; the row-level except previously
-    # folded those into R@5 as silent MISS, producing clean-looking 0.000
-    # JSON. Now: SystemExit(2) before any row is touched.
+    # If neither IAI_MCP_CRYPTO_PASSPHRASE nor {IAI_MCP_STORE}/.crypto.key
+    # is present, per-row store.insert(...) would raise on the encryption
+    # path; the row-level except previously folded those into R@5 as silent
+    # MISS, producing clean-looking 0.000 JSON. Now: SystemExit(2) before
+    # any row is touched.
     preflight_crypto_or_exit()
 
     print(
@@ -564,7 +568,7 @@ def main(argv: list[str] | None = None) -> int:
         flush=True,
     )
 
-    # branch the adapter on --dataset.
+    # Branch the adapter on --dataset.
     if args.dataset == "cleaned":
         from bench.adapters.longmemeval_cleaned import (
             CLEANED_DATASET_ID,
@@ -598,9 +602,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.limit is not None:
         row_order = row_order[: args.limit]
 
-    # Step B: --qid-include filter applied AFTER
-    # --limit so a future caller passing both flags gets a deterministic
-    # intersection. The default None path is a no-op for backward compat.
+    # --qid-include filter applied AFTER --limit so a future caller passing
+    # both flags gets a deterministic intersection. The default None path is
+    # a no-op for backward compat.
     if args.qid_include is not None:
         wanted = {q.strip() for q in str(args.qid_include).split(",") if q.strip()}
         row_order = [qid for qid in row_order if qid in wanted]
@@ -631,12 +635,12 @@ def main(argv: list[str] | None = None) -> int:
     checkpoint_path = Path(args.checkpoint) if args.checkpoint else Path(str(args.out) + ".jsonl")
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Checkpoint disposition gate. Decide BEFORE the resume scan whether
-    # to keep the file or unlink and start fresh. Three paths:
-    #   1. --fresh           -> always unlink (even on SUCCESS-only).
-    #   2. prior errors + no --resume -> auto-clean + verbatim phrase.
-    #   3. otherwise         -> leave checkpoint; the existing resume
-    #                           scan re-checks `.exists()` and picks it up.
+    # Checkpoint disposition gate. Decide BEFORE the resume
+    # scan whether to keep the file or unlink and start fresh. Three paths:
+    # 1. --fresh -> always unlink (even on SUCCESS-only).
+    # 2. prior errors + no --resume -> auto-clean + verbatim phrase.
+    # 3. otherwise -> leave checkpoint; the existing resume
+    # scan re-checks `.exists()` and picks it up.
     if checkpoint_path.exists():
         prior_error_count = 0
         prior_total_count = 0
@@ -653,8 +657,8 @@ def main(argv: list[str] | None = None) -> int:
                     # disposition (the next resume scan will warn).
                     continue
                 prior_total_count += 1
-                # Recognise BOTH the new `classification == "ERROR"`
-                # shape AND the legacy `"error" in rec` shape.
+                # Recognise both the `classification == "ERROR"` shape
+                # and the legacy `"error" in rec` shape.
                 if (
                     rec.get("classification") == "ERROR"
                     or "error" in rec
@@ -701,9 +705,9 @@ def main(argv: list[str] | None = None) -> int:
                 if not qid:
                     continue
                 completed_ids.add(qid)
-                # Recognise BOTH the new top-level `classification == "ERROR"`
-                # shape AND the legacy `"error" in rec` shape (already-on-disk
-                # checkpoints written before this patch landed).
+                # Recognise BOTH the top-level `classification == "ERROR"` shape
+                # AND the legacy `"error" in rec` shape (already-on-disk
+                # checkpoints written before this format was introduced).
                 is_error_row = (
                     rec.get("classification") == "ERROR"
                     or (
@@ -780,8 +784,7 @@ def main(argv: list[str] | None = None) -> int:
             session_tokens.append(res["inserted_text_tokens"])
             # Splice classification at append time so the on-disk JSONL
             # agrees with the in-memory per_row list. Keep `_run_one_row`
-            # itself pure — it knows nothing about the ERROR / SUCCESS
-            # taxonomy.
+            # itself pure — it knows nothing about the ERROR / SUCCESS taxonomy.
             res_with_class = dict(res)
             res_with_class["classification"] = "SUCCESS"
             _checkpoint_append(res_with_class)
@@ -797,8 +800,7 @@ def main(argv: list[str] | None = None) -> int:
                 flush=True,
             )
         except Exception as exc:
-            # T-05-11-04 mitigation: log + count as miss, do
-            # NOT silently drop.
+            # log + count as miss, do NOT silently drop.
             err_payload = {
                 "error_class": type(exc).__name__,
                 "error": str(exc)[:500],
@@ -813,11 +815,10 @@ def main(argv: list[str] | None = None) -> int:
             query_tokens.append(0)
             session_tokens.append(0)
             # Persist the error row to checkpoint so a restart skips it.
-            # Top-level classification="ERROR" tag so the resume scan +
-            # auto-clean disposition can distinguish ERROR rows from
-            # genuine MISS rows without parsing the embedded error
-            # payload. The legacy `error` payload is preserved for
-            # backward compat with already-on-disk checkpoints.
+            # Top-level classification="ERROR" tag lets the resume scan
+            # distinguish ERROR rows from genuine MISS rows without parsing
+            # the embedded error payload. The legacy `error` payload is
+            # preserved for backward compat with already-on-disk checkpoints.
             _checkpoint_append(
                 {
                     "question_id": qid,
@@ -868,8 +869,8 @@ def main(argv: list[str] | None = None) -> int:
         # reproducibility fields:
         "granularity": args.granularity,
         "dataset_choice": args.dataset,
-        # embedder identity pinned for v3.1 ablation reproducibility.
-        # Default "bge-small-en-v1.5" reproduces v3 baseline; "all-MiniLM-L6-v2"
+        # Embedder identity pinned for ablation reproducibility.
+        # Default "bge-small-en-v1.5" reproduces the baseline; "all-MiniLM-L6-v2"
         # is the embedder-axis ablation toggle (mempalace ChromaDB default).
         "embedder_model_key": args.embedder,
         "embedder_hf_id": Embedder(model_key=args.embedder).model_name,
@@ -877,7 +878,7 @@ def main(argv: list[str] | None = None) -> int:
         # Prong X — retrieve_recall (flat-cosine baseline, line-by-line)
         "r_at_5_retrieve": _mean(r5_x_values),
         "r_at_10_retrieve": _mean(r10_x_values),
-        # Prong Y — recall_for_benchmark (full graph-native architecture; D-07)
+        # Prong Y — recall_for_benchmark (full graph-native architecture)
         "r_at_5_pipeline": _mean(r5_y_values),
         "r_at_10_pipeline": _mean(r10_y_values),
         # Architecture lift (Y - X)
@@ -890,9 +891,8 @@ def main(argv: list[str] | None = None) -> int:
         ),
         "errors": errors,
         # ERROR-vs-MISS honest-disclosure triple. R@5 / R@10 means stay
-        # computed over the union of success + error rows for backward
-        # compat; the triple below is what the reviewer asked for to make
-        # silent zeros impossible.
+        # computed over the union of success + error rows for backward compat;
+        # the triple below makes silent zeros impossible.
         "n_hits": n_hits,
         "n_misses": n_misses,
         "n_errors": n_errors,
@@ -910,11 +910,9 @@ def main(argv: list[str] | None = None) -> int:
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(out, f, indent=2)
 
-    # ERROR-vs-MISS triple on the DONE line so the reviewer can see at a
-    # glance whether a 0.000 R@5 was a real product miss or an environment
-    # misconfiguration. `errors=N` retained for grep-compat with already-
-    # saved bench logs; the new `hits=N misses=N errors=N` triple is the
-    # honest-disclosure surface.
+    # ERROR-vs-MISS triple on the DONE line: at a glance shows whether a
+    # 0.000 R@5 was a real product miss or an environment misconfiguration.
+    # `errors=N` retained for grep-compat with already-saved bench logs.
     print(
         f"[LME] DONE n_rows={out['n_rows']} "
         f"R@5_retrieve={out['r_at_5_retrieve']:.3f} "

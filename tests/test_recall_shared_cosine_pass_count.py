@@ -1,5 +1,4 @@
-"""redesign (08-CONTEXT.md ): regression-fence — exactly one
-cue-vs-pool cosine pass per recall.
+"""Regression-fence — exactly one cue-vs-pool cosine pass per recall.
 
 The redesign's load-bearing claim is that the rank-stage cosine term
 reads from a shared array built ONCE at the top of `_recall_core`.
@@ -8,19 +7,18 @@ entry points (`recall_for_response`, `recall_for_benchmark`) the
 matmul that computes `pool_embs @ cue_vec` fires exactly ONCE per
 call. The L0 fast-path bypasses the pool entirely (zero pool matmuls).
 
-Pre-08 the rank-stage was a separate `E @ cue_vec` matmul (
-optimization) plus the patch helper `_augment_candidates_by_cosine`
-added a third independent cosine pass. The redesign collapses all
-three into one shared pass — the matmul-counter assertions in this
+The rank-stage previously used a separate `E @ cue_vec` matmul plus a
+helper that added a third independent cosine pass. The redesign collapses
+all three into one shared pass — the matmul-counter assertions in this
 file fence that contract for the public entry points (the
 `_recall_core`-level fence lives in `test_recall_core_unit.py`).
 
-Implementation note (D-PLAN-CHECK F4): the matmul-counter is the
-canonical approach with no sentinel-content fallback. The wrapper
-counts only "cue-vs-large-pool" matmul calls — 2D matrix shaped
-(N >= 50, D) against 1D cue vector shaped (D,). The community-gate
-centroid matmul (which has K = #communities < 50 in our fixtures)
-is excluded from the count by the >= 50 row floor.
+Implementation note: the matmul-counter is the canonical approach with
+no sentinel-content fallback. The wrapper counts only "cue-vs-large-pool"
+matmul calls — 2D matrix shaped (N >= 50, D) against 1D cue vector
+shaped (D). The community-gate centroid matmul (which has K =
+#communities < 50 in our fixtures) is excluded from the count by the
+>= 50 row floor.
 """
 from __future__ import annotations
 
@@ -81,7 +79,7 @@ def _make(vec: list[float], text: str = "rec", tier: str = "episodic") -> Memory
 
 def _build_store_and_graph(tmp_path, n: int) -> tuple[MemoryStore, MemoryGraph, list[MemoryRecord]]:
     """Build N records with distinct primary-axis embeddings + matching graph."""
-    store = MemoryStore(path=tmp_path / "lancedb")
+    store = MemoryStore(path=tmp_path / "hippo")
     recs: list[MemoryRecord] = []
     for i in range(n):
         vec = [0.0] * EMBED_DIM
@@ -94,9 +92,9 @@ def _build_store_and_graph(tmp_path, n: int) -> tuple[MemoryStore, MemoryGraph, 
         graph.add_node(
             rec.id, community_id=None, embedding=list(rec.embedding),
         )
-        # Mirror build_runtime_graph: pour the payload onto the NetworkX
-        # node attrs so _collect_graph_pool's fast path hits.
-        graph._nx.nodes[str(rec.id)].update({
+        # Mirror build_runtime_graph: write the payload into the sidecar so
+        # _collect_graph_pool's fast path hits via graph.get_embedding.
+        graph.set_node_payload(rec.id, {
             "embedding": list(rec.embedding),
             "surface": f"rec{recs.index(rec)}",
             "centrality": 0.0,
@@ -128,11 +126,11 @@ def _matmul_with_counter(counter: dict[str, int]):
     """Wrap np.matmul with a shape-discriminating counter.
 
     Counts only the "cue-vs-large-pool" matmul: 2D matrix shaped
-    (N >= 50, D) against a 1D cue vector shaped (D,). The community-gate
+    (N >= 50, D) against a 1D cue vector shaped (D). The community-gate
     centroid matmul (which has K = #communities < 50 in our fixtures)
     is excluded from the count by the >= 50 row floor.
 
-    Per 08-PLAN-CHECK.md F4 this is the canonical approach; there is no
+    This is the canonical approach; there is no
     fallback to a sentinel-based content test.
     """
     orig = np.matmul
@@ -163,7 +161,7 @@ def test_recall_for_benchmark_runs_one_pool_cosine(tmp_path, monkeypatch):
 
     50+-node fixture so the >= 50 row floor in the matmul counter
     discriminates the load-bearing pool matmul from the small
-    community-centroid matmul. After Wave 2 plumbed the entry point
+    community-centroid matmul. With the entry point plumbed
     onto _recall_core, the only cue-vs-large-pool matmul should fire
     inside _recall_core's shared cosine pass; Stage 5 reads from
     `shared_cos[reachable_indices]` — never another pool matmul.
@@ -185,7 +183,7 @@ def test_recall_for_benchmark_runs_one_pool_cosine(tmp_path, monkeypatch):
     )
 
     assert counter["count"] == 1, (
-        f"D-01 violation: cue-vs-large-pool matmul fired "
+        f"cue-vs-large-pool matmul fired "
         f"{counter['count']} times via recall_for_benchmark; expected "
         "exactly 1 (the shared cosine pass at the top of _recall_core)."
     )
@@ -216,7 +214,7 @@ def test_recall_for_response_runs_one_pool_cosine(tmp_path, monkeypatch):
     )
 
     assert counter["count"] == 1, (
-        f"D-01 violation: cue-vs-large-pool matmul fired "
+        f"cue-vs-large-pool matmul fired "
         f"{counter['count']} times via recall_for_response; expected "
         "exactly 1 (the shared cosine pass at the top of _recall_core)."
     )

@@ -1,19 +1,16 @@
-"""W1 / tests for the startup grace before the first
-`_s4_offline_loop` iteration.
+"""Tests for the startup grace before the first `_s4_offline_loop` iteration.
 
 Defends against the regression where a freshly-spawned daemon immediately
 runs the heavy S4 viability scan (sigma.compute_and_emit ->
 retrieve.build_runtime_graph -> runtime_graph_cache.save -> json.dumps),
-materialising a multi-GB intermediate Python string (CONTEXT.md D-01:
-py-spy 2026-04-29 PID 7959 RSS 7.6GB).
+materialising a multi-GB intermediate Python string (a py-spy capture showed
+RSS at 7.6 GB).
 
-Project async-test idiom (mandatory): sync `def test_X(...)` body wraps
+Project async-test idiom: a sync `def test_X(...)` body wraps
 `asyncio.run(_async_body(...))`. The project does NOT depend on
 `pytest-asyncio`; `@pytest.mark.asyncio` markers silently pass without
-running. See tests/test_cpu_watchdog.py:12, tests/test_cascade_no_block.py:11
-for the canonical pattern. The plan template prescribed pytest-asyncio
-markers; this file deviates (Rule 1 — fake-GREEN avoidance) per project
-precedent.
+running. See tests/test_cpu_watchdog.py and tests/test_cascade_no_block.py
+for the canonical pattern.
 """
 from __future__ import annotations
 
@@ -29,7 +26,7 @@ from types import SimpleNamespace
 def _fake_store():
     """_s4_offline_loop only forwards `store` to s4.run_offline_pass and
     write_event; both are stubbed in these tests, so a SimpleNamespace
-    placeholder is enough — never touches LanceDB.
+    placeholder is enough — never touches the store.
     """
     return SimpleNamespace()
 
@@ -39,7 +36,7 @@ def _fake_store():
 # ---------------------------------------------------------------------------
 
 def test_grace_zero_runs_first_iter_within_100ms(monkeypatch):
-    """D-06 (a): grace=0 => stubbed run_offline_pass invoked within ≤100ms."""
+    """(a): grace=0 => stubbed run_offline_pass invoked within ≤100ms."""
     asyncio.run(_grace_zero_fast_path_body(monkeypatch))
 
 
@@ -84,7 +81,7 @@ async def _grace_zero_fast_path_body(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_grace_positive_defers_first_iter(monkeypatch):
-    """D-06 (b): grace=0.5 => no call before 0.4s; ≥1 call after 0.7s."""
+    """(b): grace=0.5 => no call before 0.4s; ≥1 call after 0.7s."""
     asyncio.run(_grace_positive_deferred_body(monkeypatch))
 
 
@@ -128,7 +125,7 @@ async def _grace_positive_deferred_body(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_shutdown_during_grace_returns_cleanly(monkeypatch):
-    """shutdown set during grace => loop returns cleanly, 0 calls."""
+    """Shutdown set during grace => loop returns cleanly, 0 calls."""
     asyncio.run(_shutdown_during_grace_body(monkeypatch))
 
 

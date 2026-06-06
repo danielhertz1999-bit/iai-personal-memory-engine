@@ -54,7 +54,7 @@ def check_crypto_key_file_rotation_event(store: "MemoryStore") -> None:
     if wp.is_file():
         try:
             prev = json.loads(wp.read_text(encoding="utf-8"))
-        except Exception:
+        except (OSError, json.JSONDecodeError, ValueError):
             prev = None
     if prev is None:
         sync_crypto_key_watcher_to_disk(store)
@@ -72,6 +72,6 @@ def check_crypto_key_file_rotation_event(store: "MemoryStore") -> None:
             },
             severity="info",
         )
-    except Exception:
+    except (OSError, RuntimeError, ValueError):
         pass
     sync_crypto_key_watcher_to_disk(store)

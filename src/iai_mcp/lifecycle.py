@@ -9,7 +9,7 @@ and the dispatched event (with optional payload guards); side effects
 (persistence + event-log append + shadow-run warning) happen ONLY in
 `dispatch`.
 
-flipped `shadow_run` default from
+  Task 1.6: flipped `shadow_run` default from
 True to False. HIBERNATION transitions now actually exit the daemon
 process via the global shutdown event in `daemon.main()`'s lifecycle
 tick. The legacy `_rss_watchdog_loop` was removed in Task 1.4; this
@@ -18,18 +18,18 @@ state machine is the sole owner of shutdown authority.
 Shadow-run mode is preserved as an opt-in for testing: passing
 `shadow_run=True` to `LifecycleStateMachine.__init__` keeps the old
 "persist + log + emit shadow_run_warning, do NOT exit" behaviour so
-the panel R7 validation script can drive transitions without
-terminating the daemon process.
+tests can drive transitions without terminating the daemon process.
 
 Single-writer enforcement (L2): a separate lock file
 `~/.iai-mcp/.lifecycle.lock` carries the `fcntl.flock(LOCK_EX|LOCK_NB)`.
 The data file `lifecycle_state.json` is atomically replaced via
-`os.replace` (-01 pattern), which swaps the inode — any lock
+`os.replace` (pattern), which swaps the inode — any lock
 held on the data file's fd would not protect the new file. The lock
 file is never renamed, so the lock survives `save_state` cycles.
 """
 from __future__ import annotations
 
+import asyncio
 import errno
 import fcntl
 import os
@@ -66,7 +66,7 @@ class LifecycleStateLocked(RuntimeError):
 
 
 class LifecycleEvent(str, Enum):
-    """Events that drive transitions."""
+    """Events that drive state-machine transitions."""
 
     HEARTBEAT_REFRESH = "heartbeat_refresh"
     IDLE_5MIN = "idle_5min"
@@ -77,6 +77,11 @@ class LifecycleEvent(str, Enum):
     HIBERNATION_GRACE_EXPIRED = "hibernation_grace_expired"
     WAKE_SIGNAL = "wake_signal"
     TICK = "tick"
+    # FORCE_SLEEP: explicit consolidation trigger from force-rem / user-sleep.
+    # Routes any state -> DROWSY first (so the DROWSY-edge teardown / drain runs),
+    # then DROWSY -> SLEEP (bypassing idle/eligibility), so iai-mcp daemon force-rem
+    # still triggers one full pipeline run via the canonical path.
+    FORCE_SLEEP = "force_sleep"
 
 
 def _utc_now_iso() -> str:
@@ -110,7 +115,7 @@ def compute_transition(
       | SLEEP | REQUEST_ARRIVED | WAKE |
       | SLEEP | SLEEP_CYCLE_DONE AND still_idle | HIBERNATION |
       | HIBERNATION | WAKE_SIGNAL | WAKE |
-      | * | REQUEST_ARRIVED | WAKE  (catch-all)
+      | * | REQUEST_ARRIVED | WAKE (catch-all)
 
     Catch-all: REQUEST_ARRIVED from any state goes to WAKE; that
     matches the SLEEP-specific rule above and adds DROWSY/HIBERNATION
@@ -125,6 +130,19 @@ def compute_transition(
     # branches do not need to repeat the rule per source state.
     if event is LifecycleEvent.REQUEST_ARRIVED:
         return LifecycleState.WAKE
+
+    # FORCE_SLEEP: two-hop route via DROWSY so the DROWSY-edge teardown / drain
+    # always runs before entering the consolidation window.
+    # * + FORCE_SLEEP -> DROWSY (any non-SLEEP state)
+    # DROWSY + FORCE_SLEEP -> SLEEP (bypasses idle / sleep_eligible guards)
+    if event is LifecycleEvent.FORCE_SLEEP:
+        if state is LifecycleState.DROWSY:
+            return LifecycleState.SLEEP
+        if state in (LifecycleState.SLEEP, LifecycleState.HIBERNATION):
+            # Already at or past SLEEP — no-op (SLEEP is the target).
+            return None
+        # WAKE or any other non-SLEEP state → hop to DROWSY first.
+        return LifecycleState.DROWSY
 
     if state is LifecycleState.WAKE:
         if event is LifecycleEvent.IDLE_5MIN:
@@ -202,7 +220,7 @@ class LifecycleStateMachine:
     Owns:
     - `lifecycle_state.json` reads + writes (single-writer enforced).
     - Event log emission (`state_transition`, `shadow_run_warning`).
-    - `shadow_run` flag (default False since ; True is a transition-test escape hatch).
+    - `shadow_run` flag (default False since; True is a transition-test escape hatch).
 
     Construction is cheap; the lock is acquired only inside
     `dispatch`. Tests can drive transitions either via `dispatch`
@@ -216,11 +234,21 @@ class LifecycleStateMachine:
         event_log: LifecycleEventLog | None = None,
         lock_path: Path | None = None,
         shadow_run: bool = False,
+        *,
+        # Forward-reference string type-hint keeps s2_coordinator.py out of
+        # this module's import graph (the actual call is duck-typed inside
+        # async `dispatch`). Production daemon.main always injects a real
+        # coordinator; tests inject a tmp-path-rooted instance.
+        # No legacy direct-save fallback: calling dispatch on an LSM
+        # constructed without a coordinator raises RuntimeError before any
+        # disk IO — all current_state persistence flows through coordinator.
+        coordinator: "S2Coordinator | None" = None,  # noqa: F821 — forward ref
     ) -> None:
         self._state_path = state_path if state_path is not None else LIFECYCLE_STATE_PATH
         self._event_log = event_log if event_log is not None else LifecycleEventLog()
         self._lock_path = lock_path if lock_path is not None else DEFAULT_LOCK_PATH
         self._shadow_run = shadow_run
+        self._coordinator = coordinator
 
     # ------------------------------------------------------------------
     # Read-only helpers
@@ -255,82 +283,123 @@ class LifecycleStateMachine:
     # Dispatcher — single-writer, persists + logs
     # ------------------------------------------------------------------
 
-    def dispatch(
+    async def dispatch(
         self,
         event: LifecycleEvent,
+        *,
+        reason: str | None = None,
         **payload: Any,
     ) -> LifecycleState:
-        """Apply `event` to the current state, persist, log; return new state.
+        """Apply `event` to current state, route persistence through coordinator.
 
-        Acquires the lock for the duration of the read-compute-write
-        cycle so the disk record cannot be raced by a second writer.
-        Always returns the post-dispatch state — even when the event
-        was a no-op (transition target was None), the caller gets the
-        unchanged current state back. That keeps callers from having
-        to special-case None.
+        `dispatch` is async — every call site MUST `await`. State-change
+        persistence is delegated to `S2Coordinator.transition` which owns
+        the asyncio.Lock + CAS + ring-buffer + on-disk save_state for the
+        `current_state` field. `dispatch` retains responsibility ONLY for
+        incidental bookkeeping fields (last_activity_ts, wrapper_event_seq,
+        shadow_run) that do NOT touch current_state.
+
+        `reason` is the snake-case identifier routed through the
+        coordinator's `s2_transition_attempt` event body. Falls back to
+        `event.value` when None. Raises `S2OscillationConflict` /
+        `S2OscillationBlocked` as normal control flow per — call
+        sites are expected to catch both with `pass`.
         """
-        with _lifecycle_lock(self._lock_path):
-            current_record = load_state(self._state_path)
-            current_state = LifecycleState(current_record["current_state"])
+        if self._coordinator is None:
+            # No legacy direct-save fallback. Production daemons inject a
+            # coordinator via daemon.main; tests inject via fixtures
+            # (tmp_path-rooted state_path). Bare LSM + dispatch is a
+            # programming error — fail loud here rather than silently mutate
+            # state through an unlocked path.
+            raise RuntimeError(
+                "LifecycleStateMachine.dispatch requires a coordinator. "
+                "Production callers in daemon.main inject one; tests should "
+                "construct an S2Coordinator with state_path=tmp_path."
+            )
 
-            target = compute_transition(current_state, event, payload)
+        current_record = await asyncio.to_thread(load_state, self._state_path)
+        # Local Python identifier is `from_state` rather than `current_state`
+        # so all current_state assignments are centralized in s2_coordinator.py.
+        # The persisted record key remains "current_state".
+        from_state = LifecycleState(current_record["current_state"])
+        payload_dict = dict(payload)
+        target = compute_transition(from_state, event, payload_dict)
 
+        # Incidental bookkeeping: HEARTBEAT_REFRESH / REQUEST_ARRIVED /
+        # WAKE_SIGNAL advance last_activity_ts + wrapper_event_seq even when
+        # state is unchanged. These advisory fields do NOT touch current_state;
+        # dispatch persists them directly without acquiring `_lifecycle_lock`:
+        # the coordinator's asyncio
+        # Lock + atomic os.replace in save_state make torn writes impossible,
+        # and holding fcntl.flock here would deadlock observers reading the
+        # file mid-transition. The bookkeeping fields are advisory (last
+        # writer wins is acceptable — already v1 behaviour for monotonic-ish
+        # fields).
+        if event in {
+            LifecycleEvent.HEARTBEAT_REFRESH,
+            LifecycleEvent.REQUEST_ARRIVED,
+            LifecycleEvent.WAKE_SIGNAL,
+        }:
             now_iso = _utc_now_iso()
-            # last_activity advances on any user-attributable event so
-            # idle timers reset correctly.
             updated_record: LifecycleStateRecord = dict(current_record)  # type: ignore[assignment]
-            if event in {
-                LifecycleEvent.HEARTBEAT_REFRESH,
-                LifecycleEvent.REQUEST_ARRIVED,
-                LifecycleEvent.WAKE_SIGNAL,
-            }:
-                updated_record["last_activity_ts"] = now_iso
-                updated_record["wrapper_event_seq"] = (
-                    current_record.get("wrapper_event_seq", 0) + 1
-                )
-
+            updated_record["last_activity_ts"] = now_iso
+            updated_record["wrapper_event_seq"] = (
+                current_record.get("wrapper_event_seq", 0) + 1
+            )
             updated_record["shadow_run"] = self._shadow_run
+            if updated_record != current_record:
+                await asyncio.to_thread(save_state, updated_record, self._state_path)
+                # Refresh local view so the post-coordinator append sees the
+                # bookkeeping changes (the coordinator will read disk again
+                # inside its lock — that path is independent).
+                current_record = updated_record
 
-            if target is None:
-                # No state change — persist any incremental wrapper-event
-                # bookkeeping (last_activity_ts, seq) but skip the
-                # transition log line.
-                if updated_record != current_record:
-                    save_state(updated_record, self._state_path)
-                return current_state
+        if target is None or target == from_state:
+            # No state change. Bookkeeping persisted above (when applicable).
+            return from_state
 
-            # State change. Update record and persist atomically.
-            updated_record["current_state"] = target.value
-            updated_record["since_ts"] = now_iso
-            save_state(updated_record, self._state_path)
+        # Real state change: delegate to coordinator. May raise
+        # S2OscillationConflict (CAS mismatch — disk state moved between
+        # our load above and the coordinator's load inside its lock) or
+        # S2OscillationBlocked (reverse direction within MIN_INTERVAL_SEC).
+        # Both are normal control flow; daemon call sites catch them with
+        # `pass`. The coordinator emits the matching event body on every
+        # emit-worthy path.
+        resolved_reason = reason if reason is not None else event.value
+        new_state = await self._coordinator.transition(
+            from_state, target, resolved_reason,
+        )
 
-            # Always log the transition.
+        # Legacy lifecycle_event_log entry preserved AFTER successful
+        # coordinator transition. The coordinator writes its own
+        # `s2_transition_attempt` event into the store events table;
+        # this event_log is a separate JSONL audit trail consumed by the
+        # doctor + identity-audit surfaces. Both ledgers update on every
+        # successful transition.
+        self._event_log.append(
+            {
+                "event": "state_transition",
+                "from": from_state.value,
+                "to": new_state.value,
+                "trigger": resolved_reason,
+            }
+        )
+
+        # Shadow-run guard for HIBERNATION (legacy behaviour preserved
+        # for test scaffolding; production daemons run shadow_run=False).
+        if new_state is LifecycleState.HIBERNATION and self._shadow_run:
             self._event_log.append(
                 {
-                    "event": "state_transition",
-                    "from": current_state.value,
-                    "to": target.value,
-                    "trigger": event.value,
+                    "event": "shadow_run_warning",
+                    "would_action": "hibernate_kill_process",
+                    "blocked_by": "shadow_run=True",
+                    "note": (
+                        "shadow_run=True is a test-only legacy guard "
+                        "preserved for transition tests; production "
+                        "daemons run with shadow_run=False where this "
+                        "branch never fires."
+                    ),
                 }
             )
 
-            # Shadow-run guard for HIBERNATION: the new state is
-            # persisted on disk (so observers see it), and a warning
-            # event documents that the legacy watchdog still owns
-            # shutdown semantics.
-            if target is LifecycleState.HIBERNATION and self._shadow_run:
-                self._event_log.append(
-                    {
-                        "event": "shadow_run_warning",
-                        "would_action": "hibernate_kill_process",
-                        "blocked_by": "shadow_run=True",
-                        "note": (
-                            "shadow_run=True is a test-only legacy guard "
-                            "preserved for transition tests; production "
-                            "daemons run with shadow_run=False where this "
-                            "branch never fires."
-                        ),
-                    }
-                )
-
-            return target
+        return new_state

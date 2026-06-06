@@ -1,19 +1,17 @@
-"""L4 — daemon-side heartbeat scanner (per-wrapper, PID-scoped).
+"""Daemon-side heartbeat scanner (per-wrapper, PID-scoped).
 
 Reads ``~/.iai-mcp/wrappers/heartbeat-<pid>-<uuid>.json`` files written by
 each MCP wrapper instance, validates freshness (``now - last_refresh <= M``)
 AND PID liveness (``os.kill(pid, 0)``), and aggregates presence so the daemon's
 state machine can decide WAKE vs BEDTIME.
 
-Constraints (carried from CONTEXT 10.4):
+Constraints:
 - Idle CPU near zero — scanner runs on lifecycle TICK (every 30s), not faster.
 - Scanner code is reentrant: ``scan()`` MUST be safe to call concurrently with
   a wrapper writing a heartbeat file (atomic rename pattern + JSON-parse-fail
   fallback to file mtime).
 - No new third-party dependencies — stdlib only.
-- macOS-only PID semantics carried through (Linux subset works the same; only
-  Windows is unsupported, which matches the phase's macOS-only stance).
-- This module is STANDALONE — daemon main-loop integration lands in .
+- macOS-first; Linux subset works the same; Windows is unsupported.
 
 Heartbeat file schema (written by wrapper, read here)::
 
@@ -27,15 +25,14 @@ Heartbeat file schema (written by wrapper, read here)::
     }
 
 Status semantics:
-- FRESH:  ``last_refresh`` within ``M`` seconds AND PID alive.
-- STALE:  ``last_refresh`` older than ``M`` seconds (regardless of PID).
+- FRESH: ``last_refresh`` within ``M`` seconds AND PID alive.
+- STALE: ``last_refresh`` older than ``M`` seconds (regardless of PID).
 - ORPHAN: PID is dead (``ProcessLookupError`` from ``kill(pid, 0)``) and the
           file's freshness window has not yet expired. Treated as not-active.
 
 A file that fails JSON parse falls back to its filesystem mtime so a torn
 half-written write does not silently mask presence.
 
-Validates: WAKE-07.
 """
 from __future__ import annotations
 
@@ -60,7 +57,7 @@ DEFAULT_STALE_THRESHOLD_SEC = 90
 IDLE_WINDOW_SEC = 30 * 60
 
 #: Filename glob used to enumerate heartbeat files. Matches the
-#: ``heartbeat-<pid>-<uuid>.json`` convention from CONTEXT 10.4.
+#: ``heartbeat-<pid>-<uuid>.json`` convention.
 _HEARTBEAT_GLOB = "heartbeat-*.json"
 
 
@@ -129,7 +126,7 @@ def _parse_heartbeat_file(path: Path) -> tuple[int, str, datetime] | None:
 
     A JSON-parse failure falls back to the file's mtime so that a torn
     write produced by a wrapper crash mid-rename is treated as STALE-on-
-    age rather than silently dropped — matches the "reentrant + safe under
+    age rather than silently dropped, satisfying the "reentrant + safe under
     concurrent writers" requirement.
     """
     try:
@@ -200,7 +197,7 @@ def _fallback_parse_from_filename(path: Path) -> tuple[int, str, datetime] | Non
 class HeartbeatScanner:
     """Aggregates per-wrapper heartbeat files into a daemon-side presence signal.
 
-    standalone module — wires this into the daemon
+     standalone module — wires this into the daemon
     main-loop TICK to dispatch HEARTBEAT_REFRESH / IDLE state events.
     """
 

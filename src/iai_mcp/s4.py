@@ -1,6 +1,6 @@
-"""S4 viability -- on-read consistency + monotropic proactive checks (, ).
+"""S4 viability -- on-read consistency + monotropic proactive checks.
 
- constitutional:
+Invariants:
 - (e) on-read consistency: runs inside `pipeline_recall` on top-K returned
   records. Pairwise cosine with ART vigilance ρ_s4=0.97 + `contradicts`
   edge lookup. Emits `s4_contradiction` events. Populates
@@ -9,21 +9,19 @@
   > 0.7 AND new_record.detail_level >= 4. Scans within-domain only.
   Performance guard: if domain > 100 records, skip with warning event.
 
- addition:
-- `run_offline_pass(store)` -- new entry point, CALLED by the daemon /
-  session_exit hook. Currently runs `sigma.compute_and_emit(store)` only;
-  future plans append more offline-pass items here. Failures emit
-  `kind="s4_error"` and never crash the pass.
+- `run_offline_pass(store)` -- entry point called by the daemon
+  session_exit hook. Currently runs `sigma.compute_and_emit(store)` only.
+  Failures emit `kind="s4_error"` and never crash the pass.
 
-Explicitly forbidden ( negative assertions):
-- NO `daily_scan` function (Ashby Requisite Variety violation).
-- NO `session_exit_sweep` function (Anderson activation-based violation).
+Explicitly forbidden (negative assertions):
+- NO `daily_scan` function.
+- NO `session_exit_sweep` function.
 
-All detected contradictions go through `events.write_event` -- no .jsonl files
-.
+All detected contradictions go through `events.write_event`.
 """
 from __future__ import annotations
 
+import logging
 from uuid import UUID
 
 import numpy as np
@@ -31,6 +29,8 @@ import numpy as np
 from iai_mcp.events import write_event
 from iai_mcp.store import MemoryStore
 from iai_mcp.types import MemoryHit, MemoryRecord
+
+logger = logging.getLogger(__name__)
 
 
 # (e) vigilance: 0.97 for near-duplicate contradiction detection.
@@ -40,7 +40,7 @@ S4_VIGILANCE_RHO = 0.97
 # (f) performance guard: skip when domain has > this many records.
 MONOTROPIC_MAX_PAIRWISE = 100
 
-# (f) monotropism-depth threshold.
+# (f) Focus-depth threshold (the "θ_deep" constant).
 S4_MONOTROPIC_THETA = 0.7
 
 
@@ -71,14 +71,14 @@ def on_read_check(
 
     2. Cosine + tag-polarity heuristic: pairs with cosine >= ρ_s4 (0.97) AND
        conflicting polarity tags ({positive,negative} or {asserted,retracted})
-       are flagged as `info`-severity. or can replace this
+       are flagged as `info`-severity. A future variant can replace this
        with NLI-based semantic contradiction.
 
     Returns a list of hint dicts; each dict is shaped per
     RecallResponse.hints contract. Also writes one `s4_contradiction` event
-    per detected pair to the LanceDB events table .
+    per detected pair to the store events table.
 
-    note: `on_read_check_batch` is the variant. It accepts
+    Note: `on_read_check_batch` is the faster variant. It accepts
     an optional `records_cache` kwarg so pipeline_recall can reuse the cache
     it already built at stage 1 (zero extra store.get calls). This function
     is preserved as the back-compat / ad-hoc caller API (retrieve.recall
@@ -104,7 +104,7 @@ def on_read_check(
     contradict_pairs: set[tuple[str, str]] = set()
     try:
         edges_df = store.db.open_table("edges").to_pandas()
-    except Exception:
+    except (OSError, RuntimeError, ValueError):
         edges_df = None
     if edges_df is not None and not edges_df.empty:
         contradict_df = edges_df[edges_df["edge_type"] == "contradicts"]
@@ -193,8 +193,9 @@ def on_read_check_batch(
     hits: list[MemoryHit],
     session_id: str,
     records_cache: "dict[UUID, MemoryRecord] | None" = None,
+    contradicts_outgoing: "dict[str, list[str]] | None" = None,
 ) -> list[dict]:
-    """: batched variant of on_read_check.
+    """Batched variant of on_read_check.
 
     Semantically identical to on_read_check (returns the same hint-shape list,
     emits the same events). The ONLY difference is the record-loading step:
@@ -207,7 +208,7 @@ def on_read_check_batch(
     vigilance threshold (S4_VIGILANCE_RHO), and the event-emission logic are
     byte-for-byte equivalent to on_read_check.
 
-    Why this is the perf-critical surface ( SC-6):
+    Why this is the perf-critical surface:
     Pre-fix: pipeline_recall built records_cache at stage 1, then s4.on_read_check
              called `store.get(h.record_id)` per hit -- every call is a full
              to_pandas() scan (~140ms each at N=100 on executor hardware).
@@ -236,21 +237,28 @@ def on_read_check_batch(
     if len(records) < 2:
         return []
 
-    # Load contradicts edges among these records. One edges.to_pandas() scan
-    # (same as on_read_check).
+    # Load contradicts edges among these records. Use pre-computed map from
+    # temporal validity cache when available (0ms); fall back to table scan.
     contradict_pairs: set[tuple[str, str]] = set()
-    try:
-        edges_df = store.db.open_table("edges").to_pandas()
-    except Exception:
-        edges_df = None
-    if edges_df is not None and not edges_df.empty:
-        contradict_df = edges_df[edges_df["edge_type"] == "contradicts"]
-        hit_ids = {str(h.record_id) for h in hits}
-        for _, row in contradict_df.iterrows():
-            src = row["src"]
-            dst = row["dst"]
-            if src in hit_ids and dst in hit_ids:
-                contradict_pairs.add(tuple(sorted([src, dst])))
+    hit_ids = {str(h.record_id) for h in hits}
+    if contradicts_outgoing is not None:
+        for src, dsts in contradicts_outgoing.items():
+            if src in hit_ids:
+                for dst in dsts:
+                    if dst in hit_ids:
+                        contradict_pairs.add(tuple(sorted([src, dst])))
+    else:
+        try:
+            edges_df = store.db.open_table("edges").to_pandas()
+        except (OSError, RuntimeError, ValueError):
+            edges_df = None
+        if edges_df is not None and not edges_df.empty:
+            contradict_df = edges_df[edges_df["edge_type"] == "contradicts"]
+            for _, row in contradict_df.iterrows():
+                src = row["src"]
+                dst = row["dst"]
+                if src in hit_ids and dst in hit_ids:
+                    contradict_pairs.add(tuple(sorted([src, dst])))
 
     # Pairwise scan -- identical logic to on_read_check.
     hit_records = list(records.values())
@@ -347,14 +355,14 @@ def monotropic_proactive_check(
     skip the scan and emit a `s4_monotropic_skip` warning event. The scan is
     O(N) cosine comparisons; 100 is a reasonable ceiling.
 
-    Rule 1 deviation: if `profile_state["monotropism_depth"]` is not a dict
+    Deviation: if `profile_state["monotropism_depth"]` is not a dict
     (type drift), degrade silently to empty hints (no exception).
     """
     md = profile_state.get("monotropism_depth", {})
     if not isinstance(md, dict):
         return []  # profile_state wrongly typed -- degrade silently
 
-    # Locate the record's domain tag ("domain:coding", "domain:gardening", ...)
+    # Locate the record's domain tag ("domain:coding", "domain:gardening",...)
     domain_tag: str | None = next(
         (t for t in (new_record.tags or []) if t.startswith("domain:")),
         None,
@@ -362,7 +370,7 @@ def monotropic_proactive_check(
     if domain_tag is None:
         return []
 
-    # Gate 1: monotropism depth must exceed θ_deep.
+    # Gate 1: depth must exceed θ_deep.
     domain_name = domain_tag.split(":", 1)[1]
     depth = md.get(domain_name, 0.0)
     if depth <= S4_MONOTROPIC_THETA:
@@ -425,7 +433,7 @@ def monotropic_proactive_check(
 
 
 def run_offline_pass(store: MemoryStore) -> dict:
-    """: S4 offline-pass entry point.
+    """S4 offline-pass entry point.
 
     Called by the daemon's offline cycle (or by session_exit / cron).
     Currently runs ONE check: `sigma.compute_and_emit(store)` -- which writes
@@ -445,7 +453,8 @@ def run_offline_pass(store: MemoryStore) -> dict:
     out: dict = {}
     try:
         out["sigma"] = sigma.compute_and_emit(store)
-    except Exception as exc:  # noqa: BLE001 - diagnostic catch-all
+    except Exception as exc:  # noqa: BLE001 -- diagnostic catch-all; must not crash pass
+        logger.warning("s4_offline_sigma_failed", extra={"err": str(exc)[:200]})
         try:
             write_event(
                 store,
@@ -453,7 +462,80 @@ def run_offline_pass(store: MemoryStore) -> dict:
                 data={"step": "sigma", "error": repr(exc)},
                 severity="warning",
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 -- event write failure is non-fatal
             pass
         out["sigma"] = {"error": repr(exc)}
     return out
+
+
+# Background contradiction scan: detect unresolved contradictions
+# across the full graph, flag for REM resolution.
+_s4_bg_cursor: int = 0
+
+
+def s4_background_scan(store: "MemoryStore", batch_size: int = 50) -> dict:
+    """Scan contradicts edges for unresolved tensions across the graph.
+
+    Processes batch_size edges per call (throttled for tick-loop integration).
+    Flags contradictions between records that were never co-recalled together.
+    Returns scan stats for the daemon event log.
+    """
+    global _s4_bg_cursor
+    from iai_mcp.events import write_event, query_events
+    from iai_mcp.store import EDGES_TABLE
+
+    try:
+        tbl = store.db.open_table(EDGES_TABLE)
+        df = (
+            tbl.search()
+            .where("edge_type = 'contradicts'")
+            .limit(batch_size)
+            .to_pandas()
+        )
+    except (OSError, RuntimeError, ValueError):
+        return {"scanned": 0, "flagged": 0}
+
+    if df.empty:
+        _s4_bg_cursor = 0
+        return {"scanned": 0, "flagged": 0}
+
+    # Single query_events call (was N+1: one per edge → ~100 queries/min CPU hog).
+    try:
+        existing_events = query_events(store, kind="s4_contradiction_flagged", limit=200)
+    except (OSError, RuntimeError, ValueError):
+        existing_events = []
+    flagged_pairs: set[tuple[str, str]] = set()
+    for ev in existing_events:
+        d = ev.get("data", {})
+        s = d.get("src", "")
+        t = d.get("dst", "")
+        if s and t:
+            flagged_pairs.add((s, t))
+
+    flagged = 0
+    for _, row in df.iterrows():
+        src_id = row.get("src", "")
+        dst_id = row.get("dst", "")
+        if not src_id or not dst_id:
+            continue
+        if (src_id, dst_id) in flagged_pairs:
+            continue
+        try:
+            write_event(
+                store,
+                kind="s4_contradiction_flagged",
+                data={
+                    "src": src_id,
+                    "dst": dst_id,
+                    "source": "background_scan",
+                    "resolution": "pending_rem",
+                },
+                severity="info",
+            )
+            flagged += 1
+            flagged_pairs.add((src_id, dst_id))
+        except (OSError, RuntimeError, ValueError):
+            pass
+
+    _s4_bg_cursor += len(df)
+    return {"scanned": len(df), "flagged": flagged}

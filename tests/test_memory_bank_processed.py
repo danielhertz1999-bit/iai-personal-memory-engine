@@ -16,7 +16,7 @@ Four properties under test:
 
 All tests stub out the runtime graph via `monkeypatch.setattr` and redirect
 the writer's `Path.home()` via `monkeypatch.setenv("HOME", tmp_path)`.
-No real `MemoryStore`, no real LanceDB I/O.
+No real `MemoryStore`, no real store I/O.
 """
 from __future__ import annotations
 
@@ -33,6 +33,11 @@ from uuid import UUID, uuid4
 
 import numpy as np
 import pytest
+
+
+# ---------------------------------------------------------------------------
+# Inline stub store + fake graph (no real MemoryStore, no real store)
+# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -66,19 +71,32 @@ class _StubStore:
         yield from self._records
 
 
-class _FakeNX:
-    def __init__(self, centrality_by_id: dict[str, float]) -> None:
-        self._data = dict(centrality_by_id)
-
-    def nodes(self, data: bool = False):
-        if data:
-            return [(k, {"centrality": v}) for k, v in self._data.items()]
-        return list(self._data.keys())
-
-
 class _FakeGraph:
+    """Test stub mirroring the MemoryGraph public surface used by memory_bank.
+
+    Provides ``iter_nodes()`` (yields UUID objects to match the real graph)
+    and ``get_centrality(uuid)`` (returns the per-node scalar). The legacy
+    ``_nx.nodes(data=True)`` shape is no longer used by memory_bank after
+    the mosaicsigma untangle wave.
+    """
     def __init__(self, centrality_by_id: dict[str, float]) -> None:
-        self._nx = _FakeNX(centrality_by_id)
+        from uuid import UUID as _UUID
+        self._centrality: dict[str, float] = dict(centrality_by_id)
+        # Accept either UUID-shaped strings or arbitrary string keys; downstream
+        # memory_bank does str(nid) on the yielded value, so UUID round-trips
+        # safely. Keys that don't parse as UUID stay as strings.
+        self._uuids: list[object] = []
+        for k in self._centrality.keys():
+            try:
+                self._uuids.append(_UUID(k))
+            except (ValueError, TypeError):
+                self._uuids.append(k)
+
+    def iter_nodes(self):
+        yield from self._uuids
+
+    def get_centrality(self, node_id) -> float:
+        return float(self._centrality.get(str(node_id), 0.0))
 
 
 def _processed_dir(home: Path) -> Path:
@@ -94,6 +112,8 @@ def _make_records(count: int, *, embed_dim: int) -> list[_StubRec]:
     now = datetime.now(timezone.utc)
     recs: list[_StubRec] = []
     for i in range(count):
+        # Float32-exact integer values keep Test 2's round-trip assertion
+        # deterministic across platforms.
         embedding = [float(i + j) for j in range(embed_dim)]
         recs.append(
             _StubRec(
@@ -116,6 +136,11 @@ def _read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in raw.splitlines() if line.strip()]
 
 
+# ---------------------------------------------------------------------------
+# Test 1 — file existence, mode, count, key set, descending-salience order
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.parametrize("m_records", [0, 3, 14])
 def test_processed_salience_top_n_written_at_rem_completion(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, m_records: int
@@ -126,6 +151,7 @@ def test_processed_salience_top_n_written_at_rem_completion(
     records = _make_records(m_records, embed_dim=embed_dim)
     store = _StubStore(records, embed_dim=embed_dim)
 
+    # Deterministic descending centrality: rec[0] highest, rec[-1] lowest.
     centrality_map: dict[str, float] = {}
     for idx, rec in enumerate(records):
         centrality_map[str(rec.id)] = float(m_records - idx)
@@ -157,10 +183,16 @@ def test_processed_salience_top_n_written_at_rem_completion(
             f"missing keys {required_keys - set(ln.keys())} in {ln}"
         )
 
+    # Descending salience.
     saliences = [float(ln["salience"]) for ln in lines]
     assert saliences == sorted(saliences, reverse=True), (
         f"saliences not descending: {saliences}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 2 — embedding dimension round-trip via base64
+# ---------------------------------------------------------------------------
 
 
 def test_processed_salience_top_n_embedding_dimension_matches_store(
@@ -201,6 +233,11 @@ def test_processed_salience_top_n_embedding_dimension_matches_store(
         )
 
 
+# ---------------------------------------------------------------------------
+# Test 3 — parent directory chmod 0o700 on first create + umask clobber fix
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.parametrize("preexisting_mode", [None, 0o755])
 def test_processed_parent_dir_mode_is_owner_only(
     tmp_path: Path,
@@ -213,6 +250,7 @@ def test_processed_parent_dir_mode_is_owner_only(
         pdir = _processed_dir(tmp_path)
         pdir.mkdir(parents=True, exist_ok=True)
         os.chmod(pdir, preexisting_mode)
+        # Confirm the simulated umask-clobber state before the writer runs.
         assert oct(stat.S_IMODE(os.stat(pdir).st_mode)) == oct(preexisting_mode)
 
     store = _StubStore([], embed_dim=8)
@@ -232,6 +270,11 @@ def test_processed_parent_dir_mode_is_owner_only(
     )
 
 
+# ---------------------------------------------------------------------------
+# Test 4 — bad-embedding records are skipped and warning is logged
+# ---------------------------------------------------------------------------
+
+
 def test_processed_skips_bad_embedding_and_warns(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -245,7 +288,7 @@ def test_processed_skips_bad_embedding_and_warns(
         id=uuid4(),
         tier="semantic",
         literal_surface="bad record with empty embedding",
-        embedding=[],
+        embedding=[],  # wrong dim → should be skipped
         created_at=datetime.now(timezone.utc),
     )
     records = list(valid_records) + [bad_rec]

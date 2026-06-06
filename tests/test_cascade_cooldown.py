@@ -1,4 +1,4 @@
-"""-03 R2 / A2 regression test — cascade poll cooldown.
+"""Regression test — cascade poll cooldown.
 
 Mechanism: mock `iai_mcp.daemon.time.monotonic` (the daemon-side cooldown
 clock) AND monkeypatch `HIPPEA_CASCADE_POLL_SEC` to 0.05s so the loop
@@ -26,7 +26,7 @@ import pytest
 
 @pytest.mark.skip(
     reason=(
-        "documented fallback (Task 2 'Note on test pragmatism'): "
+        "Plan 07.2-03 documented fallback (Task 2 'Note on test pragmatism'): "
         "patching `iai_mcp.daemon.time.monotonic` deadlocks asyncio's internal "
         "scheduler — `BaseEventLoop.time()` reads `time.monotonic()` for every "
         "deadline, so frozen clock => `await asyncio.wait_for(...)` never "
@@ -40,7 +40,7 @@ import pytest
     )
 )
 def test_at_most_six_cascades_over_five_minute_window_with_continuous_pending(monkeypatch):
-    """R2 acceptance: cooldown caps cascade rate to ≤ 6 in 5 min."""
+    """Cooldown caps cascade rate to ≤ 6 in 5 min."""
     asyncio.run(_at_most_six_cascades_body(monkeypatch))
 
 

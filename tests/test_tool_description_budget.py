@@ -1,6 +1,5 @@
-"""RED-state test scaffold. Tasks 2-5 turn these GREEN.
+"""MCP tool description budget audit.
 
-Covers / D5-07: MCP tool description budget audit.
 - Each of the 11 tools in mcp-wrapper/src/tools.ts has description ≤30 raw tok.
 - Total description budget ≤330 raw tok.
 - Exactly 11 tools present.
@@ -49,7 +48,7 @@ def _extract_top_level_descriptions() -> list[tuple[str, str]]:
     """
     text = TOOLS_TS.read_text()
     # Find every (name, description) pair where description immediately follows name.
-    # Pattern: name: "<tool>", ... description: "<desc>" (description may span
+    # Pattern: name: "<tool>",... description: "<desc>" (description may span
     # adjacent lines as string concatenation with `+`). Keep conservative.
     name_re = re.compile(r'name:\s*"([^"]+)"', re.MULTILINE)
     out: list[tuple[str, str]] = []
@@ -65,7 +64,7 @@ def _extract_top_level_descriptions() -> list[tuple[str, str]]:
         # Look for top-level description (the first description in this region
         # is the tool's own; subsequent ones under inputSchema.properties are
         # nested and we skip them). Handle multi-line TS concatenation:
-        #   description:\n          "part1" +\n          "part2",
+        # description:\n "part1" +\n "part2",
         concat_re = re.compile(
             r'description:\s*('
             r'"(?:[^"\\]|\\.)*"'
@@ -88,10 +87,10 @@ def _extract_top_level_descriptions() -> list[tuple[str, str]]:
 
 # ------------------------------------------------------------------- tests
 def test_tool_count_unchanged_at_12():
-    """raised the hot-surface from 11 to 12 by adding memory_capture."""
+    """The hot-surface grew from 11 to 12; episodes_recent raises it to 13."""
     descs = _extract_top_level_descriptions()
-    assert len(descs) == 12, (
-        f"expected 12 tool descriptions, found {len(descs)}: {[n for n, _ in descs]}"
+    assert len(descs) == 13, (
+        f"expected 13 tool descriptions, found {len(descs)}: {[n for n, _ in descs]}"
     )
 
 
@@ -103,7 +102,7 @@ def test_each_tool_description_le_30_tokens():
         if n > 30:
             offenders.append((name, n, desc[:80]))
     assert not offenders, (
-        " violation: some descriptions exceed 30 tokens:\n"
+        "Some descriptions exceed 30 tokens:\n"
         + "\n".join(f"  {n}: {t} tok -- {d!r}" for n, t, d in offenders)
     )
 
@@ -112,6 +111,6 @@ def test_total_tool_descriptions_le_330_tokens():
     descs = _extract_top_level_descriptions()
     total = sum(_tok(d) for _, d in descs)
     assert total <= 330, (
-        f" violation: total description budget {total} tok > 330\n"
+        f"Total description budget {total} tok > 330\n"
         + "\n".join(f"  {n}: {_tok(d)} tok" for n, d in descs)
     )

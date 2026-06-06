@@ -1,16 +1,14 @@
-"""redesign — load-bearing infrastructure tests.
+"""Shared-cosine helpers — load-bearing infrastructure tests.
 
-Verifies the new shared-cosine helpers introduced by against
-the locked decisions in `internal architecture spec
-08-CONTEXT.md`:
+Verifies the shared-cosine helpers:
 
 - single shared cosine pass — `_collect_graph_pool` is the (ids, embs)
   pool collector that feeds the one-shot matmul at the top of `_recall_core`.
 - mode-dependent community-gate soft bias — `COMMUNITY_BIAS_VERBATIM`
-  (0.0, HIPPEA pure / EPF literal / hippocampal episodic) and
-  `COMMUNITY_BIAS_CONCEPT` (0.1, CLS neocortical semantic / categorical
+  (0.0, literal / episodic) and
+  `COMMUNITY_BIAS_CONCEPT` (0.1, semantic / categorical
   hint), dispatched by `_gate_bias_for_mode(mode)` from the cue-classifier
-  in `core.dispatch` (R5).
+  in `core.dispatch()`.
 - candidate-pool size — `K_CANDIDATES = 200`, justified by the
   empirical 99th-percentile gold rank from the LongMemEval-S v1 trace
   plus 30% margin.
@@ -63,7 +61,7 @@ def _make(vec: list[float], text: str = "rec") -> MemoryRecord:
 
 
 def test_collect_graph_pool_returns_aligned_ids_and_embeddings(tmp_path) -> None:
-    """D-01 fast path: graph._nx node attr "embedding" is the cheap source.
+    """fast path: graph._nx node attr "embedding" is the cheap source.
 
     Build 5 nodes whose primary-axis embeddings are pre-installed onto
     the NetworkX node dict (the `build_runtime_graph` shape). Assert the
@@ -72,7 +70,7 @@ def test_collect_graph_pool_returns_aligned_ids_and_embeddings(tmp_path) -> None
     """
     from iai_mcp.pipeline import _collect_graph_pool
 
-    store = MemoryStore(path=tmp_path / "lancedb")
+    store = MemoryStore(path=tmp_path / "hippo")
     records: list[MemoryRecord] = []
     for i in range(5):
         vec = [0.0] * EMBED_DIM
@@ -83,9 +81,9 @@ def test_collect_graph_pool_returns_aligned_ids_and_embeddings(tmp_path) -> None
     graph = MemoryGraph()
     for rec in records:
         graph.add_node(rec.id, community_id=None, embedding=list(rec.embedding))
-        # Mirror what build_runtime_graph does: pour the payload onto the
-        # NetworkX node attr dict so _collect_graph_pool's fast path hits.
-        graph._nx.nodes[str(rec.id)].update({"embedding": list(rec.embedding)})
+        # Mirror what build_runtime_graph does: write the payload into the
+        # sidecar so _collect_graph_pool's fast path hits via get_embedding.
+        graph.set_node_payload(rec.id, {"embedding": list(rec.embedding)})
 
     pool_ids, pool_embs = _collect_graph_pool(graph, None, store)
 
@@ -110,7 +108,7 @@ def test_collect_graph_pool_empty_graph(tmp_path) -> None:
     """
     from iai_mcp.pipeline import _collect_graph_pool
 
-    store = MemoryStore(path=tmp_path / "lancedb")
+    store = MemoryStore(path=tmp_path / "hippo")
     graph = MemoryGraph()
     pool_ids, pool_embs = _collect_graph_pool(graph, None, store)
     assert pool_ids == []
@@ -122,15 +120,16 @@ def test_collect_graph_pool_falls_back_to_store_get(tmp_path) -> None:
     """When _nx.nodes has no embedding, _collect_graph_pool falls back to store.get."""
     from iai_mcp.pipeline import _collect_graph_pool
 
-    store = MemoryStore(path=tmp_path / "lancedb")
+    store = MemoryStore(path=tmp_path / "hippo")
     vec = [1.0] + [0.0] * (EMBED_DIM - 1)
     rec = _make(vec, text="store-only")
     store.insert(rec)
     graph = MemoryGraph()
     graph.add_node(rec.id, community_id=None, embedding=list(vec))
-    # Ensure the _nx node attr does NOT carry the embedding (force fallback).
-    if "embedding" in graph._nx.nodes[str(rec.id)]:
-        del graph._nx.nodes[str(rec.id)]["embedding"]
+    # Ensure the sidecar does NOT carry the embedding (force fallback path).
+    sidecar = graph._node_payload.get(str(rec.id))
+    if sidecar and "embedding" in sidecar:
+        del sidecar["embedding"]
 
     pool_ids, pool_embs = _collect_graph_pool(graph, None, store)
 
@@ -153,7 +152,7 @@ def test_K_CANDIDATES_is_200() -> None:
 
 
 def test_COMMUNITY_BIAS_constants_are_mode_dependent() -> None:
-    """verbatim=0.0 (HIPPEA pure) and concept=0.1 (CLS neocortical).
+    """verbatim=0.0 (pure) and concept=0.1 (CLS neocortical).
 
     Constants live at module level for downstream (`_recall_core` Stage 5)
     + test introspection. They are floats, never strings or ints.
@@ -167,7 +166,7 @@ def test_COMMUNITY_BIAS_constants_are_mode_dependent() -> None:
 
 
 def test_gate_bias_for_mode_returns_correct_value() -> None:
-    """D-02 helper: dispatch off mode parameter; defensive default is 0.0.
+    """helper: dispatch off mode parameter; defensive default is 0.0.
 
     Anything other than the literal string "concept" returns
     COMMUNITY_BIAS_VERBATIM (0.0) so a malformed / missing / case-mismatched

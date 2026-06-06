@@ -1,10 +1,10 @@
-"""Tests for LEARN-04 curiosity (D-23, D-24).
+"""Tests for Task 4 LEARN-04 curiosity.
 
-D-23 trigger: entropy > 0.7 bits, 3-turn cooldown.
-D-24 tiered style:
+ trigger: entropy > 0.7 bits, 3-turn cooldown.
+ tiered style:
 - low entropy (0.4-0.7): silent log via events table (curiosity_silent_log)
 - mid entropy (0.7-0.9): inline hint in next response
-- high entropy (>0.9):   direct clarifying question
+- high entropy (>0.9): direct clarifying question
 
 compute_entropy operates in base-2 (bits) consistent with "0.7 bits".
 """

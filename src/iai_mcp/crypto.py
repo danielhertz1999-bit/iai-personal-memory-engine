@@ -1,26 +1,25 @@
-"""/ AES-256-GCM encryption-at-rest primitives + file-backed key storage.
+"""AES-256-GCM encryption-at-rest primitives + file-backed key storage.
 
-Ciphertext format (string-encoded for LanceDB string-column storage):
+Ciphertext format (string-encoded for string-column storage):
 
     iai:enc:v1:<base64(nonce || ciphertext || tag)>
 
 Components:
-- prefix          "iai:enc:v1:" (identifies encrypted payload; enables mixed
+- prefix "iai:enc:v1:" (identifies encrypted payload; enables mixed
                   plaintext/ciphertext coexistence during v2->v3 migration)
-- nonce           12 random bytes (AES-GCM standard IV length)
-- ciphertext+tag  AESGCM.encrypt(nonce, plaintext_utf8, associated_data) output;
+- nonce 12 random bytes (AES-GCM standard IV length)
+- ciphertext+tag AESGCM.encrypt(nonce, plaintext_utf8, associated_data) output;
                   the 16-byte GCM authentication tag is appended by AESGCM.
 
 Associated data (AD) is the UUID bytes of the record id: this binds the
 ciphertext to its row so an attacker with write access cannot swap ciphertext
-values between rows (T-02-08-01 tampering mitigation).
+values between rows (tampering mitigation).
 
-Key storage (— file-backed primary, no keyring at module scope):
+Key storage (file-backed primary, no keyring at module scope):
 - Primary: a 32-raw-byte file at ``{store_root}/.crypto.key`` (default
   ``~/.iai-mcp/.crypto.key``), mode ``0o600``, owner-uid validated. Resolved
   via the ``store_root`` constructor argument (single-source path, threaded
-  from ``MemoryStore.root`` — see D-03). When ``store_root`` is
-
+  from ``MemoryStore.root`` — see). When ``store_root`` is
   ``None`` the path is read lazily from ``IAI_MCP_STORE`` env or the
   ``DEFAULT_STORAGE_PATH`` (``~/.iai-mcp``).
 - Fallback: passphrase via ``IAI_MCP_CRYPTO_PASSPHRASE`` env var (CI / fresh
@@ -30,8 +29,7 @@ Key storage (— file-backed primary, no keyring at module scope):
   so the same machine survives reboots without persisting anything new.
 - If neither path resolves, ``CryptoKey.get_or_create()`` raises
   ``CryptoKeyError`` with a dual-remediation message naming
-  ``iai-mcp crypto migrate-to-file`` (existing macOS Keychain key from before
-  ), ``iai-mcp crypto init`` (fresh install), and the
+  ``iai-mcp crypto migrate-to-file`` (existing macOS Keychain key from before), ``iai-mcp crypto init`` (fresh install), and the
   ``IAI_MCP_CRYPTO_PASSPHRASE`` env var (CI / non-interactive). No silent
   key generation — that would render existing data unreadable.
 
@@ -39,7 +37,7 @@ The migration CLI command ``iai-mcp crypto migrate-to-file`` keeps
 a function-local ``import keyring`` to read an existing macOS Keychain key
 once and write it to the file backend; this module never imports ``keyring``
 at file scope, so daemon boot under launchd does not block on the Keychain
-ACL prompt (/ ).
+ACL prompt.
 
 Module contract:
 - encrypt_field(plaintext, key, associated_data) -> str (prefixed base64)
@@ -48,11 +46,11 @@ Module contract:
 - CryptoKey(user_id, store_root=None).get_or_create() / rotate() / delete()
 - derive_key_from_passphrase(passphrase, salt) -> bytes (32)
 
-Constitutional fit:
-- : no keys stored in the LanceDB store; only ciphertext.
-- D-GUARD: file backend missing degrades to passphrase fallback; absent both,
+Design invariants:
+- No keys stored in the SQLite store; only ciphertext.
+- File backend missing degrades to passphrase fallback; absent both,
   refusal is loud with an actionable error pointing at both remediation paths.
-- encryption is lossless -- decrypt(encrypt(x)) == x byte-for-byte.
+- Encryption is lossless: decrypt(encrypt(x)) == x byte-for-byte.
 """
 from __future__ import annotations
 
@@ -68,7 +66,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 
-# Constitutional constants (module-scope for grep-discoverability).
+# Crypto constants (module-scope for grep-discoverability).
 CIPHERTEXT_PREFIX: str = "iai:enc:v1:"
 NONCE_BYTES: int = 12          # AES-GCM standard IV length
 KEY_BYTES: int = 32            # 256-bit key
@@ -92,7 +90,7 @@ class CryptoKeyError(RuntimeError):
     - Neither a key file NOR ``IAI_MCP_CRYPTO_PASSPHRASE`` is present;
       ``MemoryStore`` surfaces the error so the daemon refuses to start with
       a clear actionable message instead of silently proceeding without
-      encryption .
+      encryption.
     """
 
 
@@ -134,7 +132,7 @@ def encrypt_field(
 
     Returns
     -------
-    str:  "iai:enc:v1:" + base64(nonce || ciphertext || tag)
+    str: "iai:enc:v1:" + base64(nonce || ciphertext || tag)
     """
     if len(key) != KEY_BYTES:
         raise ValueError(f"key must be {KEY_BYTES} bytes (got {len(key)})")
@@ -209,7 +207,7 @@ def derive_key_from_passphrase(passphrase: str, salt: bytes) -> bytes:
 class CryptoKey:
     """File-backed 256-bit AES key with passphrase fallback.
 
-    redesign:
+     redesign:
         File backend at ``{store_root}/.crypto.key`` (32 raw bytes, mode
         ``0o600``, owner-uid validated) is the primary. Passphrase via
         ``IAI_MCP_CRYPTO_PASSPHRASE`` is the second-tier fallback. If neither
@@ -220,12 +218,12 @@ class CryptoKey:
 
     Usage:
         ck = CryptoKey(user_id="default", store_root=Path("~/.iai-mcp"))
-        key = ck.get_or_create()   # 32 bytes; reads from file or falls back
+        key = ck.get_or_create() # 32 bytes; reads from file or falls back
                                    # to passphrase
-        # ...
-        new_key = ck.rotate()      # writes a fresh key file (atomic temp+rename);
+        #...
+        new_key = ck.rotate() # writes a fresh key file (atomic temp+rename);
                                    # caller is responsible for re-encrypting data
-        ck.delete()                # remove the key file (test teardown / uninstall)
+        ck.delete() # remove the key file (test teardown / uninstall)
 
     Multi-user ready: each ``user_id`` derives its own passphrase salt
     (``sha256(user_id)[:16]``). The current product ships a single
@@ -256,7 +254,7 @@ class CryptoKey:
         return hashlib.sha256(self.user_id.encode("utf-8")).digest()[:16]
 
     def _key_file_path(self) -> Path:
-        """Resolve ``{store_root}/.crypto.key`` .
+        """Resolve ``{store_root}/.crypto.key``.
 
         Lazy resolution: if ``self.store_root`` was not supplied at
         construction, read ``IAI_MCP_STORE`` env or fall back to the project
@@ -275,7 +273,7 @@ class CryptoKey:
     def _try_file_get(self) -> Optional[bytes]:
         """Return 32 raw bytes from the key file; ``None`` if the file is absent.
 
-        strict validation:
+          strict validation:
         - mode strictly ``0o600`` — refuse if any group/world bits are set
           (``mode & 0o077 != 0``) with ``CryptoKeyError("...insecure mode...")``
         - ``st_uid == os.geteuid()`` — refuse files owned by a different user
@@ -315,7 +313,7 @@ class CryptoKey:
         return raw
 
     def _try_file_set(self, key: bytes) -> None:
-        """Atomically write ``key`` to the key file .
+        """Atomically write ``key`` to the key file.
 
         Pattern:
         1. ``mkdir -p`` the parent directory.
@@ -364,7 +362,7 @@ class CryptoKey:
     def get_or_create(self) -> bytes:
         """Return the 256-bit AES key for this user_id.
 
-        priority:
+         priority:
         1. Instance cache (``self._cached_key``) — avoids repeated file reads.
         2. File backend (``_try_file_get``) — returns the 32 raw bytes from
            ``{store_root}/.crypto.key`` if present, else ``None``.
@@ -379,7 +377,7 @@ class CryptoKey:
         if self._cached_key is not None:
             return self._cached_key
 
-        # Priority 1: file backend .
+        # Priority 1: file backend.
         existing = self._try_file_get()
         if existing is not None:
             self._cached_key = existing
@@ -392,14 +390,14 @@ class CryptoKey:
             self._cached_key = derived
             return derived
 
-        # Priority 3: refuse with a dual-remediation error message .
+        # Priority 3: refuse with a dual-remediation error message.
         path = self._key_file_path()
         raise CryptoKeyError(
             f"crypto key file not found at {path} and IAI_MCP_CRYPTO_PASSPHRASE "
             f"is not set.\n"
             f"\n"
             f"To fix:\n"
-            f" - Existing install (key was in macOS Keychain before ): "
+            f"  - Existing install (key was in macOS Keychain): "
             f"run `iai-mcp crypto migrate-to-file` from a Terminal where the "
             f"Keychain prompt can appear, then click \"Always Allow\".\n"
             f"  - Fresh install: run `iai-mcp crypto init` to generate a new key "
@@ -410,7 +408,7 @@ class CryptoKey:
     def rotate(self) -> bytes:
         """Generate a fresh 32-byte key, write it to the key file, return it.
 
-        rotation is now an atomic file-write operation,
+         : rotation is now an atomic file-write operation,
         irrespective of how the previous key was sourced. Caller is responsible
         for re-encrypting any existing ciphertext under the old key (see
         ``iai-mcp crypto rotate`` CLI; re-encryption is an application-layer

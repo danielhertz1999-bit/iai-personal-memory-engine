@@ -2,18 +2,18 @@
 # Linux systemd install/uninstall idempotency.
 #
 # Verifies:
-#   - DAEMON-01: unit installed under ~/.config/systemd/user
-#   - DAEMON-10: silent install (--yes bypasses consent banner)
-#   - C4 invariant: uninstall removes unit + ~/.iai-mcp/.lock +
-#     ~/.iai-mcp/.daemon.sock + ~/.iai-mcp/.daemon-state.json
-#   - Idempotency: install twice / uninstall twice -> no error
+# -: unit installed under ~/.config/systemd/user
+# -: silent install (--yes bypasses consent banner)
+# - Uninstall removes unit + ~/.iai-mcp/.lock +
+# ~/.iai-mcp/.daemon.sock + ~/.iai-mcp/.daemon-state.json
+# - Idempotency: install twice / uninstall twice -> no error
 #
 # Skipped on non-Linux (returns 0). macOS equivalent lives in
 # tests/shell/test_launchd_install.sh.
 #
 # Skipped if systemctl --user is not usable (headless CI without an active
 # user-systemd session, e.g. GitHub Actions ubuntu-latest by default).
-# DAEMON-12 cross-platform parity is enforced by CI matrix; this script is
+# cross-platform parity is enforced by CI matrix; this script is
 # a smoke test that runs FULL flow when a user session exists.
 
 set -euo pipefail
@@ -97,7 +97,7 @@ if [[ ! -f "$UNIT" ]]; then
     echo "FAIL: unit not created at $UNIT"
     exit 1
 fi
-# Pitfall 5 sanity: rendered unit has absolute python path
+# Sanity: rendered unit has absolute python path
 if ! grep -q "$PY" "$UNIT"; then
     echo "FAIL: unit does not contain absolute sys.executable ($PY)"
     cat "$UNIT"
@@ -119,27 +119,27 @@ if [[ ! -f "$UNIT" ]]; then
     exit 1
 fi
 
-# Seed state files so we can verify C4 cleanup actually removes them.
+# Seed state files so we can verify cleanup actually removes them.
 mkdir -p "$STATE_DIR"
 touch "$LOCK" "$SOCK"
 echo "{}" > "$STATE"
 
-echo "[4/6] First uninstall (C4: remove unit + 3 state files)..."
+echo "[4/6] First uninstall (remove unit + 3 state files)..."
 "${CLI[@]}" daemon uninstall --yes
 if [[ -f "$UNIT" ]]; then
     echo "FAIL: unit not removed"
     exit 1
 fi
 if [[ -f "$LOCK" ]]; then
-    echo "FAIL: lock file not removed (C4 violation)"
+    echo "FAIL: lock file not removed"
     exit 1
 fi
 if [[ -f "$SOCK" ]]; then
-    echo "FAIL: socket file not removed (C4 violation)"
+    echo "FAIL: socket file not removed"
     exit 1
 fi
 if [[ -f "$STATE" ]]; then
-    echo "FAIL: state file not removed (C4 violation)"
+    echo "FAIL: state file not removed"
     exit 1
 fi
 
@@ -159,5 +159,5 @@ if [[ -f "$UNIT" ]]; then
     exit 1
 fi
 
-echo "PASS: systemd install/uninstall idempotency + C4 + Pitfall 5"
+echo "PASS: systemd install/uninstall idempotency"
 exit 0

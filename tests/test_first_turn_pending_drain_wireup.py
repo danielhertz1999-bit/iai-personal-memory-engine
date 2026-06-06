@@ -1,7 +1,7 @@
-"""-04 R3 / A3 integration test — startup + per-tick TTL drain wired into daemon.
+"""Integration test — startup + per-tick TTL drain wired into daemon.
 
-Strategy: Task 1 threads an explicit `now=datetime.now(timezone.utc)`
-kwarg from BOTH wire-in call sites into `prune_first_turn_pending`. This
+Strategy: an explicit `now=datetime.now(timezone.utc)` kwarg is threaded
+from BOTH wire-in call sites into `prune_first_turn_pending`. This
 means the helper is fully testable by passing a fixed `NOW` directly —
 no datetime monkeypatching dance.
 
@@ -10,7 +10,7 @@ Three checks:
    eviction contract (5 stale evict, 5 fresh keep, dropped IDs returned).
 2. Smoke import confirms the names daemon.py imports are reachable.
 3. Source-grep on daemon.py confirms both wire-in sites pass the explicit
-   `now=` kwarg (Task 1's structural contract).
+   `now=` kwarg.
 
 Project async-test idiom (mandatory): sync `def test_*`. No
 `@pytest.mark.asyncio`. The helper itself is sync, so all tests here
@@ -49,9 +49,9 @@ def _make_mixed_state() -> dict:
 
 
 def test_prune_helper_drops_5_stale_keeps_5_fresh_with_fixed_now():
-    """A3 acceptance (helper contract): with NOW fixed and 5 stale + 5 fresh
+    """Helper contract: with NOW fixed and 5 stale + 5 fresh
     entries, the helper returns 5 dropped IDs and a state holding only the
-    fresh entries. This is exactly the contract wire-in invokes
+    fresh entries. This is exactly the contract the wire-in invokes
     at startup and per-tick.
     """
     from iai_mcp.daemon_state import (
@@ -60,9 +60,9 @@ def test_prune_helper_drops_5_stale_keeps_5_fresh_with_fixed_now():
     )
 
     state = _make_mixed_state()
-    # Task 1 calls this with the EXACT signature shown below at
-    # both wire-in sites. The test mirrors the wire-in call shape so any
-    # future signature drift breaks BOTH sides at once.
+    # The wire-in sites call this with the EXACT signature shown below.
+    # The test mirrors the wire-in call shape so any future signature drift
+    # breaks BOTH sides at once.
     new_state, dropped = prune_first_turn_pending(state, now=NOW)
 
     # 5 stale IDs evict.
@@ -74,7 +74,7 @@ def test_prune_helper_drops_5_stale_keeps_5_fresh_with_fixed_now():
     assert len(kept) == 5
     for k in kept:
         assert k.startswith("sess-fresh-"), f"unexpected key kept: {k}"
-    # Helper exposes the TTL constant wire-in uses for the event
+    # Helper exposes the TTL constant the wire-in uses for the event
     # payload — sanity-check it has the documented value (1 h).
     assert FIRST_TURN_PENDING_TTL_SEC_DEFAULT == 3600.0
 
@@ -100,7 +100,7 @@ def test_prune_helper_no_drop_when_only_fresh_entries():
 def test_first_turn_pending_drain_helper_imported_in_daemon_main():
     """Smoke: daemon.main() can import the helper without error.
 
-    If import block is wrong (typo, wrong module, etc.), this
+    If the import block is wrong (typo, wrong module, etc.), this
     fails fast.
     """
     from iai_mcp.daemon_state import (
@@ -115,15 +115,15 @@ def test_daemon_wire_in_passes_explicit_now_kwarg_at_both_sites():
     """Structural check: read daemon.py source and confirm BOTH wire-in
     sites pass `now=datetime.now(timezone.utc)` explicitly.
 
-    This is the wire-up half of A3 — without it, Task 2 only proves the
-    helper works, not that Task 1 wired it in correctly. Task 1's
+    This is the wire-up half — without it, the helper-contract test only
+    proves the helper works, not that it was wired in correctly. The
     contract is that BOTH call sites thread `now=` explicitly so the
     helper is testable without datetime mocking.
     """
     daemon_src = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "daemon.py"
     text = daemon_src.read_text()
 
-    # Match `prune_first_turn_pending(\n    state, now=datetime.now(timezone.utc)`
+    # Match `prune_first_turn_pending(\n state, now=datetime.now(timezone.utc)`
     # tolerantly across whitespace + line breaks.
     pat = re.compile(
         r"prune_first_turn_pending\s*\(\s*state\s*,\s*now\s*=\s*datetime\.now\(\s*timezone\.utc\s*\)",
@@ -132,7 +132,7 @@ def test_daemon_wire_in_passes_explicit_now_kwarg_at_both_sites():
     matches = pat.findall(text)
     assert len(matches) >= 2, (
         f"Expected >= 2 wire-in sites with explicit `now=datetime.now(timezone.utc)` "
-        f"kwarg in daemon.py; found {len(matches)}. Task 1 contract:"
+        f"kwarg in daemon.py; found {len(matches)}. Plan 04 Task 1 contract:"
         f" both startup-prune (in main()) and tick-prune (in _tick_body Step 0.5)"
         f" must thread `now=` explicitly."
     )

@@ -101,7 +101,7 @@ def _make_record(vec: list[float], text: str) -> MemoryRecord:
 def seeded_store(tmp_path: Path) -> tuple[MemoryStore, _DetEmbedder, list[MemoryRecord]]:
     """Fresh store with 12 records so the seed+spread stages have enough
     material to exercise the graph-native read path."""
-    store = MemoryStore(path=tmp_path / "lancedb")
+    store = MemoryStore(path=tmp_path / "hippo")
     store.root = tmp_path
     emb = _DetEmbedder(dim=store.embed_dim)
     recs = []
@@ -117,24 +117,29 @@ def seeded_store(tmp_path: Path) -> tuple[MemoryStore, _DetEmbedder, list[Memory
 
 
 def test_A1_build_runtime_graph_attaches_node_payload(seeded_store):
-    """A1: every node carries embedding + surface + centrality + tier."""
+    """A1: every node carries embedding + surface + centrality + tier in sidecar."""
     store, _emb, recs = seeded_store
     graph, _assignment, _rc = retrieve.build_runtime_graph(store)
 
-    # Use the underlying NetworkX graph directly; adds the
-    # payload as NetworkX node attributes via G.add_node(id, **payload).
-    G = graph._nx
-    assert G.number_of_nodes() == len(recs)
+    # Post-untangle: payload lives in the _node_payload sidecar, surfaced via
+    # graph.get_payload(uuid). The legacy graph._nx.nodes[*] read path was
+    # retired by the mosaicsigma wave.
+    listed = list(graph.iter_nodes())
+    assert len(listed) == len(recs)
     for rec in recs:
-        node = G.nodes[str(rec.id)]
-        assert "embedding" in node, f"node {rec.id} missing embedding attr"
-        assert "surface" in node, f"node {rec.id} missing surface attr"
-        assert "centrality" in node, f"node {rec.id} missing centrality attr"
-        assert "tier" in node, f"node {rec.id} missing tier attr"
-        # Embedding list matches the record's embedding.
-        assert list(node["embedding"]) == list(rec.embedding)
-        assert node["surface"] == rec.literal_surface
-        assert node["tier"] == rec.tier
+        payload = graph.get_payload(rec.id)
+        assert "embedding" in payload, f"node {rec.id} missing embedding sidecar"
+        assert "surface" in payload, f"node {rec.id} missing surface sidecar"
+        assert "centrality" in payload, f"node {rec.id} missing centrality sidecar"
+        assert "tier" in payload, f"node {rec.id} missing tier sidecar"
+        # Embedding list matches the record's embedding within float32 precision
+        # (SQLite stores embeddings as float32 BLOB; minor precision loss is expected).
+        import pytest as _pt
+        assert list(payload["embedding"]) == _pt.approx(
+            list(rec.embedding), rel=1e-5
+        )
+        assert payload["surface"] == rec.literal_surface
+        assert payload["tier"] == rec.tier
 
 
 # ---------------------------------------------------------------- A2: seed stage
@@ -229,7 +234,7 @@ def test_A3_spread_stage_reads_from_graph_not_store(seeded_store):
 def test_A4_verbatim_l0_fast_path_still_calls_store_get(seeded_store):
     """A4: the L0 (gate-skip) fast path still hits store.get — unchanged.
 
-    invariant: verbatim recall path is NOT touched.
+     invariant: verbatim recall path is NOT touched.
     """
     store, emb, _recs = seeded_store
     # Seed the deterministic L0 record so the gate-skip branch fires.
@@ -283,17 +288,19 @@ def test_A4_verbatim_l0_fast_path_still_calls_store_get(seeded_store):
 
 
 def test_A5_missing_node_attr_falls_back_to_store_get(seeded_store):
-    """A5: if a node somehow lacks the embedding attr (race / partial
-    sync), _read_record_payload falls back to store.get and recall still
-    returns correct hits — no crash."""
+    """A5: if a node somehow lacks the embedding (race / partial sync),
+    pool collection falls back to store.get and recall still returns
+    correct hits — no crash.
+    """
     store, emb, recs = seeded_store
     graph, assignment, rich_club = retrieve.build_runtime_graph(store)
-    # Blow away the embedding attr on half the nodes.
-    G = graph._nx
+    # Blow away the embedding sidecar entry on half the nodes — pool
+    # collection will fall back to store.get for these.
     victims = [str(r.id) for r in recs[:6]]
-    for nid in victims:
-        if "embedding" in G.nodes[nid]:
-            del G.nodes[nid]["embedding"]
+    for nid_str in victims:
+        sidecar = graph._node_payload.get(nid_str)
+        if sidecar and "embedding" in sidecar:
+            del sidecar["embedding"]
 
     cue = "summary of cli subcommand changes for the auth token rotation"
     resp = recall_for_response(

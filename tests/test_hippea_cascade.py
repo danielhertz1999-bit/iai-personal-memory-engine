@@ -1,15 +1,14 @@
-"""Tests for src/iai_mcp/hippea_cascade.py — / D5-05.
+"""Tests for src/iai_mcp/hippea_cascade.py — activation cascade prefetch.
 
-HIPPEA activation cascade prefetch:
 - Salience formula: variance-weighted prediction error over 7 days of
   session_started + retrieval_used events.
 - Cold fallback (<3 sessions) reuses assignment.top_communities.
 - Process-local cachetools.TTLCache(maxsize=200, ttl=1800) guarded by
   asyncio.Lock.
-- Constitutional invariants:
-  C3: no anthropic / no ANTHROPIC_API_KEY in the module.
-  C6: read-only against the store (no insert/update/append_provenance calls).
-  C1: cascade task yields on shutdown signal within 5s.
+- Invariants:
+  - no anthropic / no ANTHROPIC_API_KEY in the module.
+  - read-only against the store (no insert/update/append_provenance calls).
+  - cascade task yields on shutdown signal within 5s.
 
 All tests use a hermetic tmp_path MemoryStore so the process-local LRU is
 always reset between runs (via the reset_warm_lru fixture).
@@ -96,7 +95,7 @@ def _isolated_keyring(monkeypatch: pytest.MonkeyPatch):
 @pytest.fixture
 def store(tmp_path: Path) -> MemoryStore:
     """Hermetic MemoryStore rooted at tmp_path (explicit path kwarg)."""
-    return MemoryStore(path=tmp_path / "lancedb")
+    return MemoryStore(path=tmp_path / "hippo")
 
 
 # ---------------------------------------------------------------- salience formula
@@ -139,7 +138,7 @@ def test_compute_salient_communities_ranks_by_pe(
     # That's OK — the formula rewards magnitude either way; dominant ranks
     # deterministically by UUID tiebreak.
     # Instead build a clear asymmetry: 7 dominant vs 1 rare -> PE_dom=0.28,
-    # PE_rare=0.375. Rare wins on PE! This is exactly the HIPPEA point:
+    # PE_rare=0.375. Rare wins on PE! This is exactly the point:
     # deviation from uniform is what matters, not absolute frequency.
     # Use 8 dominant + 2 rare (p=0.5): PE_dom=0.3, PE_rare=0.3; ties.
     # Use 9 dominant + 1 rare (p=0.5): PE_dom=0.4, PE_rare=0.4; ties.
@@ -177,7 +176,7 @@ def test_compute_salient_communities_ranks_by_pe(
             )
     # Run the formula and verify dominant is in top-1.
     top = hippea_cascade.compute_salient_communities(store, assignment, top_k=1)
-    # Whichever HIPPEA variant prevails, dominant's PE is strictly greater;
+    # Whichever variant prevails, dominant's PE is strictly greater;
     # the only way to lose is if its w is massively smaller -- which requires
     # a far more bursty temporal shape than the other two. With all events
     # inserted contemporaneously, all three communities share day_idx=0 --

@@ -1,4 +1,4 @@
-"""pytest wrapper for the platform-specific shell tests.
+"""Pytest wrapper for the platform-specific shell tests.
 
 Runs tests/shell/test_launchd_install.sh on macOS and
 tests/shell/test_systemd_install.sh on Linux WHEN the env var
@@ -8,7 +8,7 @@ bootstrap / systemctl --user enable cycle which would install the daemon
 on the developer's machine and produce a persistent background process).
 
 When the env var is unset, the actual-execution tests skip but the static
-verification tests still run (executable bit, skip branches, C4 invariants
+verification tests still run (executable bit, skip branches, cleanup invariants
 referenced in script source).
 """
 from __future__ import annotations
@@ -37,7 +37,7 @@ def _bash_available() -> bool:
 @pytest.mark.skipif(not _bash_available(), reason="bash unavailable")
 @pytest.mark.skipif(platform.system() != "Darwin", reason="macOS-only")
 def test_launchd_install_idempotency() -> None:
-    """C4 + Pitfall 5 + idempotency end-to-end on the host."""
+    """Idempotency end-to-end on the host."""
     result = subprocess.run(
         ["bash", str(LAUNCHD_SCRIPT)],
         capture_output=True,
@@ -59,7 +59,7 @@ def test_launchd_install_idempotency() -> None:
 @pytest.mark.skipif(not _bash_available(), reason="bash unavailable")
 @pytest.mark.skipif(platform.system() != "Linux", reason="Linux-only")
 def test_systemd_install_idempotency() -> None:
-    """C4 + Pitfall 5 + idempotency end-to-end on the host."""
+    """Idempotency end-to-end on the host."""
     result = subprocess.run(
         ["bash", str(SYSTEMD_SCRIPT)],
         capture_output=True,
@@ -135,13 +135,12 @@ def test_shell_scripts_have_skip_branch() -> None:
         assert "SKIP: not Linux" in text, "systemd script missing Linux skip branch"
 
 
-def test_shell_scripts_check_c4_invariant() -> None:
-    """Both scripts must verify C4 cleanup of all 3 state files."""
+def test_shell_scripts_check_cleanup_invariant() -> None:
+    """Both scripts must verify cleanup of all 3 state files."""
     for script in (LAUNCHD_SCRIPT, SYSTEMD_SCRIPT):
         if not script.exists():
             continue
         text = script.read_text()
-        assert "C4" in text, f"{script.name} missing C4 reference"
         assert ".lock" in text, f"{script.name} does not check lock file removal"
         assert ".daemon.sock" in text or "SOCK" in text, (
             f"{script.name} does not check socket file removal"

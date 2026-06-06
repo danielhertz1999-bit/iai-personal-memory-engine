@@ -17,7 +17,7 @@ def test_m4_low_variance_on_stable_writes(tmp_path):
     """20 writes that converge near 0.5 -> low variance."""
     store = MemoryStore(path=tmp_path)
     for i in range(20):
-        # Convergent series 0.49 -> 0.50 -> 0.51 ...
+        # Convergent series 0.49 -> 0.50 -> 0.51...
         new = 0.5 + (i % 3 - 1) * 0.01
         write_event(
             store, kind="profile_updated",

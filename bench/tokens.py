@@ -1,4 +1,4 @@
-"""bench/tokens.py -- / benchmark harness.
+"""bench/tokens.py -- benchmark harness.
 
 Measures session-start token budget three ways, preferring the most accurate
 source available at runtime:
@@ -6,7 +6,7 @@ source available at runtime:
 1. Anthropic `count_tokens` API (best). Used when ANTHROPIC_API_KEY is set.
    Gives an honest billable-token count that includes Anthropic-side overhead
    and exact tokeniser output. Model: claude-sonnet-4-5. This is the only mode
-   whose numbers are safe to publish (PROJECT.md: "honest mode-by-mode
+   whose numbers are safe to publish (: "honest mode-by-mode
    benchmarks, not headline numbers").
 
 2. tiktoken cl100k_base fallback. OpenAI's tokeniser shipped with the tiktoken
@@ -29,7 +29,7 @@ Exit codes:
 - 1: at least one failed
 
 JSON output format (one line to stdout):
-    {"fresh": int, "warm": [int, ...], "steady_ok": bool, "fresh_ok": bool,
+    {"fresh": int, "warm": [int,...], "steady_ok": bool, "fresh_ok": bool,
      "mode": "anthropic-count-tokens" | "tiktoken-cl100k-proxy" |
              "heuristic-char4" | "injected",
      "limits": {"steady": 3000, "fresh": 8000}}
@@ -40,6 +40,18 @@ import json
 import os
 import sys
 from typing import Callable
+
+# Resolve iai_mcp.* (via src) AND bench.* (via worktree root) to THIS
+# worktree, not the parent venv's editable install. Idempotent: each
+# `sys.path.insert` is guarded by an "if not already present" check.
+import sys
+from pathlib import Path
+_SRC_PATH = str(Path(__file__).resolve().parent.parent / "src")
+_ROOT_PATH = str(Path(__file__).resolve().parent.parent)
+if _SRC_PATH not in sys.path:
+    sys.path.insert(0, _SRC_PATH)
+if _ROOT_PATH not in sys.path:
+    sys.path.insert(0, _ROOT_PATH)
 
 from iai_mcp.retrieve import build_runtime_graph
 from iai_mcp.session import SessionStartPayload, assemble_session_start
@@ -83,7 +95,7 @@ def _payload_to_prompt(payload: SessionStartPayload) -> str:
     Mirrors the TypeScript wrapper's buildCachedSystemPrompt shape so the
     counted prompt is faithful to what Anthropic actually receives.
 
-    D5-02: at wake_depth=minimal, the legacy l0/l1/l2/rich_club
+     : at wake_depth=minimal, the legacy l0/l1/l2/rich_club
     fields are empty and the payload is three pointer handles. Include them
     alongside legacy segments so both modes flatten to a representative
     prompt string for counting.
@@ -97,12 +109,12 @@ def _payload_to_prompt(payload: SessionStartPayload) -> str:
         parts.append(f"# L2 community\n{segment}")
     if payload.rich_club:
         parts.append(f"# Global rich-club\n{payload.rich_club}")
-    # / 05-06: lazy session-start wire payload.
+    # Lazy session-start wire payload.
     # Under wake_depth=minimal the wire is the compact handle alone
     # (the 3 legacy pointer fields stay on the dataclass for back-compat
     # callers but are NOT serialised to the wire).
-    # Under standard/deep the wire is the Phase-1 eager L0/L1/L2/rich_club
-    # plus the 3 legacy pointer fields, matching the pre-05-06 baseline.
+    # Under standard/deep the wire is the eager L0/L1/L2/rich_club
+    # plus the 3 legacy pointer fields, matching the legacy baseline.
     # The compact handle is carried on the dataclass under standard/deep
     # too so opt-in callers may read it, but it does NOT add to the wire
     # (that would inflate the standard baseline).
@@ -125,10 +137,10 @@ def _payload_to_prompt(payload: SessionStartPayload) -> str:
 
 
 def _fresh_prompt(payload: SessionStartPayload) -> str:
-    """the first fresh-session request pays the cache-populate premium.
+    """The first fresh-session request pays the cache-populate premium.
 
     Simulated here by padding the cached prefix with ~1000 tokens of dynamic
-    tail content (D-10 dynamic reserve). Anthropic's count_tokens will return
+    tail content (dynamic reserve). Anthropic's count_tokens will return
     the sum of both parts in one call.
     """
     prompt = _payload_to_prompt(payload)
@@ -146,13 +158,13 @@ def run_token_bench(
 
     Parameters:
         store: optional MemoryStore override (tests pass an isolated tmp_path store).
-        n_runs: how many warm-cache repeats to measure (OPS-01 steady-state needs
+        n_runs: how many warm-cache repeats to measure (steady-state needs
                 at least 3 consecutive samples).
         count_tokens_fn: optional token-counter injection (test-only); overrides both
                 the Anthropic API and the heuristic fallback.
-        wake_depth: TOK-11 — selects session-start payload mode.
+        wake_depth: selects session-start payload mode.
                 Default ``minimal`` measures the lazy <=30-tok handle; pass
-                ``standard`` for the Phase-1 eager dump baseline; ``deep`` for
+                ``standard`` for the eager dump baseline; ``deep`` for
                 the ≤2000-tok expanded rich_club.
 
     Returns a dict with keys described in the module docstring.
@@ -228,16 +240,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="bench.tokens",
         description=(
-            "OPS-01/OPS-02 session-start token bench. TOK-11 added "
-            "--wake-depth for measuring the lazy <=30-tok payload vs Phase-1 "
-            "eager dump vs the deep variant."
+            "Session-start token bench. Measures the lazy <=30-tok payload, "
+            "standard, and deep wake_depth variants."
         ),
     )
     parser.add_argument(
         "--wake-depth",
         choices=("minimal", "standard", "deep"),
         default="minimal",
-        help="Session-start payload mode (default: minimal per D5-02).",
+        help="Session-start payload mode (default: minimal).",
     )
     args = parser.parse_args(argv)
     result = run_token_bench(wake_depth=args.wake_depth)

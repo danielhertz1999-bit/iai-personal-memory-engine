@@ -8,7 +8,7 @@ Contract (MAX_DRAIN_EVENTS_PER_RUN = 5000):
 - The partial file's first line is a valid header dict.
 
 `capture_turn` is monkeypatched to a no-op so the test exercises drain
-control flow, not embedder + LanceDB throughput.
+control flow, not embedder + store throughput.
 """
 from __future__ import annotations
 
@@ -31,14 +31,14 @@ def fast_drain_env(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("PYTHON_KEYRING_BACKEND", "keyring.backends.fail.Keyring")
     monkeypatch.setenv("IAI_MCP_CRYPTO_PASSPHRASE", "test-cap-pass")
-    monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path / ".iai-mcp" / "lancedb"))
+    monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path / ".iai-mcp" / "hippo"))
     import keyring.core
     keyring.core._keyring_backend = None
 
     from iai_mcp import capture as capture_mod
 
     def fake_capture_turn(store, *, cue="", text="", tier="episodic",
-                          session_id="-", role="user"):
+                          session_id="-", role="user", ts=None, **_):
         return {"status": "inserted", "record_id": "x", "reason": ""}
 
     monkeypatch.setattr(capture_mod, "capture_turn", fake_capture_turn)
@@ -95,7 +95,7 @@ def test_partial_drain_at_5000(fast_drain_env):
 
 
 def test_second_pass_drains_remainder(fast_drain_env):
-    """Re-running drain on the residual finishes the job; dir ends empty of .jsonl."""
+    """Re-running drain on the residual finishes the job; dir ends empty of.jsonl."""
     from iai_mcp.capture import drain_deferred_captures
 
     deferred = fast_drain_env / ".iai-mcp" / ".deferred-captures"

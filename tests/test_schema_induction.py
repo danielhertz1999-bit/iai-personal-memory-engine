@@ -1,15 +1,15 @@
-"""Tests for LEARN-03 schema induction (D-18 + D-21).
+"""Tests for Task 3 LEARN-03 schema induction (+).
 
-dual-path schema surfacing.
+: dual-path schema surfacing.
 - Primary: batch induction inside sleep cycle (Tier 1 Haiku when allowed, Tier 0
   cooccurrence + TF-IDF otherwise).
 - Secondary: entropy-gated provisional schemas surfaced during pipeline_recall.
 
-D-21 (autism-tuned):
+ (autism-tuned):
 - Auto-induct at co_occurrence >= 5 AND confidence >= 0.85.
 - User-approval flag at [3, 5) AND [0.65, 0.85).
 - Exception preservation: exceptions stored as first-class records.
-- Abstraction level: concrete (Dawson-Mottron).
+- Abstraction level: concrete (Dawson-).
 """
 from __future__ import annotations
 

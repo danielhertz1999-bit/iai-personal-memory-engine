@@ -269,7 +269,7 @@ def test_dst_spring_forward_no_crash(tmp_path, monkeypatch):
     tz = ZoneInfo("America/New_York")
     store = _fresh_store(tmp_path, monkeypatch)
 
-    # Seed 7 days that span DST start (US: 2026-03-08 at 02:00 jumps to 03:00).
+    # Seed 7 days spanning the US DST spring-forward boundary (02:00 -> 03:00).
     day_start = datetime(2026, 3, 5, 0, 0).replace(tzinfo=tz)
     _seed_sessions(
         store,

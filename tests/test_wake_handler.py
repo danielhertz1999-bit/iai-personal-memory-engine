@@ -1,6 +1,6 @@
-"""— tests for :class:`iai_mcp.wake_handler.WakeHandler`.
+"""Tests for :class:`iai_mcp.wake_handler.WakeHandler`.
 
-Five-test matrix from CONTEXT 10.5:
+Five-test matrix:
 
 - ``test_consume_wake_signal_when_present_deletes_and_returns_true``.
 - ``test_consume_wake_signal_when_absent_returns_false``.

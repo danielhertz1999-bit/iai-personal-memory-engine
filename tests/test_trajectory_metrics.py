@@ -1,6 +1,6 @@
-"""Tests for LEARN-07 trajectory metrics.
+"""Tests for Task 4 LEARN-07 trajectory metrics.
 
-every session_exit writes one trajectory_metric event per metric.
+: every session_exit writes one trajectory_metric event per metric.
 Metrics:
 - M1: clarifying questions per session (decreasing)
 - M2: retrieval precision@5 (growing)

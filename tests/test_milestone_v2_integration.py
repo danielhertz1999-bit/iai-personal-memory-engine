@@ -1,4 +1,4 @@
-"""Task 1.9 -- milestone v2.0 integration test.
+"""Milestone v2.0 integration test.
 
 End-to-end exercise of the wake/sleep cycle pipeline:
 
@@ -12,7 +12,7 @@ End-to-end exercise of the wake/sleep cycle pipeline:
    into SLEEP.
 
 3. SLEEP -> sleep_pipeline.run completes 5 steps. With a stubbed
-   pipeline that bypasses the real LanceDB optimize / schema mining
+   pipeline that bypasses the real SQLite optimize / schema mining
    work (those are exercised end-to-end in their own unit suites),
    the sleep cycle reports ``len(completed_steps) == 5``.
 
@@ -36,11 +36,10 @@ is exercised against a stub pipeline class that returns a
 synthesized result dict matching the production ``run()``
 signature; the lifecycle TICK-loop logic is validated by direct
 event dispatch rather than spawning a real daemon subprocess.
-
-Validates: WAKE-02, WAKE-12, WAKE-13, WAKE-14, WAKE-15.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
@@ -61,7 +60,18 @@ from iai_mcp.lifecycle_lock import (
     LifecycleLockConflict,
 )
 from iai_mcp.lifecycle_state import LifecycleState, load_state
+from iai_mcp.s2_coordinator import S2Coordinator
 from iai_mcp.sleep_pipeline import SleepPipelineResult, SleepStep
+
+
+# Helper used by every test: dispatch is async. The repo has
+# NO pytest-asyncio configured (verified pyproject.toml has no asyncio_mode
+# block; `import pytest_asyncio` fails). Wrapping each call in asyncio.run
+# keeps the tests sync — no fixture changes beyond the coordinator wiring
+# in `_make_lsm` below — and avoids adding a dev dependency for one suite.
+def _dispatch(lsm: LifecycleStateMachine, event: LifecycleEvent, **payload) -> LifecycleState:
+    """Synchronous adapter for the async LifecycleStateMachine.dispatch."""
+    return asyncio.run(lsm.dispatch(event, **payload))
 
 
 # ---------------------------------------------------------------------------
@@ -87,12 +97,30 @@ def integration_root(
 
 
 def _make_lsm(integration_root: Path) -> LifecycleStateMachine:
-    """Construct a state machine rooted under integration_root."""
+    """Construct a state machine rooted under integration_root.
+
+     makes `coordinator` a REQUIRED kwarg on LSM. We construct
+    a tmp-path-rooted S2Coordinator with `dry_run=True` so the existing
+    test-suite never hits the oscillation guard (these tests drive linear
+    progressions, not reverse-direction races). `store=None` is safe
+    because every `write_event` call in s2_coordinator is wrapped in
+    try/except — the events are dropped silently when store is unset.
+    Both bookkeeping (LSM) and state-change (coordinator) writes target
+    the SAME state_path so on-disk assertions stay consistent.
+    """
+    state_path = integration_root / "lifecycle_state.json"
+    coordinator = S2Coordinator(
+        store=None,
+        state_path=state_path,
+        min_interval_sec=5.0,
+        dry_run=True,
+    )
     return LifecycleStateMachine(
-        state_path=integration_root / "lifecycle_state.json",
+        state_path=state_path,
         event_log=LifecycleEventLog(log_dir=integration_root / "logs"),
         lock_path=integration_root / ".lifecycle.lock",
         shadow_run=False,
+        coordinator=coordinator,
     )
 
 
@@ -105,7 +133,7 @@ def test_wake_to_drowsy_on_idle_5min(integration_root: Path) -> None:
     lsm = _make_lsm(integration_root)
     assert lsm.current_state is LifecycleState.WAKE
 
-    lsm.dispatch(LifecycleEvent.IDLE_5MIN)
+    _dispatch(lsm, LifecycleEvent.IDLE_5MIN)
     assert lsm.current_state is LifecycleState.DROWSY
 
     record = load_state(integration_root / "lifecycle_state.json")
@@ -122,15 +150,15 @@ def test_drowsy_to_sleep_requires_sleep_eligible_payload(
     integration_root: Path,
 ) -> None:
     lsm = _make_lsm(integration_root)
-    lsm.dispatch(LifecycleEvent.IDLE_5MIN)
+    _dispatch(lsm, LifecycleEvent.IDLE_5MIN)
     assert lsm.current_state is LifecycleState.DROWSY
 
     # Without sleep_eligible=True, IDLE_30MIN is a no-op.
-    lsm.dispatch(LifecycleEvent.IDLE_30MIN)
+    _dispatch(lsm, LifecycleEvent.IDLE_30MIN)
     assert lsm.current_state is LifecycleState.DROWSY
 
     # With sleep_eligible=True, transitions to SLEEP.
-    lsm.dispatch(LifecycleEvent.IDLE_30MIN, sleep_eligible=True)
+    _dispatch(lsm, LifecycleEvent.IDLE_30MIN, sleep_eligible=True)
     assert lsm.current_state is LifecycleState.SLEEP
 
 
@@ -143,15 +171,15 @@ def test_sleep_to_hibernation_on_cycle_done_with_still_idle(
     integration_root: Path,
 ) -> None:
     lsm = _make_lsm(integration_root)
-    lsm.dispatch(LifecycleEvent.IDLE_5MIN)
-    lsm.dispatch(LifecycleEvent.IDLE_30MIN, sleep_eligible=True)
+    _dispatch(lsm, LifecycleEvent.IDLE_5MIN)
+    _dispatch(lsm, LifecycleEvent.IDLE_30MIN, sleep_eligible=True)
     assert lsm.current_state is LifecycleState.SLEEP
 
     # SLEEP_CYCLE_DONE without still_idle is a no-op.
-    lsm.dispatch(LifecycleEvent.SLEEP_CYCLE_DONE)
+    _dispatch(lsm, LifecycleEvent.SLEEP_CYCLE_DONE)
     assert lsm.current_state is LifecycleState.SLEEP
 
-    lsm.dispatch(LifecycleEvent.SLEEP_CYCLE_DONE, still_idle=True)
+    _dispatch(lsm, LifecycleEvent.SLEEP_CYCLE_DONE, still_idle=True)
     assert lsm.current_state is LifecycleState.HIBERNATION
 
 
@@ -163,14 +191,14 @@ def test_sleep_to_hibernation_on_cycle_done_with_still_idle(
 def test_hibernation_to_wake_via_wake_signal(integration_root: Path) -> None:
     lsm = _make_lsm(integration_root)
     # Drive to HIBERNATION.
-    lsm.dispatch(LifecycleEvent.IDLE_5MIN)
-    lsm.dispatch(LifecycleEvent.IDLE_30MIN, sleep_eligible=True)
-    lsm.dispatch(LifecycleEvent.SLEEP_CYCLE_DONE, still_idle=True)
+    _dispatch(lsm, LifecycleEvent.IDLE_5MIN)
+    _dispatch(lsm, LifecycleEvent.IDLE_30MIN, sleep_eligible=True)
+    _dispatch(lsm, LifecycleEvent.SLEEP_CYCLE_DONE, still_idle=True)
     assert lsm.current_state is LifecycleState.HIBERNATION
 
     # Wrapper kickstart writes wake.signal; daemon reads, dispatches
     # WAKE_SIGNAL; LSM transitions HIBERNATION -> WAKE.
-    lsm.dispatch(LifecycleEvent.WAKE_SIGNAL)
+    _dispatch(lsm, LifecycleEvent.WAKE_SIGNAL)
     assert lsm.current_state is LifecycleState.WAKE
 
 
@@ -181,11 +209,11 @@ def test_hibernation_to_wake_via_wake_signal(integration_root: Path) -> None:
 
 def test_sleep_to_wake_on_request_arrived(integration_root: Path) -> None:
     lsm = _make_lsm(integration_root)
-    lsm.dispatch(LifecycleEvent.IDLE_5MIN)
-    lsm.dispatch(LifecycleEvent.IDLE_30MIN, sleep_eligible=True)
+    _dispatch(lsm, LifecycleEvent.IDLE_5MIN)
+    _dispatch(lsm, LifecycleEvent.IDLE_30MIN, sleep_eligible=True)
     assert lsm.current_state is LifecycleState.SLEEP
 
-    lsm.dispatch(LifecycleEvent.REQUEST_ARRIVED)
+    _dispatch(lsm, LifecycleEvent.REQUEST_ARRIVED)
     assert lsm.current_state is LifecycleState.WAKE
 
 
@@ -333,19 +361,19 @@ def test_full_lifecycle_chain_drives_through_all_four_states(
     log = LifecycleEventLog(log_dir=integration_root / "logs")
 
     # 1. Wake (initial) -> Drowsy (5 min idle).
-    lsm.dispatch(LifecycleEvent.IDLE_5MIN)
+    _dispatch(lsm, LifecycleEvent.IDLE_5MIN)
     assert lsm.current_state is LifecycleState.DROWSY
 
     # 2. Drowsy -> Sleep (30 min idle + sleep_eligible).
-    lsm.dispatch(LifecycleEvent.IDLE_30MIN, sleep_eligible=True)
+    _dispatch(lsm, LifecycleEvent.IDLE_30MIN, sleep_eligible=True)
     assert lsm.current_state is LifecycleState.SLEEP
 
     # 3. Sleep -> Hibernation (sleep cycle done, still idle).
-    lsm.dispatch(LifecycleEvent.SLEEP_CYCLE_DONE, still_idle=True)
+    _dispatch(lsm, LifecycleEvent.SLEEP_CYCLE_DONE, still_idle=True)
     assert lsm.current_state is LifecycleState.HIBERNATION
 
     # 4. Hibernation -> Wake (wake signal from wrapper kickstart).
-    lsm.dispatch(LifecycleEvent.WAKE_SIGNAL)
+    _dispatch(lsm, LifecycleEvent.WAKE_SIGNAL)
     assert lsm.current_state is LifecycleState.WAKE
 
     # Verify the event log captured all 4 transitions.

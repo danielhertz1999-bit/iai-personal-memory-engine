@@ -1,22 +1,23 @@
-"""D2 — checkpoint disposition flags (--resume / --fresh) + auto-clean default.
+"""Checkpoint disposition flags (--resume / --fresh) + auto-clean default.
 
-Background: today, after a failed run (e.g. crypto trap from D1), the
+Background: today, after a failed run (e.g. crypto trap from a failed
+pre-flight check), the
 harness checkpoints the errored rows to ``<out>.jsonl``. The next
 invocation silently re-skips those rows, so the zero persists across
 retries. The user has to manually ``rm <out>.jsonl`` to recover.
 
 This file pins five contracts:
 
-D2.1 — auto-clean by default when prior errors present:
+Auto-clean by default when prior errors present:
     1. ``test_checkpoint_auto_cleans_when_prior_errors`` — pre-existing
        checkpoint with at least one ERROR row, no flag => auto-clean and
        restart, with the verbatim stderr phrase.
 
-D2.2 — --resume keeps checkpoint despite errors:
+--resume keeps checkpoint despite errors:
     2. ``test_resume_flag_keeps_checkpoint_with_errors`` — same precondition
        + --resume => existing behaviour preserved (no auto-clean).
 
-D2.3 — --fresh force-cleans clean checkpoint:
+--fresh force-cleans clean checkpoint:
     3. ``test_fresh_flag_force_cleans_clean_checkpoint`` — checkpoint with
        only SUCCESS rows + --fresh => force-clean and restart.
 
@@ -121,7 +122,7 @@ def _error_row(qid: str) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# D2.1 — auto-clean default when prior errors present
+# Auto-clean default when prior errors present
 # --------------------------------------------------------------------------- #
 
 
@@ -177,7 +178,7 @@ def test_checkpoint_auto_cleans_when_prior_errors(
 
 
 # --------------------------------------------------------------------------- #
-# D2.2 — --resume keeps checkpoint despite errors
+# --resume keeps checkpoint despite errors
 # --------------------------------------------------------------------------- #
 
 
@@ -232,7 +233,7 @@ def test_resume_flag_keeps_checkpoint_with_errors(
 
 
 # --------------------------------------------------------------------------- #
-# D2.3 — --fresh force-cleans clean checkpoint
+# --fresh force-cleans clean checkpoint
 # --------------------------------------------------------------------------- #
 
 
@@ -309,7 +310,7 @@ def test_fresh_and_resume_mutually_exclusive(tmp_path, monkeypatch, capsys):
     assert ei.value.code != 0
     err = capsys.readouterr().err
     # Tolerate either order in argparse's error formatting (--fresh /
-    # --resume not allowed with ...).
+    # --resume not allowed with...).
     assert "--fresh" in err and "--resume" in err, (
         "mutual-exclusion error must name both flags: " + err
     )

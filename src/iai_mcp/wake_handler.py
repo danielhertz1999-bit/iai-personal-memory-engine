@@ -1,4 +1,4 @@
-"""L5 — daemon-side ``wake.signal`` consumer.
+"""Daemon-side ``wake.signal`` consumer.
 
 The TypeScript MCP wrapper (``mcp-wrapper/src/lifecycle.ts``) writes a
 small marker file at ``~/.iai-mcp/wake.signal`` when:
@@ -16,13 +16,11 @@ The wrapper's atomic-rename write semantics guarantee that ``read_text``
 either sees the file fully or not at all; we never have to defend
 against a torn read of the signal payload itself.
 
-The placeholder integration in :func:`iai_mcp.daemon.main` calls
-:meth:`WakeHandler.consume_wake_signal` once during startup.
-will dispatch the result into the lifecycle state machine's
-``WAKE_SIGNAL`` event channel — until then this module is a write-once
-hook so the wrapper's L5 path has somewhere to write to.
+:func:`iai_mcp.daemon.main` calls :meth:`WakeHandler.consume_wake_signal`
+once during startup to dispatch the result into the lifecycle state
+machine's ``WAKE_SIGNAL`` event channel.
 
-Constraints (carried from / 10.5 hard-rules):
+Constraints:
 
 - stdlib only — no third-party imports.
 - macOS-first; non-macOS callers use this same path.
@@ -31,8 +29,6 @@ Constraints (carried from / 10.5 hard-rules):
 - Race-safe: a ``FileNotFoundError`` between the existence check and the
   unlink (concurrent wrapper writes a fresh signal that gets consumed
   before we re-stat) is swallowed and reported as "no pending wake".
-
-Validates: WAKE-03, (Python-side consume half).
 """
 from __future__ import annotations
 
@@ -48,8 +44,8 @@ class WakeHandler:
     The handler holds the absolute path to the signal file. It does NOT
     create the directory; the wrapper is responsible for ensuring
     ``~/.iai-mcp/`` exists when it writes the signal. The daemon already
-    creates this directory at boot via ``ProcessLock`` / ``MemoryStore``
-    so by the time this handler is consulted the parent dir is present.
+    creates this directory at boot via ``MemoryStore`` so by the time this
+    handler is consulted the parent dir is present.
     """
 
     def __init__(self, wake_signal_path: Path) -> None:
@@ -74,7 +70,7 @@ class WakeHandler:
         Race semantics:
             ``Path.unlink(missing_ok=False)`` is the atomic delete. If
             two consumers race (this should not happen in practice; the
-            daemon is a singleton via ``ProcessLock``) the loser sees
+            daemon is a singleton via ``LifecycleLock``) the loser sees
             ``FileNotFoundError`` which we swallow and report as
             "no pending wake".
         """

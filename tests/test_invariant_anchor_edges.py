@@ -1,10 +1,10 @@
-"""Tests for the invariant_anchor edge type .
+"""Tests for the invariant_anchor edge type.
 
 invariant_anchor edges are the structural marker of S5 identity commitments:
 - created when propose_invariant_update reaches 3-of-5 consensus
 - src = original anchor record; dst = new consensus record
 - NEVER decayed by the FSRS sweep (sleep._decay_edges filters hebbian only)
-- At most 1 edge per 48h cooldown window (D-22 prevents rapid poisoning)
+- At most 1 edge per 48h cooldown window (prevents rapid poisoning)
 """
 from __future__ import annotations
 

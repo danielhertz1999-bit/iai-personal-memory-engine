@@ -2,9 +2,9 @@
 
 Unlike tests/test_core_bedtime_inject.py (which uses _ThreadedFakeDaemon that
 echoes canned OK replies), these tests spin up the REAL serve_control_socket
-with the REAL _dispatch_socket_request bound to a REAL state dict + real
-ProcessLock on a tmp directory. They send each of the 6 message types as
-real NDJSON over a real AF_UNIX socket and assert:
+with the REAL _dispatch_socket_request bound to a REAL state dict. They send
+each of the 6 message types as real NDJSON over a real AF_UNIX socket and
+assert:
   - correct response shape per message type
   - state mutations actually persisted to ~/.iai-mcp/.daemon-state.json
     (scoped to tmp_path via monkeypatch of daemon_state.STATE_PATH)
@@ -12,9 +12,6 @@ real NDJSON over a real AF_UNIX socket and assert:
   - unknown types rejected with unknown_message_type reason code
   - version field present in status response
   - concurrent clients handled without corruption
-
-This closes the verifier-identified test gap that masked the dispatcher
-blocker throughout execution.
 """
 from __future__ import annotations
 
@@ -34,7 +31,7 @@ import pytest
 
 @pytest.fixture
 def short_socket_paths(tmp_path, monkeypatch):
-    """Redirect LOCK_PATH + SOCKET_PATH + STATE_PATH to tmp_path.
+    """Redirect SOCKET_PATH + STATE_PATH to tmp_path.
 
     AF_UNIX on macOS caps socket paths at ~104 bytes; pytest's tmp_path can
     be too long under xdist. Use a short /tmp/iai-<pid>-<n>/ fallback for
@@ -43,18 +40,18 @@ def short_socket_paths(tmp_path, monkeypatch):
     """
     from iai_mcp import concurrency, daemon_state
 
-    lock_path = tmp_path / ".lock"
     sock_dir = Path(f"/tmp/iai-disp-{os.getpid()}-{id(tmp_path)}")
     sock_dir.mkdir(parents=True, exist_ok=True)
     sock_path = sock_dir / "d.sock"
     state_path = tmp_path / ".daemon-state.json"
 
-    monkeypatch.setattr(concurrency, "LOCK_PATH", lock_path)
     monkeypatch.setattr(concurrency, "SOCKET_PATH", sock_path)
     monkeypatch.setattr(daemon_state, "STATE_PATH", state_path)
 
     try:
-        yield lock_path, sock_path, state_path
+        # First tuple slot retained for back-compat with the `_, sock_path, ...`
+        # unpacking used across the test bodies.
+        yield None, sock_path, state_path
     finally:
         try:
             if sock_path.exists():
@@ -92,14 +89,12 @@ async def _with_real_dispatcher(sock_path: Path, state: dict, coro_fn):
     """Boot real serve_control_socket + real _dispatch_socket_request, run
     `coro_fn(sock_path, state)`, tear down cleanly.
     """
-    from iai_mcp.concurrency import ProcessLock, serve_control_socket
+    from iai_mcp.concurrency import serve_control_socket
 
-    lock = ProcessLock(sock_path.parent / ".lock_inline")
     shutdown = asyncio.Event()
     server_task = asyncio.create_task(
         serve_control_socket(
             store=None,
-            lock=lock,
             state=state,
             shutdown=shutdown,
             socket_path=sock_path,
@@ -113,7 +108,6 @@ async def _with_real_dispatcher(sock_path: Path, state: dict, coro_fn):
     if not sock_path.exists():
         shutdown.set()
         await asyncio.wait_for(server_task, timeout=5)
-        lock.close()
         raise AssertionError("socket never bound")
 
     try:
@@ -124,7 +118,6 @@ async def _with_real_dispatcher(sock_path: Path, state: dict, coro_fn):
             await asyncio.wait_for(server_task, timeout=5)
         except Exception:
             pass
-        lock.close()
     return result
 
 
@@ -158,10 +151,10 @@ def test_status_returns_version_and_full_snapshot(short_socket_paths):
     resp = asyncio.run(_with_real_dispatcher(sock_path, state, _runner))
 
     assert resp["ok"] is True
-    # backwards-compat keys.
+    # Backwards-compat keys.
     assert resp["state"] == "WAKE"
     assert isinstance(resp["uptime_sec"], (int, float))
-    # Gap-fill additions.
+    # Additional keys.
     assert resp["version"] == pkg_version
     assert resp["fsm_state"] == "WAKE"
     assert resp["last_tick_at"] == "2026-04-18T12:30:00+00:00"

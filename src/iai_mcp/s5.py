@@ -1,6 +1,6 @@
-"""S5 identity kernel -- invariant protection via M-of-N consensus (, ).
+"""S5 identity kernel -- invariant protection via M-of-N consensus.
 
- constitutional rules enforced here:
+Identity rules enforced here:
 - ρ_identity = 0.99 (stricter than write-path ρ=0.95 and S4 ρ_s4=0.97).
 - 3-of-5 session-window consensus: an invariant update only commits after 3
   vigilance-passing proposals within the consensus window. A single-session
@@ -17,11 +17,11 @@ Proposal events (kind=s5_invariant_proposal) are emitted for EVERY proposal
 so the M-of-N tally can be reconstructed from the events table alone -- no
 hidden in-memory state. Cooldown lookups read kind=s5_invariant_update.
 
-additions ( / gradual-drift detection):
-- `detect_drift_anomaly` reads trajectory_metric events for M4 (profile-vector
-  variance). When the last `window_sessions` consecutive values have been
-  monotonically increasing (was-decreasing becoming increasing), emits an
-  s5_drift_alert event. User audit via `iai-mcp audit drift` surfaces these.
+Gradual-drift detection:
+- `detect_drift_anomaly` reads trajectory_metric events for profile-vector
+  variance. When the last `window_sessions` consecutive values have been
+  monotonically increasing, emits an s5_drift_alert event. User audit via
+  `iai-mcp audit drift` surfaces these.
 - `audit_identity_events` aggregates s5_* + shield_* + s5_drift_alert events
   chronologically (newest first) for `iai-mcp audit` / `audit identity`.
 """
@@ -38,7 +38,7 @@ from iai_mcp.store import MemoryStore
 from iai_mcp.types import MemoryRecord
 
 
-# ------------------------------------------------------------ constitutional constants
+# ------------------------------------------------------------ identity constants
 
 IDENTITY_VIGILANCE_RHO: float = 0.99   # strict vigilance on identity updates
 S5_CONSENSUS_M: int = 3                # 3-of-5: required agreeing proposals
@@ -90,7 +90,7 @@ def propose_invariant_update(
     new_fact: str,
     session_id: str,
 ) -> tuple[str, UUID | None]:
-    """ M-of-N voting on identity-tier updates.
+    """M-of-N voting on identity-tier updates.
 
     Workflow:
     1. If the anchor is in 48h cooldown, reject (``cooldown``).
@@ -141,7 +141,7 @@ def propose_invariant_update(
         data={
             "proposal_id": str(proposal_id),
             "anchor_id": str(anchor_id),
-            "new_fact": new_fact[:200],  # payload size cap (T-02-02-05)
+            "new_fact": new_fact[:200],  # payload size cap
             "similarity": sim,
             "passes_vigilance": passes_vigilance,
         },
@@ -188,7 +188,7 @@ def propose_invariant_update(
             profile_modulation_gain=dict(anchor.profile_modulation_gain),
             schema_version=2,
         )
-        enforce_language_tagged(updated, detect=False)
+        enforce_language_tagged(updated)
         updated.aaak_index = generate_aaak_index(updated)
         store.insert(updated)
         store.boost_edges(
@@ -228,18 +228,17 @@ def check_identity_anchor_on_write(
 
     Records with s5_trust_score >= TRUST_THRESHOLD_IDENTITY (0.9) are
     considered invariant-tier. They may NOT be written through any path that
-    bypasses propose_invariant_update ( consensus requirement).
+    bypasses propose_invariant_update (consensus requirement).
 
-    extension (, ): the shield is evaluated in
-    HARD_BLOCK tier BEFORE the consensus marker check. Any detected
-    injection signal short-circuits with "shield HARD_BLOCK" -- a
-    mitigation for the "direct override" branch of the threat model.
+    The shield is evaluated in HARD_BLOCK tier BEFORE the consensus marker
+    check. Any detected injection signal short-circuits with "shield
+    HARD_BLOCK".
 
-    cross-lingual warning: an identity update whose
-    language differs from the existing pinned identity anchor(s) emits a
-    `identity_cross_lingual_warning` event but does NOT block -- multi-lingual
-    identity refinement is a design goal of the global-product roadmap. The
-    warning surfaces via `iai-mcp audit identity` for user review.
+    Cross-lingual note: an identity update whose language differs from the
+    existing pinned identity anchor(s) emits a
+    `identity_cross_lingual_warning` event but does NOT block --
+    multi-lingual identity refinement is a supported use case. The warning
+    surfaces via `iai-mcp audit identity` for user review.
 
     We distinguish between:
     - DIRECT identity writes (reject): s5_trust_score >= 0.9 and no
@@ -252,7 +251,7 @@ def check_identity_anchor_on_write(
     if record.s5_trust_score < TRUST_THRESHOLD_IDENTITY:
         return True, ""
 
-    # shield HARD_BLOCK pre-check on identity-tier writes.
+    # Shield HARD_BLOCK pre-check on identity-tier writes.
     from iai_mcp.shield import ShieldTier, evaluate_injection_risk
 
     shield_verdict = evaluate_injection_risk(
@@ -270,11 +269,10 @@ def check_identity_anchor_on_write(
         return (
             False,
             "identity-tier write (s5_trust_score >= 0.9) requires "
-            "propose_invariant_update consensus; direct inserts forbidden "
-            "(D-22).",
+            "propose_invariant_update consensus; direct inserts forbidden.",
         )
 
-    # cross-lingual warning. Non-fatal: emit an event and
+    # Cross-lingual warning: non-fatal, emit an event and
     # continue. Inspect the existing pinned identity anchors for a language
     # mismatch with the incoming record.
     try:
@@ -285,7 +283,7 @@ def check_identity_anchor_on_write(
             and (r.language or "") != ""
             and (r.language or "") != (record.language or "")
         ]
-    except Exception:
+    except (OSError, RuntimeError, ValueError):
         anchors_with_other_lang = []
     if anchors_with_other_lang:
         anchor_langs = sorted({
@@ -309,7 +307,7 @@ def check_identity_anchor_on_write(
 
 # ---------------------------------------------------------- drift detection
 
-# Relevant kinds for user audit surface. aggregates these under
+# Relevant event kinds for the user audit surface, aggregated under
 # `iai-mcp audit`.
 AUDIT_EVENT_KINDS: tuple[str, ...] = (
     "s5_invariant_update",
@@ -326,7 +324,7 @@ def detect_drift_anomaly(
     store: MemoryStore,
     window_sessions: int = 5,
 ) -> list[dict]:
-    """ gradual-drift detection via trajectory M4 reversal.
+    """Gradual-drift detection via profile-vector trajectory reversal.
 
     Reads trajectory_metric events filtered to metric=m4 (profile-vector
     variance). The expected direction is DECREASING (the profile is

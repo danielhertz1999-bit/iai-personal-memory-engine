@@ -1,19 +1,15 @@
-"""-- typed schema + atomic load/save for lifecycle_state.json.
+"""Typed schema + atomic load/save for lifecycle_state.json.
 
 The 4-state lifecycle (WAKE / DROWSY / SLEEP / HIBERNATION) needs a single
-source of truth on disk. Per LOCKED contract L2, the daemon is the ONLY
-writer of `~/.iai-mcp/lifecycle_state.json`; wrappers
-signal events via Unix socket OR atomic-write `~/.iai-mcp/wake.signal`
-filesystem marker.
+source of truth on disk. The daemon is the ONLY writer of
+`~/.iai-mcp/lifecycle_state.json`; wrappers signal events via Unix socket
+OR atomic-write `~/.iai-mcp/wake.signal` filesystem marker.
 
-Persistence pattern mirrors `daemon_state.py` (-01) and
-`maintenance.py` (-03):
+Persistence pattern mirrors `daemon_state.py` and `maintenance.py`:
 - Writes via `tempfile.mkstemp` + `os.replace` (POSIX atomic rename).
 - Crash mid-write leaves the prior file intact; readers either see
   the old complete blob or the new complete blob, never partial bytes.
-- File mode 0o600 (user-only, matches T-04-07 mitigation).
-
-Schema mirrors lifecycle_state.json spec.
+- File mode 0o600 (user-only).
 """
 from __future__ import annotations
 
@@ -42,9 +38,18 @@ class SleepCycleProgress(TypedDict, total=False):
     """Per-attempt progress of the multi-step sleep pipeline.
 
     All fields optional so the dict can be partially populated mid-cycle;
-    `last_completed_step=0` and `attempt=1` represent a freshly-started cycle.
+    `last_completed_index=-1` and `attempt=1` represent a freshly-started
+    cycle.
+
+    The field `last_completed_step` was renamed to `last_completed_index`
+    (a position into `SleepPipeline._STEP_ORDER`). The legacy key remains
+    in the schema so older `lifecycle_state.json` files round-trip cleanly;
+    `SleepPipeline._load_progress` migrates the value on read.
     """
 
+    last_completed_index: int
+    # Legacy key kept for back-compat reads (in-memory migrated by
+    # `SleepPipeline._load_progress`). Absent on records written by current code.
     last_completed_step: int
     attempt: int
     last_error: str | None
@@ -75,6 +80,12 @@ class LifecycleStateRecord(TypedDict):
     sleep_cycle_progress: SleepCycleProgress | None
     quarantine: Quarantine | None
     shadow_run: bool
+    # crisis_mode: True when EssentialVariableTracker has detected a topology
+    # breach in the most recent sleep cycle; CRISIS_RECLUSTER step short-
+    # circuits to no-op unless True. Cleared back to False after one
+    # successful CRISIS_RECLUSTER pass. Owned by S2Coordinator.set_crisis_mode
+    # (the sole production writer).
+    crisis_mode: bool
 
 
 # ---------------------------------------------------------------------------
@@ -98,10 +109,8 @@ def default_state() -> LifecycleStateRecord:
     Used by `load_state` when the file is absent or malformed (self-heal),
     and by tests / callers that need a known starting point.
 
-    Task 1.6 flipped the default from True to False:
-    HIBERNATION transitions now actually exit the daemon process via the
-    global shutdown event in `daemon.main()`. The legacy RSS-watchdog has
-    been removed in Task 1.4; the lifecycle state machine owns shutdown
+    HIBERNATION transitions exit the daemon process via the global shutdown
+    event in `daemon.main()`. The lifecycle state machine owns shutdown
     authority.
     """
     now = _utc_now_iso()
@@ -113,6 +122,7 @@ def default_state() -> LifecycleStateRecord:
         "sleep_cycle_progress": None,
         "quarantine": None,
         "shadow_run": False,
+        "crisis_mode": False,
     }
 
 
@@ -152,6 +162,16 @@ def _validate_record(raw: object) -> LifecycleStateRecord:
         raise ValueError(
             f"lifecycle_state.shadow_run must be a bool, got {shadow!r}"
         )
+
+    # Back-compat: absent crisis_mode on pre- lifecycle_state.json
+    # files is tolerated as False. Save_state writes the explicit key going
+    # forward so the absent path triggers only on the first read after deploy.
+    crisis_mode = raw.get("crisis_mode", False)
+    if not isinstance(crisis_mode, bool):
+        raise ValueError(
+            f"lifecycle_state.crisis_mode must be a bool, got {crisis_mode!r}"
+        )
+    raw["crisis_mode"] = crisis_mode
 
     progress = raw.get("sleep_cycle_progress")
     if progress is not None and not isinstance(progress, dict):
@@ -199,7 +219,7 @@ def load_state(path: Path | None = None) -> LifecycleStateRecord:
 def save_state(record: LifecycleStateRecord, path: Path | None = None) -> None:
     """Atomically persist `record` via tempfile + os.replace.
 
-    Mirrors `daemon_state.save_state` (-01) bullet-for-bullet:
+    Mirrors `daemon_state.save_state` bullet-for-bullet:
     creates parent dir if missing; writes to a sibling temp file in the
     same directory (required so os.replace is an atomic same-filesystem
     rename); fsyncs the file contents before rename so the data is on
@@ -218,6 +238,7 @@ def save_state(record: LifecycleStateRecord, path: Path | None = None) -> None:
         suffix=".tmp",
         dir=str(target.parent),
     )
+    replaced = False
     try:
         with os.fdopen(fd, "w") as f:
             json.dump(record, f, indent=2)
@@ -225,9 +246,10 @@ def save_state(record: LifecycleStateRecord, path: Path | None = None) -> None:
             os.fsync(f.fileno())
         os.chmod(tmp, 0o600)
         os.replace(tmp, target)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+        replaced = True
+    finally:
+        if not replaced:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass

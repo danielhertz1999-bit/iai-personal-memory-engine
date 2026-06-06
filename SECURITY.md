@@ -2,13 +2,13 @@
 
 ## Supported versions
 
-iai-mcp is pre-1.0 and experimental. Only the latest tagged release on `main` receives fixes. Older tags are not maintained.
+Only the latest tagged release on `main` receives fixes. Older tags are not maintained beyond the windows listed below.
 
 | Version | Supported |
 |---------|-----------|
-| 0.4.x   | Yes (latest, 0.4.2) |
-| 0.3.x   | Security fixes only |
-| < 0.3   | No |
+| 1.0.x   | Yes (latest, 1.0.0) |
+| 0.4.x   | Security fixes only |
+| < 0.4   | No |
 
 ## Reporting an issue
 
@@ -23,7 +23,7 @@ Please do **not** open a public issue for defects that have security implication
 
 Use GitHub Security Advisories on the repository:
 
-https://github.com/CodeAbra/iai-mcp/security/advisories/new
+https://github.com/CodeAbra/iai-personal-memory-engine/security/advisories/new
 
 Include:
 

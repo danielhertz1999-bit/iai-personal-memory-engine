@@ -4,7 +4,7 @@ Simulates a session gap by inserting N pinned records, flooding the store with
 `session_gap * noise_per_session` unrelated records, then retrieving each
 pinned record by its own literal_surface as the cue. Counts byte-exact matches.
 
-Target: >= ACCURACY_FLOOR (0.99) on pinned records -- / MEM-10.
+Target: >= ACCURACY_FLOOR (0.99) on pinned records --.
 
 Exit codes:
 - 0 if accuracy >= 0.99
@@ -15,18 +15,18 @@ JSON output (one line to stdout):
      "hits_exact": int, "passed": bool, "floor": 0.99, "noise_mode": str,
      "skip_l0_seed": bool, "storage_direct": bool, "k": int}
 
-Plan 05-01 (D5-01) diagnostic flags -- BENCH-ONLY (no production change):
-  --skip-l0-seed   : skip _seed_l0_identity to isolate L0 crowding (effect b)
-  --storage-direct : bypass recall(), call store.query_similar directly
+ diagnostic flags -- BENCH-ONLY (no production change):
+  --skip-l0-seed: skip _seed_l0_identity to isolate L0 crowding (effect b)
+  --storage-direct: bypass recall(), call store.query_similar directly
                      (isolates provenance-write amplification, effect c)
-  --n              : override n_records (default 20)
-  --gap            : override session_gap (default 20)
-  --noise-per-session : override noise_per_session (default 10)
-  --k              : override k_hits (default max(n_records + 10, 20))
+  --n: override n_records (default 20)
+  --gap: override session_gap (default 20)
+  --noise-per-session: override noise_per_session (default 10)
+  --k: override k_hits (default max(n_records + 10, 20))
 
 Design note -- why we bypass dispatch("memory_recall"):
 The Plan-02 core.memory_recall routes non-empty stores through recall_for_response
-(Phase 8 entry-point split) which instantiates an Embedder() (downloads
+(entry-point split) which instantiates an Embedder() (downloads
 bge-small-en-v1.5 from HuggingFace
 on first call). That's fine for a real runtime but wrong for an offline bench:
 we need to measure storage-layer verbatim-recall correctness, not embedder
@@ -42,7 +42,7 @@ numpy.random.standard_normal(EMBED_DIM) normalised to unit length. Against a
 1/sqrt(EMBED_DIM) ~= 0.05 -- realistic noise geometry, but pinned still wins
 because cos=+1 >> cos~=0. The bench remains honest about what it measures
 (literal_surface round-trip under realistic embedding noise, given a fixed
-cue). A real bge-small-en-v1.5 bench is deferred to Phase 2.
+cue). A real bge-small-en-v1.5 bench is deferred to.
 """
 from __future__ import annotations
 
@@ -54,12 +54,24 @@ from uuid import uuid4
 
 import numpy as np
 
+# Resolve iai_mcp.* (via src) AND bench.* (via worktree root) to THIS
+# worktree, not the parent venv's editable install. Idempotent: each
+# `sys.path.insert` is guarded by an "if not already present" check.
+import sys
+from pathlib import Path
+_SRC_PATH = str(Path(__file__).resolve().parent.parent / "src")
+_ROOT_PATH = str(Path(__file__).resolve().parent.parent)
+if _SRC_PATH not in sys.path:
+    sys.path.insert(0, _SRC_PATH)
+if _ROOT_PATH not in sys.path:
+    sys.path.insert(0, _ROOT_PATH)
+
 from iai_mcp.core import _seed_l0_identity
 from iai_mcp.retrieve import recall
-from iai_mcp.store import EMBED_DIM, MemoryStore
+from iai_mcp.store import EMBED_DIM, MemoryStore, flush_record_buffer
 from iai_mcp.types import MemoryRecord
 
-ACCURACY_FLOOR = 0.99   # OPS-04
+ACCURACY_FLOOR = 0.99   #
 NOISE_SEED = 20260416   # fixed for reproducibility across runs / CI
 
 
@@ -71,7 +83,7 @@ def _make_pinned(text: str, dim: int = EMBED_DIM) -> MemoryRecord:
     insertion order / stability -- but the literal_surface substring match is
     the only correctness signal we care about.
 
-    language="en" required. `dim` parameterised so callers
+    : language="en" required. `dim` parameterised so callers
     can match a legacy 384d store or the 1024d default; default is
     `EMBED_DIM` (the current module constant). Unit tests that construct a
     fresh isolated store pick up the default; bench main() queries the
@@ -121,7 +133,7 @@ def _make_noise(i: int, rng: np.random.Generator, dim: int = EMBED_DIM) -> Memor
     Gaussian unit vectors reproduce deterministically and approximate the
     orthogonality-on-average of real embeddings.
 
-    language="en" required.
+    : language="en" required.
     """
     return MemoryRecord(
         id=uuid4(),
@@ -165,11 +177,11 @@ def run_verbatim_bench(
         session_gap: how many "sessions" of noise to interpose between write and recall.
         noise_per_session: noise records per simulated session.
         seed: RNG seed for noise vectors (H-03: reproducibility across runs).
-        skip_l0_seed: D5-01 effect (b) isolation -- skip the L0 identity
+        skip_l0_seed: effect (b) isolation -- skip the L0 identity
             seed so pinned records are not competed against by a fixed-embedding
             identity record. BENCH-SCOPE ONLY; production _seed_l0_identity is
             unchanged.
-        storage_direct: D5-01 effect (c) isolation -- bypass
+        storage_direct: effect (c) isolation -- bypass
             retrieve.recall() and call store.query_similar directly, so the
             per-hit provenance write amplification is removed from the hot loop.
             BENCH-SCOPE ONLY; production recall() is unchanged.
@@ -182,8 +194,8 @@ def run_verbatim_bench(
     if not skip_l0_seed:
         _seed_l0_identity(s)
 
-    # consult the store's actual embedding dim. An existing Phase 1
-    # store may still have 384d records pre-D-35-migration; a fresh store has
+    #: consult the store's actual embedding dim. An existing
+    # store may still have 384d records pre--migration; a fresh store has
     # the default (1024d). Match either transparently.
     dim = s.embed_dim
 
@@ -202,6 +214,14 @@ def run_verbatim_bench(
         for j in range(noise_per_session):
             s.insert(_make_noise(session_idx * noise_per_session + j, rng, dim=dim))
 
+    # Post-Hippo: MemoryStore.insert is buffered — rows accumulate
+    # in an in-process buffer that flushes on size (500) / time (5s) thresholds.
+    # This bench inserts ~220 rows in well under a second, so neither threshold
+    # fires before the recall loop below would read an empty hippo table.
+    # Call flush explicitly here to restore the legacy "all inserts visible to
+    # the next query" contract. Independent of any test-runner monkey-patch.
+    flush_record_buffer(s)
+
     cue_emb = [1.0] * dim
     # k must be >= n_records for every pinned record to have a chance of surfacing.
     # Plus a buffer for the L0 seed + anti-hits tail, so we retrieve a generous top-k.
@@ -209,11 +229,11 @@ def run_verbatim_bench(
     hits_exact = 0
     for text in pinned_texts:
         if storage_direct:
-            # D5-01 (c): bypass recall() -> no per-hit provenance write amplification.
+            # (c): bypass recall() -> no per-hit provenance write amplification.
             raw = s.query_similar(cue_emb, k=effective_k)
             literal_surfaces = [rec.literal_surface for rec, _score in raw]
         else:
-            # retrieve.recall now defaults to mode='verbatim'
+            #: retrieve.recall now defaults to mode='verbatim'
             # (conservative North-Star fallback). The bench's _make_pinned
             # uses tier='semantic' which the verbatim filter would drop.
             # The bench is measuring "verbatim TEXT exact-match recall under
@@ -256,17 +276,17 @@ def run_verbatim_bench(
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bench.verbatim",
-        description="OPS-04 / verbatim recall benchmark + diagnostics",
+        description="Verbatim recall benchmark with diagnostics",
     )
     parser.add_argument(
         "--skip-l0-seed",
         action="store_true",
-        help="D5-01 diagnostic: skip _seed_l0_identity to isolate L0 crowding effect",
+        help="diagnostic: skip _seed_l0_identity to isolate L0 crowding effect",
     )
     parser.add_argument(
         "--storage-direct",
         action="store_true",
-        help="D5-01 diagnostic: bypass recall(), call store.query_similar directly",
+        help="diagnostic: bypass recall(), call store.query_similar directly",
     )
     parser.add_argument(
         "--n", "--n-records",

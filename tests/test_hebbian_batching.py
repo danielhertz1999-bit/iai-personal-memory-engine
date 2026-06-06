@@ -1,19 +1,16 @@
-"""— Hebbian write-batching coverage.
+"""Hebbian write-batching coverage.
 
-Eight sync tests (project does NOT use pytest-asyncio):
+Sync tests (project does NOT use pytest-asyncio):
 
-R1 / A2 — `test_boost_edges_emits_at_most_two_versions`
-R2      — `test_boost_edges_scalar_delta_unchanged`
-R2      — `test_boost_edges_sequence_delta_per_pair`
-R2      — `test_boost_edges_sequence_delta_length_mismatch_raises`
-A7      — `test_boost_edges_coalesces_duplicate_pairs`
-R3 site — `test_sleep_consolidated_from_batches_into_two_versions`
-R3 site — `test_curiosity_bridge_batches_into_two_versions`
-R3 site — `test_schema_bind_batches_into_two_versions`
-R3 site — `test_pipeline_profile_modulates_batches_with_sequence_delta`
-
-Eight tests minimum — SPEC R4 asks for >= 5; this ships the full target from
-CONTEXT D7.4-08.
+`test_boost_edges_emits_at_most_two_versions`
+`test_boost_edges_scalar_delta_unchanged`
+`test_boost_edges_sequence_delta_per_pair`
+`test_boost_edges_sequence_delta_length_mismatch_raises`
+`test_boost_edges_coalesces_duplicate_pairs`
+`test_sleep_consolidated_from_batches_into_two_versions`
+`test_curiosity_bridge_batches_into_two_versions`
+`test_schema_bind_batches_into_two_versions`
+`test_pipeline_profile_modulates_batches_with_sequence_delta`
 """
 from __future__ import annotations
 
@@ -28,16 +25,16 @@ from iai_mcp.store import EDGES_TABLE, MemoryStore
 
 
 def _versions(store: MemoryStore) -> int:
-    """Return the current LanceDB version count for the edges table."""
+    """Return the current version count for the edges table."""
     tbl = store.db.open_table(EDGES_TABLE)
     return len(tbl.list_versions())
 
 
-# ----------------------------------------------------------- R1 / A2 — versions
+# ----------------------------------------------------------- versions
 
 
 def test_boost_edges_emits_at_most_two_versions(tmp_path):
-    """R1 + A2 acceptance: ONE call with 5 pairs (3 hits + 2 new) -> <= 2 new versions.
+    """ONE call with 5 pairs (3 hits + 2 new) -> <= 2 new versions.
 
     Today's pre-refactor body would emit 5 versions (1 per tbl.update / tbl.add).
     The refactor consolidates to <= 2 (one merge_insert for the 3
@@ -77,11 +74,11 @@ def test_boost_edges_emits_at_most_two_versions(tmp_path):
             assert abs(weight - 0.2) < 1e-5, f"{key} expected 0.2, got {weight}"
 
 
-# ----------------------------------------------------------- R2 — scalar delta
+# ----------------------------------------------------------- scalar delta
 
 
 def test_boost_edges_scalar_delta_unchanged(tmp_path):
-    """R2 backwards-compat: scalar `delta=0.3` applies uniformly to all pairs."""
+    """Backwards-compat: scalar `delta=0.3` applies uniformly to all pairs."""
     store = MemoryStore(path=tmp_path)
     a, b, c, d = (uuid4() for _ in range(4))
 
@@ -92,11 +89,11 @@ def test_boost_edges_scalar_delta_unchanged(tmp_path):
         assert abs(weight - 0.3) < 1e-5
 
 
-# ----------------------------------------------------------- R2 — sequence delta
+# ----------------------------------------------------------- sequence delta
 
 
 def test_boost_edges_sequence_delta_per_pair(tmp_path):
-    """R2: `delta=[0.5, 0.7]` applies per-pair (in pair-list order)."""
+    """`delta=[0.5, 0.7]` applies per-pair (in pair-list order)."""
     store = MemoryStore(path=tmp_path)
     a, b, c, d = (uuid4() for _ in range(4))
 
@@ -115,7 +112,7 @@ def test_boost_edges_sequence_delta_per_pair(tmp_path):
 
 
 def test_boost_edges_sequence_delta_length_mismatch_raises(tmp_path):
-    """R2: Sequence-delta with len(deltas) != len(pairs) -> ValueError."""
+    """Sequence-delta with len(deltas) != len(pairs) -> ValueError."""
     store = MemoryStore(path=tmp_path)
     a, b, c, d = (uuid4() for _ in range(4))
 
@@ -127,11 +124,11 @@ def test_boost_edges_sequence_delta_length_mismatch_raises(tmp_path):
         )
 
 
-# ----------------------------------------------------------- A7 — coalesce
+# ----------------------------------------------------------- coalesce
 
 
 def test_boost_edges_coalesces_duplicate_pairs(tmp_path):
-    """A7: `[(a,b), (a,b)]` with delta=0.1 produces `cur + 0.2`, NOT `cur + 0.1`.
+    """`[(a,b), (a,b)]` with delta=0.1 produces `cur + 0.2`, NOT `cur + 0.1`.
 
     The legacy implementation refreshed `existing = tbl.to_pandas()` after every
     pair so duplicate canonical (src,dst) keys saw each other's delta. The
@@ -154,7 +151,7 @@ def test_boost_edges_coalesces_duplicate_pairs(tmp_path):
 
 
 def test_boost_edges_coalesces_duplicate_pairs_first_call(tmp_path):
-    """A7 strengthen: even on a FRESH edge, `[(a,b), (a,b)]` with delta=0.1
+    """Strengthen: even on a FRESH edge, `[(a,b), (a,b)]` with delta=0.1
     should produce 0.2 (NOT 0.1) — coalescing happens before write."""
     store = MemoryStore(path=tmp_path)
     a, b = uuid4(), uuid4()
@@ -164,15 +161,15 @@ def test_boost_edges_coalesces_duplicate_pairs_first_call(tmp_path):
     assert abs(new[canonical] - 0.2) < 1e-5
 
 
-# ----------------------------------------------------------- R3 — site-level
+# ----------------------------------------------------------- site-level
 
 
 def test_sleep_consolidated_from_batches_into_two_versions(tmp_path):
-    """R3 site-level: sleep._create_semantic_summary's per-source loop now
+    """sleep._create_semantic_summary's per-source loop now
     issues ONE boost_edges call (consolidated_from edges).
 
     Asserts the summary's outgoing consolidated_from edges all exist with the
-    expected weight, AND the create-summary call did not balloon the edges.lance
+    expected weight, AND the create-summary call did not balloon the edges-table
     version count by N (one per source) — only by <= 2 (one tbl.add for the new
     rows; merge_insert path empty since these are fresh edges).
     """
@@ -200,7 +197,7 @@ def test_sleep_consolidated_from_batches_into_two_versions(tmp_path):
     # any incidental merge_insert version when the merge_insert path is empty.
     assert delta_versions <= 2, (
         f"sleep.cls boost emitted {delta_versions} versions for 5 sources "
-        f"(expected <= 2 after )"
+        f"(expected <= 2)"
     )
 
     tbl = store.db.open_table(EDGES_TABLE)
@@ -220,7 +217,7 @@ def test_sleep_consolidated_from_batches_into_two_versions(tmp_path):
 
 
 def test_curiosity_bridge_batches_into_two_versions(tmp_path):
-    """R3 site-level: curiosity.fire's per-trigger loop now issues ONE
+    """curiosity.fire's per-trigger loop now issues ONE
     boost_edges call (curiosity_bridge edges)."""
     from iai_mcp.curiosity import fire_curiosity
     from tests.test_store import _make
@@ -259,7 +256,7 @@ def test_curiosity_bridge_batches_into_two_versions(tmp_path):
     delta_versions = versions_after - versions_before
     assert delta_versions <= 2, (
         f"curiosity boost emitted {delta_versions} versions for 5 triggers "
-        f"(expected <= 2 after )"
+        f"(expected <= 2)"
     )
 
     tbl = store.db.open_table(EDGES_TABLE)
@@ -271,7 +268,7 @@ def test_curiosity_bridge_batches_into_two_versions(tmp_path):
 
 
 def test_schema_bind_batches_into_two_versions(tmp_path):
-    """R3 site-level: schema.bind's per-evidence loop now issues ONE
+    """schema.bind's per-evidence loop now issues ONE
     boost_edges call (schema_instance_of edges)."""
     from iai_mcp.schema import SchemaCandidate, persist_schema
     from tests.test_store import _make
@@ -284,8 +281,8 @@ def test_schema_bind_batches_into_two_versions(tmp_path):
         store.insert(r)
 
     # Pattern is unique to this test so the dedup branch in persist_schema
-    # does NOT short-circuit (we want the new-schema insert path that contains
-    # the line-374 for-loop -> batched call).
+    # does NOT short-circuit (we want the new-schema insert path whose
+    # per-evidence for-loop issues the batched call).
     candidate = SchemaCandidate(
         pattern="phase74_test_pattern_unique",
         confidence=0.7,
@@ -307,7 +304,7 @@ def test_schema_bind_batches_into_two_versions(tmp_path):
     # + tbl.add for 5 fresh schema_instance_of edges.
     assert delta_versions <= 2, (
         f"schema.bind boost emitted {delta_versions} versions for 5 evidence "
-        f"(expected <= 2 after )"
+        f"(expected <= 2)"
     )
 
     tbl = store.db.open_table(EDGES_TABLE)
@@ -319,12 +316,12 @@ def test_schema_bind_batches_into_two_versions(tmp_path):
 
 
 def test_pipeline_profile_modulates_batches_with_sequence_delta(tmp_path):
-    """R3 site-level: pipeline.recall_hook's per-hit profile_modulates loop
+    """pipeline.recall_hook's per-hit profile_modulates loop
     now issues ONE boost_edges call with `delta=deltas` Sequence (per-hit
     varying gain).
 
-    This directly exercises the loop body that was changed in pipeline.py:924.
-    We unit-test the gather-then-batch pattern by simulating the hits + gains
+    This directly exercises the gather-then-batch loop body in
+    pipeline.recall_hook. We unit-test the pattern by simulating the hits + gains
     structure and asserting:
     1. ONE boost_edges call produces edges for all hits with non-empty gains.
     2. Hits with empty gains are skipped (preserves the existing fallback).
@@ -346,7 +343,7 @@ def test_pipeline_profile_modulates_batches_with_sequence_delta(tmp_path):
         {"profile_match_strong": 0.7},                         # total = 0.7
     ]
 
-    # Replicate the gather-then-batch pattern from pipeline.py:924 in a
+    # Replicate the gather-then-batch pattern from pipeline.recall_hook in a
     # contained form so the test is independent of the full recall plumbing.
     pairs: list[tuple] = []
     deltas: list[float] = []
@@ -373,7 +370,7 @@ def test_pipeline_profile_modulates_batches_with_sequence_delta(tmp_path):
     delta_versions = versions_after - versions_before
     assert delta_versions <= 2, (
         f"profile_modulates boost emitted {delta_versions} versions "
-        f"(expected <= 2 after )"
+        f"(expected <= 2)"
     )
 
     # 4 edges created, each with the per-hit delta.

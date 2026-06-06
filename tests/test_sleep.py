@@ -1,9 +1,9 @@
-"""Tests for iai_mcp.sleep — CLS replay scheduler + light/heavy consolidation (, , , ).
+"""Tests for iai_mcp.sleep — CLS replay scheduler + light/heavy consolidation.
 
-D-16 scheduler: ACTIVITY / TIME / MANUAL modes; 48h force-run; TZ-aware quiet window.
-D-19 FSRS decay sweep: `_decay_edges` on hebbian edges only; invariant edges spared.
-D-29 unified: light at session_exit, heavy in quiet window.
-D-GUARD: `should_call_llm` ladder consulted before any Tier-1 path.
+ scheduler: ACTIVITY / TIME / MANUAL modes; 48h force-run; TZ-aware quiet window.
+ FSRS decay sweep: `_decay_edges` on hebbian edges only; invariant edges spared.
+ unified: light at session_exit, heavy in quiet window.
+`should_call_llm` ladder consulted before any Tier-1 path.
 
 Test constructors use vectors sized to `store.embed_dim` so they work under
 the bge-m3 1024d default.
@@ -311,7 +311,7 @@ def test_run_heavy_consolidation_creates_consolidated_from_edges(tmp_path):
 
 
 def test_run_heavy_consolidation_mem01_preserves_sources(tmp_path):
-    """ verbatim: source literal_surfaces untouched after consolidation."""
+    """verbatim: source literal_surfaces untouched after consolidation."""
     from iai_mcp.guard import BudgetLedger, RateLimitLedger
     from iai_mcp.sleep import SleepConfig, run_heavy_consolidation
     from iai_mcp.store import MemoryStore
