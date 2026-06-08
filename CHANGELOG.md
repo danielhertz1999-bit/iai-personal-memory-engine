@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] — 2026-06-07
+
+### Fixed
+
+- Packaging: the launchd plist, systemd unit, and capture/recall hooks now ship
+  inside the wheel (under `iai_mcp/_deploy/`) and are resolved via
+  `importlib.resources`. `iai-mcp daemon install` and hook setup no longer fail
+  on a clean `pip install`.
+- Python/CLI path resolution: the MCP server config and capture hooks now use the
+  running interpreter (`sys.executable`) and resolve the `iai-mcp` CLI via `PATH`,
+  so installs under pyenv and non-default layouts work.
+
 ## [1.0.1] — 2026-06-06
 
 ### Fixed
