@@ -1,15 +1,3 @@
-"""RED: Store column rename migration v3 -> v4.
-
-Verifies migrate_hd_vector_to_structure_hv_v3_to_v4(store):
-- Finds rows that still carry the legacy `hd_vector_json` (pa.string()) column
-  OR rows with an empty `structure_hv` and bumps them to schema_version=4 with
-  a populated `structure_hv` (pa.binary()) column.
-- Idempotent: second run yields updated == 0.
--: literal_surface preserved byte-for-byte.
-- Emits one `migration_v3_to_v4` event with {processed, updated, skipped, duration_ms}.
-- Dry-run does not mutate.
--: any DELETE / WHERE predicate routes through store._uuid_literal.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -30,7 +18,6 @@ def _isolated_keyring(monkeypatch):
 
 
 def _make_record(text="hello", language="en", schema_version=3):
-    """Build a v3-shape record (encryption-at-rest only; no structure_hv yet)."""
     from iai_mcp.types import EMBED_DIM, MemoryRecord
 
     return MemoryRecord(
@@ -54,12 +41,11 @@ def _make_record(text="hello", language="en", schema_version=3):
         tags=[],
         language=language,
         schema_version=schema_version,
-        structure_hv=b"",  # explicit pre-migration sentinel
+        structure_hv=b"",
     )
 
 
 def _seed_pre_migration_store(tmp_path, monkeypatch, n=20):
-    """Create a store and seed N records that look like v3 rows (no structure_hv)."""
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
     from iai_mcp.store import MemoryStore
 
@@ -72,11 +58,7 @@ def _seed_pre_migration_store(tmp_path, monkeypatch, n=20):
     return store, records
 
 
-# ------------------------------------------------------------------ migration
-
-
 def test_migration_function_exists():
-    """The plan's must-have artifact: migrate_hd_vector_to_structure_hv_v3_to_v4."""
     from iai_mcp import migrate
 
     assert hasattr(migrate, "migrate_hd_vector_to_structure_hv_v3_to_v4")
@@ -84,7 +66,6 @@ def test_migration_function_exists():
 
 
 def test_migration_populates_structure_hv_and_bumps_schema_version(tmp_path, monkeypatch):
-    """First run: every v3 row gets a 1250-byte structure_hv and schema_version=4."""
     store, records = _seed_pre_migration_store(tmp_path, monkeypatch, n=20)
     from iai_mcp.migrate import migrate_hd_vector_to_structure_hv_v3_to_v4
     from iai_mcp.types import STRUCTURE_HV_BYTES
@@ -96,7 +77,6 @@ def test_migration_populates_structure_hv_and_bumps_schema_version(tmp_path, mon
     assert result["updated"] == 20
     assert result["processed"] == 20
 
-    # Every record now has a populated structure_hv + schema_version=4.
     for rec in records:
         fetched = store.get(rec.id)
         assert fetched is not None
@@ -105,7 +85,6 @@ def test_migration_populates_structure_hv_and_bumps_schema_version(tmp_path, mon
 
 
 def test_migration_is_idempotent(tmp_path, monkeypatch):
-    """Second run on a fully-migrated store yields updated == 0."""
     store, _ = _seed_pre_migration_store(tmp_path, monkeypatch, n=10)
     from iai_mcp.migrate import migrate_hd_vector_to_structure_hv_v3_to_v4
 
@@ -117,7 +96,6 @@ def test_migration_is_idempotent(tmp_path, monkeypatch):
 
 
 def test_migration_preserves_literal_surface_bytes(tmp_path, monkeypatch):
-    """literal_surface is byte-for-byte unchanged."""
     store, records = _seed_pre_migration_store(tmp_path, monkeypatch, n=5)
     from iai_mcp.migrate import migrate_hd_vector_to_structure_hv_v3_to_v4
 
@@ -130,7 +108,6 @@ def test_migration_preserves_literal_surface_bytes(tmp_path, monkeypatch):
 
 
 def test_migration_emits_audit_event(tmp_path, monkeypatch):
-    """One `migration_v3_to_v4` event with the expected payload shape."""
     store, _ = _seed_pre_migration_store(tmp_path, monkeypatch, n=3)
     from iai_mcp.events import query_events
     from iai_mcp.migrate import migrate_hd_vector_to_structure_hv_v3_to_v4
@@ -146,14 +123,12 @@ def test_migration_emits_audit_event(tmp_path, monkeypatch):
 
 
 def test_migration_dry_run_does_not_mutate(tmp_path, monkeypatch):
-    """dry_run=True: schema_version on disk stays 3; updated count is reported."""
     store, records = _seed_pre_migration_store(tmp_path, monkeypatch, n=4)
     from iai_mcp.migrate import migrate_hd_vector_to_structure_hv_v3_to_v4
 
     result = migrate_hd_vector_to_structure_hv_v3_to_v4(store, dry_run=True)
-    assert result["updated"] == 4  # Would-update count is reported.
+    assert result["updated"] == 4
 
-    # Disk state untouched: schema_version still 3.
     for rec in records:
         fetched = store.get(rec.id)
         assert fetched is not None
@@ -161,8 +136,6 @@ def test_migration_dry_run_does_not_mutate(tmp_path, monkeypatch):
 
 
 def test_migration_uses_uuid_literal_guard(tmp_path, monkeypatch):
-    """the migration MUST route every UUID interpolation through
-    store._uuid_literal so a poisoned UUID cannot inject SQL content."""
     store, _ = _seed_pre_migration_store(tmp_path, monkeypatch, n=2)
     from iai_mcp import store as store_mod
 
@@ -177,5 +150,4 @@ def test_migration_uses_uuid_literal_guard(tmp_path, monkeypatch):
     from iai_mcp.migrate import migrate_hd_vector_to_structure_hv_v3_to_v4
 
     migrate_hd_vector_to_structure_hv_v3_to_v4(store)
-    # At least one _uuid_literal call per migrated row.
     assert call_count["n"] >= 2

@@ -1,8 +1,3 @@
-"""Back-compat shim -- retrieval-policy RL and trust refinement have moved to
-iai_mcp.lilli.profile.tuner.
-
-Re-exports the full public API. All writes go through the events table.
-"""
 from __future__ import annotations
 
 from iai_mcp.lilli.profile.tuner import (

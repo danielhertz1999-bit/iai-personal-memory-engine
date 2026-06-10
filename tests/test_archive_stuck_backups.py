@@ -1,12 +1,3 @@
-"""Daemon-startup archiver for ``lifecycle_state.json.HIBERNATION-stuck*.bak``.
-
-The lifecycle recovery path historically left ``.bak`` artifacts next to
-``lifecycle_state.json`` in ``~/.iai-mcp/``. ``archive_stuck_backups`` moves
-each matching file into ``~/.iai-mcp/archive/`` with an mtime-stamped name,
-creating the archive directory at mode ``0o700`` if absent. Idempotent: a
-second pass over the same destination skips the move and reports it as a
-collision.
-"""
 from __future__ import annotations
 
 import os
@@ -26,7 +17,6 @@ def test_archive_moves_bak_file(tmp_path):
     payload = b"recovery snapshot bytes"
     bak.write_bytes(payload)
 
-    # Pin an mtime so the destination name is deterministic.
     pinned = datetime(2026, 5, 13, 12, 0, 0, tzinfo=timezone.utc).timestamp()
     os.utime(bak, (pinned, pinned))
 
@@ -60,16 +50,13 @@ def test_archive_idempotent(tmp_path):
     first = archive_stuck_backups(state_dir=state_dir)
     assert first == {"moved": 1, "skipped_existing": 0}
 
-    # Stage a second bak with the same mtime so the destination collides.
     bak.write_bytes(b"second")
     os.utime(bak, (pinned, pinned))
 
     second = archive_stuck_backups(state_dir=state_dir)
     assert second == {"moved": 0, "skipped_existing": 1}, second
-    # Source must still be present — destination collision means leave alone.
     assert bak.exists(), "colliding source should remain on disk"
 
-    # Third pass with no stuck files at all returns zero counts.
     bak.unlink()
     third = archive_stuck_backups(state_dir=state_dir)
     assert third == {"moved": 0, "skipped_existing": 0}, third

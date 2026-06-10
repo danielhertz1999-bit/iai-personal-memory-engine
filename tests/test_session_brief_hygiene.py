@@ -1,12 +1,3 @@
-"""Regression tests for render-time hygiene, recent-thread element, and import cleanliness.
-
-SC1 — rendered brief contains no ANSI codes or harness markers; stored
-      literal_surface is verbatim (: decrypted form == inserted form).
-SC2 — rendered brief contains a clearly-labeled most-recent-work-thread section.
-SC6 — "llmlingua" absent from sys.modules after rendering L2; rendered length <= 10000.
-
-Fixtures use synthetic identities (alice) — no dev-paths, no real user data.
-"""
 from __future__ import annotations
 
 import sys
@@ -28,10 +19,6 @@ from iai_mcp.session import (
 from iai_mcp.store import MemoryStore
 from iai_mcp.types import EMBED_DIM, MemoryRecord
 
-
-# ----------------------------------------------------------------- helpers
-
-
 def _mk_record(
     store: MemoryStore,
     text: str,
@@ -42,7 +29,6 @@ def _mk_record(
     created_at: datetime | None = None,
     community_id: UUID | None = None,
 ) -> MemoryRecord:
-    """Insert and return a single MemoryRecord with the given surface text."""
     ts = created_at or datetime.now(timezone.utc)
     rec = MemoryRecord(
         id=uuid4(),
@@ -68,19 +54,15 @@ def _mk_record(
     store.insert(rec)
     return rec
 
-
 def _one_community(
     store: MemoryStore,
     text: str = "community member record",
 ) -> tuple[UUID, MemoryRecord]:
-    """Seed one record + return a CommunityAssignment referencing it."""
     cid = uuid4()
     rec = _mk_record(store, text, community_id=cid)
     return cid, rec
 
-
 def _assembly_standard(store: MemoryStore, assignment=None, rich_club=None):
-    """Compose a payload at wake_depth=standard (emit-free)."""
     if assignment is None:
         assignment = CommunityAssignment()
     if rich_club is None:
@@ -93,88 +75,60 @@ def _assembly_standard(store: MemoryStore, assignment=None, rich_club=None):
         profile_state={"wake_depth": "standard"},
     )
 
-
-# ================================================================= _clean_surface unit tests
-
-
 def test_clean_surface_plain_text_untouched():
     assert _clean_surface("plain text") == "plain text"
 
-
 def test_clean_surface_strips_ansi_sgr():
-    """ANSI SGR codes removed, visible text preserved."""
     raw = "\x1b[1mbolded\x1b[0m and \x1b[32mgreen\x1b[0m"
     assert _clean_surface(raw) == "bolded and green"
 
-
 def test_clean_surface_removes_well_formed_command_name():
-    """<command-name>...</command-name> removed; remaining text kept."""
     raw = "<command-name>/model</command-name> hi"
     assert _clean_surface(raw) == "hi"
 
-
 def test_clean_surface_removes_unclosed_command_name():
-    """Truncated/unclosed marker removed from the opening tag through EOS."""
     raw = "<command-name>/model</command-name\n  <command-mes"
     assert _clean_surface(raw) == ""
 
-
 def test_clean_surface_removes_dangling_local_command_stdout():
-    """Bare <local-command-stdout> opener through EOS stripped."""
     raw = "<local-command-stdout>Set model X"
     assert _clean_surface(raw) == ""
 
-
 def test_clean_surface_removes_task_notification_block():
-    """<task-notification> block removed entirely."""
     raw = "<task-notification><task-id>1</task-id>Run tests</task-notification>"
     assert _clean_surface(raw) == ""
 
-
 def test_clean_surface_collapses_internal_whitespace():
-    """Multiple spaces and newlines collapsed to single space; ends stripped."""
     raw = "  word1   word2\n\nword3  "
     assert _clean_surface(raw) == "word1 word2 word3"
 
-
 def test_clean_surface_empty_string():
     assert _clean_surface("") == ""
-
 
 def test_clean_surface_only_ansi_returns_empty():
     raw = "\x1b[0m\x1b[1m"
     assert _clean_surface(raw) == ""
 
-
-# ================================================================= SC1: verbatim store, clean render
-
-
 def test_sc1_rendered_brief_is_junk_free(tmp_path):
-    """SC1: rendered brief from junk-laden store is clean; stored surface is byte-identical."""
     store = MemoryStore(path=tmp_path)
 
-    # Insert a record whose literal_surface is truncated harness junk.
     junk = "<command-name>/model</command-name\n  <command-mes"
     rec = _mk_record(store, junk)
 
     payload = _assembly_standard(store)
     rendered = format_payload_as_markdown(payload)
 
-    # Rendered output must not contain any known junk tokens.
     assert "\x1b[" not in rendered, "ANSI code found in rendered brief"
     assert "<command-name" not in rendered, "<command-name found in rendered brief"
     assert "<local-command-stdout" not in rendered, "<local-command-stdout found in rendered brief"
     assert "<task-notification" not in rendered, "<task-notification found in rendered brief"
 
-    # verbatim invariant: stored literal_surface is byte-identical to what was inserted.
     stored = store.get(rec.id)
     assert stored.literal_surface == junk, (
         f"literal_surface mutated; expected {junk!r}, got {stored.literal_surface!r}"
     )
 
-
 def test_sc1_ansi_in_rich_club_cleaned(tmp_path):
-    """ANSI in rich-club record is stripped from rendered output."""
     store = MemoryStore(path=tmp_path)
     ansi_text = "\x1b[33myellow note\x1b[0m"
     rec = _mk_record(store, ansi_text)
@@ -182,45 +136,29 @@ def test_sc1_ansi_in_rich_club_cleaned(tmp_path):
     payload = _assembly_standard(store, rich_club=rich_uuids)
     rendered = format_payload_as_markdown(payload)
     assert "\x1b[" not in rendered
-    assert "yellow note" in rendered  # visible text kept
-
+    assert "yellow note" in rendered
 
 def test_skip_empty_cleans_no_blank_bullets(tmp_path):
-    """A record that cleans to empty string produces no blank bullet in L1."""
     store = MemoryStore(path=tmp_path)
-    # A record consisting entirely of ANSI codes cleans to empty -> skip.
     _mk_record(
         store, "\x1b[0m\x1b[1m",
         pinned=True, detail_level=5,
     )
-    # One real record so L1 is non-empty overall.
     _mk_record(store, "real content here", pinned=True, detail_level=5)
 
     payload = _assembly_standard(store)
     if payload.l1:
         for line in payload.l1.split("\n"):
-            # A blank bullet "- " with nothing after it is the failure mode.
             if line.startswith("- "):
                 assert line[2:].strip() != "", f"blank bullet found: {line!r}"
 
-
-# ================================================================= SC6 (import): no llmlingua after L2 render
-
-
 def test_sc6_no_llmlingua_after_l2_render(tmp_path):
-    """SC6: llmlingua must not enter sys.modules when rendering L2 content.
-
-    The test builds a real community assignment (so _l2_segments loop executes),
-    clears any existing llmlingua entries, renders, then asserts absence.
-    """
-    # Purge any pre-existing llmlingua import from prior test pollution.
     for key in list(sys.modules):
         if key == "llmlingua" or key.startswith("llmlingua."):
             del sys.modules[key]
 
     store = MemoryStore(path=tmp_path)
 
-    # Build a populated community so _l2_segments actually executes its loop.
     cid = uuid4()
     rec = _mk_record(store, "community member record alice", community_id=cid)
     assignment = CommunityAssignment()
@@ -234,17 +172,11 @@ def test_sc6_no_llmlingua_after_l2_render(tmp_path):
         "llmlingua was imported during L2 render — compress call site was not removed"
     )
 
-
-# ================================================================= SC2: recent-thread element
-
-
 def test_sc2_recent_thread_section_present(tmp_path):
-    """SC2: rendered brief contains a clearly-labeled most-recent-work-thread section."""
     from datetime import timedelta
     store = MemoryStore(path=tmp_path)
     now = datetime.now(timezone.utc)
 
-    # Seed a few records with different created_at timestamps.
     _mk_record(store, "alice worked on task A earlier", created_at=now - timedelta(hours=2))
     _mk_record(store, "alice switched to task B", created_at=now - timedelta(hours=1))
     _mk_record(store, "alice is now on task C", created_at=now)
@@ -252,35 +184,26 @@ def test_sc2_recent_thread_section_present(tmp_path):
     payload = _assembly_standard(store)
     rendered = format_payload_as_markdown(payload)
 
-    # The brief must contain a clearly-labeled recent-work heading.
     assert "recent" in rendered.lower() or "Most recent" in rendered, (
         f"no recent-thread section in rendered brief:\n{rendered}"
     )
-    # The most recent record's content should appear.
     assert "task C" in rendered, f"newest record not in rendered brief:\n{rendered}"
 
-
 def test_sc2_recent_thread_skips_junk(tmp_path):
-    """SC2: recent-thread entries that clean to empty are skipped (no blank bullets)."""
     from datetime import timedelta
     store = MemoryStore(path=tmp_path)
     now = datetime.now(timezone.utc)
 
-    # Insert a junk-only record as the newest.
     _mk_record(store, "\x1b[0m\x1b[1m", created_at=now)
-    # Insert a clean record as older.
     _mk_record(store, "alice clean work", created_at=now - timedelta(hours=1))
 
     payload = _assembly_standard(store)
-    assert payload.recent_thread != ""  # at least the clean record survives
-    # No blank bullets.
+    assert payload.recent_thread != ""
     for line in payload.recent_thread.split("\n"):
         if line.startswith("- "):
             assert line[2:].strip() != "", f"blank bullet in recent_thread: {line!r}"
 
-
 def test_sc2_recent_thread_default_empty_on_minimal(tmp_path):
-    """SC2: minimal wake_depth leaves recent_thread empty."""
     store = MemoryStore(path=tmp_path)
     _mk_record(store, "some record")
 
@@ -290,16 +213,7 @@ def test_sc2_recent_thread_default_empty_on_minimal(tmp_path):
     )
     assert payload.recent_thread == ""
 
-
-# ================================================================= _session_state_hash invariance
-
-
 def test_hash_invariant_to_recent_thread(tmp_path):
-    """_session_state_hash is UNCHANGED by the recent_thread field.
-
-    Two payloads with identical l0/l1/l2/rich_club but different recent_thread
-    must produce the same hash.
-    """
     p1 = SessionStartPayload(
         l0="ident block",
         l1="fact one\nfact two",
@@ -316,12 +230,7 @@ def test_hash_invariant_to_recent_thread(tmp_path):
     )
     assert _session_state_hash(p1) == _session_state_hash(p2)
 
-
-# ================================================================= dict-branch render
-
-
 def test_format_payload_dict_branch_carries_recent_thread():
-    """The dict (RPC) branch of format_payload_as_markdown renders recent_thread."""
     payload_dict = {
         "l0": "identity info",
         "l1": "",
@@ -336,17 +245,11 @@ def test_format_payload_dict_branch_carries_recent_thread():
     assert "plumbing" in rendered, f"recent_thread content missing from dict render:\n{rendered}"
     assert "relay" in rendered, f"recent_thread content missing from dict render:\n{rendered}"
 
-
-# ================================================================= SC6 (cap): length <= 10000
-
-
 def test_sc6_populated_render_under_cap(tmp_path):
-    """SC6: a populated render stays under the 10000-char cap."""
     from datetime import timedelta
     store = MemoryStore(path=tmp_path)
     now = datetime.now(timezone.utc)
 
-    # Seed multiple records including community members.
     cid = uuid4()
     for i in range(10):
         _mk_record(

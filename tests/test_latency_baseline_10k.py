@@ -1,8 +1,3 @@
-"""v6.0 prerequisite: latency baseline at scale.
-
-Establishes p95 recall latency at N=100/1000 records as regression fence.
-Must pass BEFORE any v6.0 store/pipeline refactoring begins.
-"""
 from __future__ import annotations
 
 import sys
@@ -72,14 +67,6 @@ def test_p95_latency_at_1000_records(tmp_path):
 
 
 def test_insert_latency_stable(tmp_path):
-    """Insert p95 < 500ms — fast enough for ambient capture.
-
-    Load-robust: in-gate wall-clock fence. skip_if_loaded() bails on a busy
-    host; best-of-N takes the MINIMUM p95 over independent passes so a busy
-    host never produces a false red. Each pass uses its OWN fresh store dir so
-    the 50-insert timing is not skewed by accumulated rows from prior passes.
-    The 500ms fence is unchanged.
-    """
     from _perf_helpers import best_of_n, skip_if_loaded
 
     skip_if_loaded()

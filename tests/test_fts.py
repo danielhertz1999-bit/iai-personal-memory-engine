@@ -1,4 +1,3 @@
-"""Deterministic exact-token recall boost tests."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -8,7 +7,6 @@ from uuid import uuid4, UUID
 import pytest
 
 from iai_mcp.pipeline import _trigram_jaccard
-
 
 class TestDeterministicBoost:
     def test_trigram_jaccard_exact_match(self):
@@ -26,7 +24,6 @@ class TestDeterministicBoost:
         assert _trigram_jaccard("ab", "abc") == 0.0
 
     def test_exact_substring_boost_logic(self):
-        """Verify the exact-token boost finds substring matches in records_cache."""
         cue = "abc123def456"
         surfaces = {
             "rec1": "The token is abc123def456 for prod",
@@ -48,7 +45,6 @@ class TestDeterministicBoost:
         assert cue.lower() in surface.lower()
 
     def test_exact_substring_boost_minimum_length(self):
-        """Cue must be >= 4 chars to activate exact-token boost."""
         cue = "ab"
         assert len(cue) < 4
 

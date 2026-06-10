@@ -1,7 +1,3 @@
-"""Back-compat shim -- schema induction has moved to iai_mcp.lilli.cycle.schema.
-
-Re-exports the public API so callers that have not yet migrated keep working.
-"""
 from __future__ import annotations
 
 from iai_mcp.lilli.cycle.schema import (

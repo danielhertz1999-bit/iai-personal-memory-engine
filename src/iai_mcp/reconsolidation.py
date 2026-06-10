@@ -1,4 +1,3 @@
-"""Back-compat shim — reconsolidation has moved to iai_mcp.lilli.ops.reconsolidation."""
 from __future__ import annotations
 
 from iai_mcp.lilli.ops.reconsolidation import (

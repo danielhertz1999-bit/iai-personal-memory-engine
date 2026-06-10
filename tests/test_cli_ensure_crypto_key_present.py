@@ -1,9 +1,3 @@
-"""Contract:
-  - Existing key file at the default path -> no-op, returns None.
-  - `IAI_MCP_CRYPTO_PASSPHRASE` env var set -> no-op, returns None.
-  - Neither -> writes a 32-byte 0o600 key file at the default path and
-    returns its Path.
-"""
 from __future__ import annotations
 
 import os

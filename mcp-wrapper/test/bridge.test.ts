@@ -1,8 +1,3 @@
-// — bridge.ts test suite.
-//
-// Tests the PythonCoreBridge JSON-RPC client against a mock socket server.
-// Covers: connect, handleSocketDeath, reconnect, concurrent requests,
-// JSON-RPC framing errors, partial reads, rapid flaps.
 
 import { describe, it, afterEach } from "node:test";
 import { strict as assert } from "node:assert";
@@ -21,10 +16,6 @@ async function makeTmpDir(): Promise<string> {
   return await mkdtemp(join(tmpdir(), "iai-bridge-test-"));
 }
 
-/**
- * Mock JSON-RPC socket server. Accepts connections and responds to
- * requests with configurable behavior.
- */
 class MockDaemon {
   private server: net.Server;
   private connections: net.Socket[] = [];
@@ -72,7 +63,7 @@ class MockDaemon {
 
   async close(): Promise<void> {
     for (const c of this.connections) {
-      try { c.destroy(); } catch { /* ignore */ }
+      try { c.destroy(); } catch {  }
     }
     this.connections = [];
     return new Promise((resolve) => {
@@ -82,7 +73,7 @@ class MockDaemon {
 
   disconnectAll(): void {
     for (const c of this.connections) {
-      try { c.destroy(); } catch { /* ignore */ }
+      try { c.destroy(); } catch {  }
     }
     this.connections = [];
   }
@@ -93,15 +84,14 @@ function makeBridge(socketPath: string): PythonCoreBridge {
   return new PythonCoreBridge();
 }
 
-// Cleanup helper
 let tmpDirs: string[] = [];
 let daemons: MockDaemon[] = [];
 let bridges: PythonCoreBridge[] = [];
 
 afterEach(async () => {
-  for (const b of bridges) { try { b.disconnect(); } catch { /* */ } }
+  for (const b of bridges) { try { b.disconnect(); } catch {  } }
   bridges = [];
-  for (const d of daemons) { try { await d.close(); } catch { /* */ } }
+  for (const d of daemons) { try { await d.close(); } catch {  } }
   daemons = [];
   for (const dir of tmpDirs) { await rm(dir, { recursive: true, force: true }); }
   tmpDirs = [];
@@ -120,7 +110,6 @@ async function setup(): Promise<{ daemon: MockDaemon; bridge: PythonCoreBridge }
   return { daemon, bridge };
 }
 
-// ─────────────────────────────────────────── Basic connectivity
 
 describe("PythonCoreBridge: basic connectivity", () => {
   it("connects to daemon socket and reports isConnected", async () => {
@@ -156,7 +145,6 @@ describe("PythonCoreBridge: basic connectivity", () => {
   });
 });
 
-// ─────────────────────────────────────────── JSON-RPC calls
 
 describe("PythonCoreBridge: JSON-RPC calls", () => {
   it("sends request and receives response", async () => {
@@ -190,7 +178,6 @@ describe("PythonCoreBridge: JSON-RPC calls", () => {
   });
 });
 
-// ─────────────────────────────────────────── Concurrent requests
 
 describe("PythonCoreBridge: concurrent requests", () => {
   it("handles 10 concurrent requests correctly", async () => {
@@ -212,7 +199,6 @@ describe("PythonCoreBridge: concurrent requests", () => {
     const { daemon, bridge } = await setup();
     const server = (daemon as unknown as { server: net.Server }).server;
 
-    // Override to add delay for specific methods
     daemon.requestHandler = (req) => ({ method: req.method });
     await bridge.start();
 
@@ -225,7 +211,6 @@ describe("PythonCoreBridge: concurrent requests", () => {
   });
 });
 
-// ─────────────────────────────────────────── Socket death and reconnect
 
 describe("PythonCoreBridge: handleSocketDeath", () => {
   it("rejects pending requests on socket close", async () => {
@@ -234,10 +219,9 @@ describe("PythonCoreBridge: handleSocketDeath", () => {
     const socketPath = join(dir, ".daemon.sock");
     const connections: net.Socket[] = [];
 
-    // Server that accepts but never responds
     const server = net.createServer((conn) => {
       connections.push(conn);
-      conn.on("data", () => { /* swallow */ });
+      conn.on("data", () => {  });
     });
     await new Promise<void>((r) => server.listen(socketPath, r));
 
@@ -248,7 +232,6 @@ describe("PythonCoreBridge: handleSocketDeath", () => {
     const pending = bridge.call("hanging_method");
     await sleep(50);
 
-    // Kill from server side — triggers handleSocketDeath
     for (const c of connections) c.destroy();
     await sleep(50);
 
@@ -266,11 +249,9 @@ describe("PythonCoreBridge: handleSocketDeath", () => {
     daemon.requestHandler = (req) => ({ ok: true, method: req.method });
     await bridge.start();
 
-    // Kill connection
     daemon.disconnectAll();
-    await sleep(200); // wait for reconnect
+    await sleep(200);
 
-    // Should be reconnected
     const res = await bridge.call<{ ok: boolean }>("after_reconnect");
     assert.equal(res.ok, true);
   });
@@ -281,19 +262,16 @@ describe("PythonCoreBridge: handleSocketDeath", () => {
     daemon.requestHandler = (req) => ({ ok: true });
     await bridge.start();
 
-    // First death -> reconnects
     daemon.disconnectAll();
     await sleep(100);
     assert.equal(bridge.isConnected(), true);
 
-    // Second death -> stays degraded
     daemon.disconnectAll();
     await sleep(100);
     assert.equal(bridge.isConnected(), false);
   });
 });
 
-// ─────────────────────────────────────────── Framing errors
 
 describe("PythonCoreBridge: framing errors", () => {
   it("tolerates non-JSON lines from daemon (e.g. stray prints)", async () => {
@@ -301,7 +279,6 @@ describe("PythonCoreBridge: framing errors", () => {
     tmpDirs.push(dir);
     const socketPath = join(dir, ".daemon.sock");
 
-    // Custom server that sends garbage then valid response
     const server = net.createServer((conn) => {
       let buf = "";
       conn.on("data", (chunk) => {
@@ -311,10 +288,8 @@ describe("PythonCoreBridge: framing errors", () => {
           const line = buf.slice(0, nl);
           buf = buf.slice(nl + 1);
           const req = JSON.parse(line);
-          // Send garbage first
           conn.write("WARNING: something unexpected\n");
           conn.write("DEBUG: another line\n");
-          // Then valid response
           conn.write(JSON.stringify({ jsonrpc: "2.0", id: req.id, result: { ok: true } }) + "\n");
         }
       });
@@ -344,7 +319,6 @@ describe("PythonCoreBridge: framing errors", () => {
         const nl = buf.indexOf("\n");
         if (nl >= 0) {
           buf = buf.slice(nl + 1);
-          // Send only garbage, never a valid response
           for (let i = 0; i < 5; i++) {
             conn.write(`GARBAGE LINE ${i}\n`);
           }
@@ -381,7 +355,6 @@ describe("PythonCoreBridge: framing errors", () => {
           buf = buf.slice(nl + 1);
           const req = JSON.parse(line);
           const resp = JSON.stringify({ jsonrpc: "2.0", id: req.id, result: { chunked: true } });
-          // Send response in 3 chunks
           const full = resp + "\n";
           const chunk1 = full.slice(0, 10);
           const chunk2 = full.slice(10, 30);
@@ -406,7 +379,6 @@ describe("PythonCoreBridge: framing errors", () => {
   });
 });
 
-// ─────────────────────────────────────────── Rapid flaps
 
 describe("PythonCoreBridge: rapid connection flaps", () => {
   it("survives rapid connect/disconnect cycles", async () => {

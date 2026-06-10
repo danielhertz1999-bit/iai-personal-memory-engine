@@ -1,13 +1,3 @@
-"""Tests for Task 4 LEARN-04 curiosity.
-
- trigger: entropy > 0.7 bits, 3-turn cooldown.
- tiered style:
-- low entropy (0.4-0.7): silent log via events table (curiosity_silent_log)
-- mid entropy (0.7-0.9): inline hint in next response
-- high entropy (>0.9): direct clarifying question
-
-compute_entropy operates in base-2 (bits) consistent with "0.7 bits".
-"""
 from __future__ import annotations
 
 import math
@@ -52,9 +42,6 @@ class _Hit:
         self.score = score
 
 
-# ---------------------------------------------------------------- constants
-
-
 def test_curiosity_thresholds():
     from iai_mcp import curiosity
 
@@ -64,11 +51,7 @@ def test_curiosity_thresholds():
     assert curiosity.COOLDOWN_TURNS == 3
 
 
-# ---------------------------------------------------------------- compute_entropy
-
-
 def test_compute_entropy_uniform():
-    """Shannon entropy of [0.5, 0.5] = 1.0 bit."""
     from iai_mcp.curiosity import compute_entropy
 
     e = compute_entropy([0.5, 0.5])
@@ -79,7 +62,6 @@ def test_compute_entropy_skewed():
     from iai_mcp.curiosity import compute_entropy
 
     e = compute_entropy([0.9, 0.1])
-    # H([0.9,0.1]) = -(0.9*log2(0.9) + 0.1*log2(0.1)) ~ 0.469
     assert e < 0.5
 
 
@@ -98,16 +80,11 @@ def test_compute_entropy_empty():
 def test_compute_entropy_zero_scores_handled():
     from iai_mcp.curiosity import compute_entropy
 
-    # Negative scores shouldn't crash (max(0, s) normalisation).
     e = compute_entropy([-1.0, 0.5, 0.5])
     assert e >= 0.0
 
 
-# ---------------------------------------------------------------- fire_curiosity
-
-
 def test_fire_curiosity_below_threshold_silent(tmp_path):
-    """Low entropy (0.5) -> silent log, returns None."""
     from iai_mcp.curiosity import fire_curiosity
     from iai_mcp.events import query_events
 
@@ -125,7 +102,6 @@ def test_fire_curiosity_below_threshold_silent(tmp_path):
 
 
 def test_fire_curiosity_below_ENTROPY_LOW_returns_none(tmp_path):
-    """Very low entropy (below ENTROPY_LOW=0.4) returns None without logging."""
     from iai_mcp.curiosity import fire_curiosity
 
     store = MemoryStore(path=tmp_path)
@@ -137,7 +113,6 @@ def test_fire_curiosity_below_ENTROPY_LOW_returns_none(tmp_path):
 
 
 def test_fire_curiosity_mid_entropy_inline_hint(tmp_path):
-    """Entropy 0.8 -> CuriosityQuestion with tier='inline'."""
     from iai_mcp.curiosity import fire_curiosity
 
     store = MemoryStore(path=tmp_path)
@@ -168,7 +143,6 @@ def test_fire_curiosity_high_entropy_direct_question(tmp_path):
 
 
 def test_fire_curiosity_cooldown_3_turns(tmp_path):
-    """Fire turn 1 -> fires. Turn 2 -> None (cooldown). Turn 3 -> None."""
     from iai_mcp.curiosity import fire_curiosity
 
     store = MemoryStore(path=tmp_path)
@@ -184,7 +158,6 @@ def test_fire_curiosity_cooldown_3_turns(tmp_path):
 
 
 def test_fire_curiosity_cooldown_releases(tmp_path):
-    """Turn 4 after turn 1 firing -> cooldown released."""
     from iai_mcp.curiosity import fire_curiosity
 
     store = MemoryStore(path=tmp_path)
@@ -197,9 +170,6 @@ def test_fire_curiosity_cooldown_releases(tmp_path):
     assert q4 is not None
 
 
-# ---------------------------------------------------------------- pending_questions
-
-
 def test_pending_questions_empty(tmp_path):
     from iai_mcp.curiosity import pending_questions
 
@@ -208,7 +178,6 @@ def test_pending_questions_empty(tmp_path):
 
 
 def test_pending_questions_filter_resolved(tmp_path):
-    """5 fired, 3 resolved -> pending_questions returns 2."""
     from iai_mcp.curiosity import fire_curiosity, pending_questions
     from iai_mcp.events import write_event
 
@@ -216,14 +185,12 @@ def test_pending_questions_filter_resolved(tmp_path):
     r = _rec()
     store.insert(r)
     hits = [_Hit(r.id, 0.5)]
-    # Fire 5 questions across different sessions so cooldown doesn't block.
     q_ids: list = []
     for i in range(5):
         q = fire_curiosity(store, hits, f"cue{i}", 0.95, f"session-{i}", turn=1)
         assert q is not None
         q_ids.append(q.id)
 
-    # Resolve 3 via curiosity_resolved event
     for qid in q_ids[:3]:
         write_event(
             store, kind="curiosity_resolved",

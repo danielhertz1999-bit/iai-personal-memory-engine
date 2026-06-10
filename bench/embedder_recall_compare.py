@@ -1,97 +1,4 @@
-"""Monotonic recall@k regression gate for the Rust forward-pass embedder.
-
-Runs LongMemEval-S blind retrieval twice (PyTorch baseline + Rust path)
-and asserts STRICT monotonic improvement:
-
-    recall@5_rust >= recall@5_pytorch (per-question AND aggregate)
-    recall@10_rust >= recall@10_pytorch (per-question AND aggregate)
-
-NO tolerance band in the "drop allowed" direction. The user-locked
-constitutional rule: results may only RISE, never DROP.
-
-Per-question recall@k is BINARY (0 or 1 — gold hit in top-k or not),
-so "rust >= pytorch per-question" reduces to: any question PyTorch got
-right must NOT be missed by Rust. Rust may pick up additional questions
-that PyTorch missed (monotonic improvement) — that is the only
-acceptable delta direction.
-
-## Backend isolation
-
-Two clean subprocess runs, NOT in-process backend swap. Reason: the
-production embedder loads the model at `Embedder.__init__` and caches
-in module-level `_MODEL_CACHE`. Swapping the env var mid-process would
-risk cross-contamination of the cached SentenceTransformer instance vs
-the freshly-spawned `iai_mcp_embed.Embedder()`. Subprocess isolation is
-the deterministic path.
-
-## Retrieval prong selection
-
-The underlying harness (`bench/longmemeval_blind.py`) emits both
-`r_at_5_retrieve` (prong X = flat-cosine over L2-normalized 384-d
-vectors) AND `r_at_5_pipeline` (prong Y = full graph-native architecture
-with rich-club, community gates, mode-bias).
-
-This bench consumes prong X ONLY. Prong Y introduces variance from
-graph features that are NOT embedder-attributable; mixing it into a
-monotonicity gate would conflate embedder regressions with graph
-pipeline drift. Prong X is pure embedder -> cosine ranking, which is
-exactly the scope this gate measures.
-
-## CLI
-
-    python bench/embedder_recall_compare.py
-        [--n-questions 500]
-        [--seed 42]
-        [--skip-pytorch]
-        [--out-dir bench/]
-
-The defaults reproduce the SPEC.md R8 gate (N=500 full LongMemEval-S,
-seed=42 audit metadata, both backends).
-
-## Output files
-
-  - bench/embedder_recall_compare.pytorch.json -- PyTorch baseline run
-  - bench/embedder_recall_compare.rust.json -- Rust path run
-
-Each file follows the shape:
-
-    {
-      "backend": "pytorch" | "rust",
-      "model_revision_sha": "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a",
-      "dataset_id": "xiaowu0162/longmemeval-cleaned",
-      "dataset_revision_sha": "98d7416c24...",
-      "split": "S",
-      "seed": int,
-      "n_questions": int,
-      "per_question": [
-        {
-          "qid": "...",
-          "recall_at_5": 0 | 1,
-          "recall_at_10": 0 | 1,
-          "question_type": "..."
-        },
-        ...
-      ],
-      "aggregate": {
-        "recall_at_5": float,
-        "recall_at_10": float
-      },
-      "wall_seconds": float,
-      "generated_at_utc": "..."
-    }
-
-## Exit codes
-
-  - 0 monotonic verdict (Rust >= PyTorch on every metric, per-question
-        and aggregate)
-  - 1 monotonicity violation (one or more drops detected)
-  - 2 subprocess crash / setup error (mostly user-actionable; e.g.
-        wheel not installed)
-
-The gate is the bench result, not a metric. If a single LongMemEval-S
-question drops, this script exits 1 -- the phase does NOT close until
-the violation is resolved (route back to the embedder forward pass).
-"""
+"""Monotonic recall@k regression gate for the Rust forward-pass embedder."""
 from __future__ import annotations
 
 import argparse
@@ -107,20 +14,16 @@ REPO = Path(__file__).resolve().parent.parent
 BLIND_SCRIPT = REPO / "bench" / "longmemeval_blind.py"
 DEFAULT_OUT_DIR = REPO / "bench"
 
-# Pinned against bench/embedder_baseline/metadata.json.
-# Recorded in every output JSON for audit / reproducibility.
 PINNED_MODEL_REVISION_SHA = "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
 PINNED_DATASET_ID = "xiaowu0162/longmemeval-cleaned"
 PINNED_DATASET_REVISION_SHA = "98d7416c24c778c2fee6e6f3006e7a073259d48f"
 
 
 def _harness_output_path(backend: str, out_dir: Path) -> Path:
-    """Intermediate harness output (long-form blind-run JSON)."""
     return out_dir / f"_embedder_recall_compare.{backend}.raw.json"
 
 
 def _compare_output_path(backend: str, out_dir: Path) -> Path:
-    """Compare-shape output, committed to git as audit trail."""
     return out_dir / f"embedder_recall_compare.{backend}.json"
 
 
@@ -130,30 +33,19 @@ def run_backend(
     seed: int,
     out_dir: Path,
 ) -> dict:
-    """Spawn a subprocess that runs longmemeval_blind.py with the given
-    backend, then transform its output into the compare-shape JSON.
-
-    Returns the compare-shape dict (also written to disk).
-    """
     raw_out = _harness_output_path(backend, out_dir)
     cmp_out = _compare_output_path(backend, out_dir)
 
-    # Wipe any previous raw output so subprocess writes a fresh file
-    # (defensive: avoids confusion between stale results across runs).
     if raw_out.exists():
         raw_out.unlink()
 
-    # Wipe checkpoint too — clean run each time (deterministic gate).
-    # The harness defaults to <out>.jsonl as checkpoint path.
     cp = Path(str(raw_out) + ".jsonl")
     if cp.exists():
         cp.unlink()
 
     env = os.environ.copy()
     env["IAI_MCP_EMBED_BACKEND"] = backend
-    # Bench process owns its own embedder (no daemon involvement).
     env.setdefault("IAI_MCP_TEST_MODE", "1")
-    # Quiet HF tokenizer fork warnings inside the subprocess.
     env.setdefault("TOKENIZERS_PARALLELISM", "false")
 
     cmd = [
@@ -173,8 +65,6 @@ def run_backend(
         flush=True,
     )
     t0 = time.time()
-    # Stream stderr live to our stderr so progress lines (per-row R@5
-    # prints from the harness) are visible during the run.
     result = subprocess.run(
         cmd,
         env=env,
@@ -204,10 +94,8 @@ def run_backend(
         wall_seconds=wall,
     )
 
-    # Commit the compare-shape JSON (this is the audit file).
     cmp_out.parent.mkdir(parents=True, exist_ok=True)
     cmp_out.write_text(json.dumps(compare_doc, indent=2) + "\n")
-    # Keep the raw harness file alongside for forensics on a failed run.
 
     return compare_doc
 
@@ -219,30 +107,17 @@ def _to_compare_shape(
     n_questions_requested: int,
     wall_seconds: float,
 ) -> dict:
-    """Translate the harness's `r_at_5_retrieve / per_row` shape into the
-    compare-shape contract this script publishes.
-
-    The harness shape is rich (it ships both prong X and prong Y); for
-    the monotonicity gate we project to prong X only (flat-cosine
-    retrieval — the embedder-pure path). Per-question recall is read
-    from `per_row[].r_at_5_retrieve` / `r_at_10_retrieve`.
-    """
     per_row = raw.get("per_row", [])
     per_question = []
     for row in per_row:
         per_question.append(
             {
                 "qid": row.get("question_id"),
-                # recall@k is 0.0 or 1.0 in the harness; cast to int for
-                # binary clarity in the JSON contract.
                 "recall_at_5": int(float(row.get("r_at_5_retrieve", 0.0))),
                 "recall_at_10": int(float(row.get("r_at_10_retrieve", 0.0))),
                 "question_type": row.get("question_type", "unknown"),
             }
         )
-    # The harness aggregates over the union of success + error rows; we
-    # mirror that contract (silent zero on error counts as a miss, NOT a
-    # softer "skip"). Use prong X (retrieve, flat-cosine).
     aggregate = {
         "recall_at_5": float(raw.get("r_at_5_retrieve", 0.0)),
         "recall_at_10": float(raw.get("r_at_10_retrieve", 0.0)),
@@ -269,14 +144,6 @@ def _to_compare_shape(
 
 
 def assert_monotonic(rust: dict, pytorch: dict) -> list[str]:
-    """Detect monotonicity violations. Returns a list of human-readable
-    violation lines (empty list = PASS).
-
-    A violation is any case where Rust scored strictly worse than
-    PyTorch on a per-question OR aggregate recall@k metric. Equal is OK
-    (parity is the floor); strictly-better is the only acceptable
-    delta direction.
-    """
     violations: list[str] = []
     by_qid_rust = {q["qid"]: q for q in rust["per_question"]}
     by_qid_py = {q["qid"]: q for q in pytorch["per_question"]}
@@ -296,9 +163,6 @@ def assert_monotonic(rust: dict, pytorch: dict) -> list[str]:
                 f"QID-SET DRIFT: {len(only_py)} qids in pytorch missing from rust "
                 f"(sample: {sorted(only_py)[:5]})"
             )
-        # Even on drift we still compare the intersection, because the
-        # gate is per-question monotonicity and dropping a question
-        # entirely IS a drift signal the reviewer needs to see.
 
     intersection = sorted(rust_qids & py_qids)
     for qid in intersection:
@@ -315,11 +179,6 @@ def assert_monotonic(rust: dict, pytorch: dict) -> list[str]:
                 f"< pytorch={p['recall_at_10']} (qtype={p.get('question_type', 'unknown')})"
             )
 
-    # Aggregate check — even if every per-question check passed, a
-    # silent aggregate drift would be a separate violation (it can't
-    # actually happen if per-question all pass and qid sets match, but
-    # the assertion is defensive belt-and-braces, and useful if qid
-    # sets DO drift).
     if rust["aggregate"]["recall_at_5"] < pytorch["aggregate"]["recall_at_5"]:
         violations.append(
             f"REGRESSION AGGREGATE R@5: rust={rust['aggregate']['recall_at_5']:.4f} "
@@ -389,7 +248,6 @@ def main(argv: list[str] | None = None) -> int:
     pytorch_compare_path = _compare_output_path("pytorch", out_dir)
     rust_compare_path = _compare_output_path("rust", out_dir)
 
-    # PyTorch baseline.
     if args.skip_pytorch:
         if not pytorch_compare_path.exists():
             raise SystemExit(
@@ -414,7 +272,6 @@ def main(argv: list[str] | None = None) -> int:
             out_dir=out_dir,
         )
 
-    # Rust path.
     if args.skip_rust:
         if not rust_compare_path.exists():
             raise SystemExit(
@@ -438,7 +295,6 @@ def main(argv: list[str] | None = None) -> int:
             out_dir=out_dir,
         )
 
-    # Verdict.
     n = rust_doc["n_questions"]
     py_agg = pytorch_doc["aggregate"]
     rs_agg = rust_doc["aggregate"]
@@ -463,7 +319,6 @@ def main(argv: list[str] | None = None) -> int:
 
     violations = assert_monotonic(rust_doc, pytorch_doc)
     if violations:
-        # Persist the violation report alongside the JSONs for audit.
         report_path = out_dir / "embedder_recall_compare.violations.txt"
         report_path.write_text("\n".join(violations) + "\n")
         print(

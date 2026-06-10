@@ -1,18 +1,4 @@
 #!/usr/bin/env python3
-"""Embedder baseline capture — prerequisite for the Rust forward-pass replacement.
-
-Captures `bge-small-en-v1.5` output on a deliberate 100-text mix so the Rust
-implementation has a numeric-parity gate that catches tokenization, truncation,
-and L2-normalization bugs which the LongMemEval recall@k test cannot surface.
-
-Produces (rerunnable, deterministic with fixed seed):
-  bench/embedder_baseline/vectors.npy float32 (N=100, 384), L2-normalized
-  bench/embedder_baseline/texts.json UTF-8 list[str]
-  bench/embedder_baseline/metadata.json model revision, env, seed, source
-
-Acceptance gate for the Rust replacement (per text):
-  cosine(rust_output, vectors.npy[i]) >= 0.9999
-"""
 from __future__ import annotations
 
 import hashlib
@@ -27,10 +13,6 @@ from pathlib import Path
 
 import numpy as np
 
-# Resolve iai_mcp.* (via src) AND bench.* (via worktree root) to THIS
-# worktree, not the parent venv's editable install. Idempotent: each
-# `sys.path.insert` is guarded by an "if not already present" check.
-# Canonical bench shim form (matches tests/test_bench_worktree_resolution.py).
 _SRC_PATH = str(Path(__file__).resolve().parent.parent / "src")
 _ROOT_PATH = str(Path(__file__).resolve().parent.parent)
 if _SRC_PATH not in sys.path:
@@ -38,7 +20,6 @@ if _SRC_PATH not in sys.path:
 if _ROOT_PATH not in sys.path:
     sys.path.insert(0, _ROOT_PATH)
 
-# Suppress the BERT `position_ids` warning sentence-transformers emits at load.
 os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
 from iai_mcp.embed import Embedder  # noqa: E402
@@ -49,47 +30,30 @@ N_LME = 60
 N_EDGE = 20
 N_NARRATIVE = 20
 
-# ---------------------------------------------------------------------------
-# 20 hand-curated edge cases — exercise tokenization / truncation / unicode.
-# ---------------------------------------------------------------------------
-# Empty string DELIBERATELY excluded: production records always have content
-# (capture pipeline gates min_length > 0), so embedding "" would test a
-# non-existent code path.
 EDGE_TEXTS: list[str] = [
-    # short / boundary
     "a",
     "ok",
     "yes!",
     "1234",
-    # emoji / unicode / CJK
     "\U0001F600",
     "cafe resume naive",
     "Visit https://example.com for more.",
     "user@host.tld",
-    # code-like (tokenizer treats these specially)
     "<html><body>hi</body></html>",
     '{"key": "value", "n": 42}',
     "def foo():\n    return bar()",
     "a + b == c\n\nelse:",
-    # punctuation-heavy
     "...!?...",
     "----===----",
-    # whitespace patterns
     "   leading and trailing spaces   ",
     "tab\tseparated\tfields\there",
-    # truncation triggers: max_position_embeddings = 512, so these MUST be
-    # over the cap to lock the model's truncation behavior into the baseline
     "lorem ipsum dolor sit amet consectetur adipiscing elit " * 200,
     "the quick brown fox jumped over the lazy dog. " * 100,
-    # diverse natural sentences
     "What is the capital of France?",
     "Numbers like 3.14159 and 2.71828 appear throughout mathematics.",
 ]
 assert len(EDGE_TEXTS) == N_EDGE, f"want {N_EDGE} edge cases, got {len(EDGE_TEXTS)}"
 
-# ---------------------------------------------------------------------------
-# 20 hand-curated narrative paragraphs — diverse domains, 1-3 sentences each.
-# ---------------------------------------------------------------------------
 NARRATIVE_TEXTS: list[str] = [
     "In distributed systems, eventual consistency trades strict ordering for availability under network partitions. The CAP theorem formalizes this tradeoff.",
     "The Maillard reaction occurs between amino acids and reducing sugars at temperatures above 140 degrees Celsius, producing the characteristic browning and aroma of seared meat.",
@@ -116,18 +80,16 @@ assert len(NARRATIVE_TEXTS) == N_NARRATIVE
 
 
 def _load_lme_turns(n: int, seed: int) -> list[str]:
-    """Sample N turn-texts from the cleaned LongMemEval haystack."""
     from bench.adapters.longmemeval_cleaned import CleanedLongMemEvalAdapter
 
     adapter = CleanedLongMemEvalAdapter()
     turns: list[str] = []
     for session in adapter.load_dataset(split="S"):
-        # LMESession has a.turns attribute (list of message dicts).
         for turn in getattr(session, "turns", []):
             content = (turn.get("content") or "").strip() if isinstance(turn, dict) else ""
             if content:
                 turns.append(content)
-        if len(turns) >= n * 10:  # collect ~10x to make sampling diverse
+        if len(turns) >= n * 10:
             break
     rng = random.Random(seed)
     rng.shuffle(turns)
@@ -135,7 +97,6 @@ def _load_lme_turns(n: int, seed: int) -> list[str]:
 
 
 def _resolve_model_revision(embedder: Embedder) -> str:
-    """Best-effort lookup of the HF snapshot SHA the SentenceTransformer loaded."""
     hub_root = Path.home() / ".cache" / "huggingface" / "hub"
     safe_id = embedder.model_name.replace("/", "--")
     snap_dir = hub_root / f"models--{safe_id}" / "snapshots"
@@ -178,7 +139,6 @@ def main() -> int:
         if (i + 1) % 20 == 0:
             print(f"  ... {i + 1}/{len(texts)}", flush=True)
 
-    # Sanity: bge output should be L2-normalized. Verify.
     norms = np.linalg.norm(vectors, axis=1)
     norm_min, norm_max = float(norms.min()), float(norms.max())
     assert 0.999 <= norm_min and norm_max <= 1.001, (
@@ -192,10 +152,6 @@ def main() -> int:
     np.save(vectors_path, vectors)
     texts_path.write_text(json.dumps(texts, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # Hash the on-disk.npy file (NOT vectors.tobytes()) so the SHA reflects
-    # the full artifact consumers actually read — magic + NPY header + raw bytes.
-    # Consumers in other languages (Rust) read the file bytes, not the in-memory
-    # numpy array, so the SHA must hash the same subject.
     vec_sha256 = hashlib.sha256(vectors_path.read_bytes()).hexdigest()
 
     metadata = {

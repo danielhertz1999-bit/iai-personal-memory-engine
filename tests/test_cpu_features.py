@@ -1,29 +1,8 @@
-"""/ D- unit tests for iai_mcp.cpu_features.has_avx2().
-
-The probe is a direct CPU-feature check that does NOT depend on lancedb
-importing — so the doctor row can answer correctly even on a host where
-`import lancedb` would SIGILL. Tests cover four platform branches plus
-fallback:
-
-  1. Linux x86 with AVX2 in /proc/cpuinfo flags -> True.
-  2. Linux x86 without AVX2 -> False.
-  3. macOS Intel with AVX2 in sysctl machdep.cpu.leaf7_features -> True.
-  4. macOS ARM (M-series) -> True unconditionally (AVX2 N/A; NEON unrelated).
-  5. Unknown platform -> True (defer to secondary defense in store.py).
-
-All tests use `monkeypatch` exclusively. No real /proc reads, no real
-subprocess.run, so the suite is deterministic across hosts.
-"""
 from __future__ import annotations
 
 from unittest.mock import MagicMock
 
 import pytest
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 _LINUX_CPUINFO_WITH_AVX2 = """\
@@ -47,15 +26,9 @@ flags		: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36
 """
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
-
-
 def test_linux_proc_cpuinfo_with_avx2_returns_true(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Linux x86 host with `avx2` in /proc/cpuinfo flags row returns True."""
     import iai_mcp.cpu_features as cf
     from pathlib import Path
 
@@ -81,12 +54,6 @@ def test_linux_proc_cpuinfo_with_avx2_returns_true(
 def test_linux_proc_cpuinfo_without_avx2_returns_false(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Linux x86 host lacking `avx2` in /proc/cpuinfo flags row returns False.
-
-    This is the Celeron N4020 Gemini Lake case — the SIGILL-on-import host
-    that motivated. The row must FAIL so the doctor can surface an
-    actionable message before `import lancedb` crashes the daemon.
-    """
     import iai_mcp.cpu_features as cf
     from pathlib import Path
 
@@ -112,7 +79,6 @@ def test_linux_proc_cpuinfo_without_avx2_returns_false(
 def test_macos_intel_sysctl_with_avx2_returns_true(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """macOS Intel host with AVX2 in `sysctl -n machdep.cpu.leaf7_features`."""
     import iai_mcp.cpu_features as cf
 
     monkeypatch.setattr(cf.platform, "system", lambda: "Darwin")
@@ -131,12 +97,6 @@ def test_macos_intel_sysctl_with_avx2_returns_true(
 def test_macos_arm_returns_true_assume_present(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """macOS ARM (M-series) returns True; AVX2 is N/A on ARM (NEON path).
-
-    LanceDB ARM64 builds use NEON instructions; AVX2 absence is meaningless
-    on this architecture. The doctor row must not falsely FAIL on M-series
-    Macs — instead it reports PASS with "AVX2 available (or N/A)".
-    """
     import iai_mcp.cpu_features as cf
 
     monkeypatch.setattr(cf.platform, "system", lambda: "Darwin")
@@ -150,12 +110,6 @@ def test_macos_arm_returns_true_assume_present(
 def test_fallback_unknown_platform_returns_true(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Unknown platform (Windows, BSD, etc.) returns True (assume present).
-
-    The cpu_features module is best-effort; on a platform we don't probe
-    we defer to the secondary defense in `store.py` (try/except wrap of
-    `import lancedb`) to catch any actual failure.
-    """
     import iai_mcp.cpu_features as cf
 
     monkeypatch.setattr(cf.platform, "system", lambda: "Windows")

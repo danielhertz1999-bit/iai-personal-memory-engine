@@ -1,34 +1,5 @@
 #!/usr/bin/env python3
-"""Contradiction-longitudinal falsifiability bench (skeleton + pre-registered criteria).
-
-**Do not run on the construction host by default** — this module is meant for a
-dedicated bench machine with an isolated ``IAI_MCP_STORE`` and optional GPU.
-
-Pre-registered pass criteria (from CONTEXT_PEER_REVIEW v3):
-- **Metric B (post-flip):** cues issued after session ``t_0`` (contradiction +
-  consolidation window simulated) must rank the *current* winning fact above
-  flat cosine-only retrieval on the same store slice.
-- **Metric A (historical verbatim):** probes asking for superseded wording must
-  still surface the archived surface (verbatim), not the post-flip fact alone.
-- **Regression gate:** pipeline score on B must beat cosine baseline; A must not
-  collapse below a configured verbatim hit threshold.
-
-This file loads:file:`fixtures/contradiction_longitudinal.jsonl` (synthetic JSONL
-rows: ``session``, ``text``, optional ``probe`` / ``expects``) and documents the
-evaluation harness contract. A full implementation wires:
-
-1. Fixture loader → ``MemoryStore`` inserts per session order.
-2. Explicit ``memory_contradict`` (or edge-equivalent) at ``t_0``.
-3. Optional sleep/consolidation tick simulation (bench-only knobs).
-4. Two eval slices: ``pre_flip_cues`` vs ``post_flip_cues`` with separated metrics.
-
-Exit code 0 only when all gates pass; non-zero on any failure. Until the harness
-is completed, ``main()`` prints the criteria and exits with code 2 to avoid a
-silent green run::
-
-    python bench/contradiction_longitudinal.py --fixture bench/fixtures/contradiction_longitudinal.jsonl
-"""
-
+"""Contradiction-longitudinal falsifiability bench (pre-registered criteria)."""
 from __future__ import annotations
 
 import argparse
@@ -72,7 +43,6 @@ def main(argv: list[str] | None = None) -> int:
             indent=2,
         )
     )
-    # Stub: full eval is intentionally absent so CI never runs heavy retrieval.
     return 2
 
 

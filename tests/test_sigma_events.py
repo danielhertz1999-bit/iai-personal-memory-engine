@@ -1,14 +1,3 @@
-"""RED: S4 sigma event-emission tests.
-
-Contract:
-- Developmental (N<500, sigma<1) -> kind=sigma_observation phase=developmental
-  AND a profile_updated event for the Hebbian rate boost.
-- Mid-life drift (N>=500, sigma<1) -> kind=sigma_drift.
-- Healthy (sigma>=1) -> kind=sigma_observation phase=healthy.
-- Insufficient data (N<200) -> kind=sigma_observation phase=insufficient_data.
-
-sigma is NEVER a routing decision -- the regime classifier writes events only.
-"""
 from __future__ import annotations
 
 import networkx as nx
@@ -17,9 +6,7 @@ import pytest
 from iai_mcp.events import query_events
 from iai_mcp.store import MemoryStore
 
-
 def _seed_synthetic_graph(monkeypatch, *, n_nodes: int, sigma_val: float) -> None:
-    """Stub sigma.compute_topology_snapshot to return a controlled snapshot."""
     from iai_mcp import sigma as sigma_mod
 
     def _fake_snapshot(graph):  # noqa: ARG001
@@ -34,7 +21,6 @@ def _seed_synthetic_graph(monkeypatch, *, n_nodes: int, sigma_val: float) -> Non
         }
 
     monkeypatch.setattr(sigma_mod, "compute_topology_snapshot", _fake_snapshot)
-    # Stub build_runtime_graph so we don't need a real store graph.
     from iai_mcp import retrieve
 
     def _fake_build(_store):
@@ -45,11 +31,9 @@ def _seed_synthetic_graph(monkeypatch, *, n_nodes: int, sigma_val: float) -> Non
 
     monkeypatch.setattr(retrieve, "build_runtime_graph", _fake_build)
 
-
 def test_compute_and_emit_developmental_phase_emits_sigma_observation(
     tmp_path, monkeypatch,
 ):
-    """N=300, sigma=0.5 -> kind=sigma_observation, phase=developmental."""
     from iai_mcp import sigma as sigma_mod
 
     store = MemoryStore(path=tmp_path)
@@ -62,11 +46,9 @@ def test_compute_and_emit_developmental_phase_emits_sigma_observation(
         "developmental phase must emit kind=sigma_observation phase=developmental"
     )
 
-
 def test_compute_and_emit_developmental_bumps_hebbian_rate(
     tmp_path, monkeypatch,
 ):
-    """Developmental phase ALSO emits a profile_updated event for hebbian_rate."""
     from iai_mcp import sigma as sigma_mod
 
     store = MemoryStore(path=tmp_path)
@@ -81,11 +63,9 @@ def test_compute_and_emit_developmental_bumps_hebbian_rate(
         "developmental phase must bump Hebbian rate via profile_updated"
     )
 
-
 def test_compute_and_emit_mid_life_drift_emits_sigma_drift(
     tmp_path, monkeypatch,
 ):
-    """N=600, sigma=0.5 -> kind=sigma_drift (S4 event)."""
     from iai_mcp import sigma as sigma_mod
 
     store = MemoryStore(path=tmp_path)
@@ -97,11 +77,9 @@ def test_compute_and_emit_mid_life_drift_emits_sigma_drift(
     assert events, "mid-life drift must emit kind=sigma_drift"
     assert events[0]["data"]["sigma"] < 1.0
 
-
 def test_compute_and_emit_healthy_emits_sigma_observation_healthy(
     tmp_path, monkeypatch,
 ):
-    """sigma>=1 (any N>=floor) -> kind=sigma_observation phase=healthy."""
     from iai_mcp import sigma as sigma_mod
 
     store = MemoryStore(path=tmp_path)
@@ -112,11 +90,9 @@ def test_compute_and_emit_healthy_emits_sigma_observation_healthy(
     events = query_events(store, kind="sigma_observation", limit=10)
     assert any(e["data"].get("phase") == "healthy" for e in events)
 
-
 def test_compute_and_emit_insufficient_data_below_floor(
     tmp_path, monkeypatch,
 ):
-    """N<floor -> kind=sigma_observation phase=insufficient_data, no drift event."""
     from iai_mcp import sigma as sigma_mod
 
     store = MemoryStore(path=tmp_path)
@@ -129,11 +105,9 @@ def test_compute_and_emit_insufficient_data_below_floor(
     obs_events = query_events(store, kind="sigma_observation", limit=10)
     assert any(e["data"].get("phase") == "insufficient_data" for e in obs_events)
 
-
 def test_s4_run_offline_pass_calls_sigma_compute_and_emit(
     tmp_path, monkeypatch,
 ):
-    """s4.run_offline_pass must invoke sigma.compute_and_emit."""
     from iai_mcp import s4
 
     called = {"n": 0}
@@ -150,11 +124,9 @@ def test_s4_run_offline_pass_calls_sigma_compute_and_emit(
     assert "sigma" in out
     assert out["sigma"]["regime"] == "healthy"
 
-
 def test_s4_run_offline_pass_does_not_crash_on_sigma_failure(
     tmp_path, monkeypatch,
 ):
-    """sigma raises -> run_offline_pass emits s4_error, does not propagate."""
     from iai_mcp import s4
 
     def _boom(_store):

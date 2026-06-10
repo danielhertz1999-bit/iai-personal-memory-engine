@@ -1,9 +1,3 @@
-"""_PendingTurn carries the actual role tag.
-
-Verifies that a _PendingTurn constructed with role="assistant" emits
-"role:assistant" in.tags and.provenance, and that the default (no role
-kwarg) still emits "role:user" for back-compat.
-"""
 from __future__ import annotations
 
 import datetime
@@ -12,9 +6,7 @@ import pytest
 
 from iai_mcp.store import _PendingTurn
 
-
 _TS = datetime.datetime(2026, 5, 31, 12, 0, 0, tzinfo=datetime.timezone.utc)
-
 
 def _make(role: str | None = None, **kwargs) -> _PendingTurn:
     base = dict(
@@ -29,15 +21,9 @@ def _make(role: str | None = None, **kwargs) -> _PendingTurn:
     base.update(kwargs)
     return _PendingTurn(**base)
 
-
-# ---------------------------------------------------------------------------
-# Explicit role="assistant"
-# ---------------------------------------------------------------------------
-
 def test_assistant_pending_turn_tags():
     pt = _make(role="assistant")
     assert "role:assistant" in pt.tags, f"Expected 'role:assistant' in tags, got {pt.tags}"
-
 
 def test_assistant_pending_turn_provenance():
     pt = _make(role="assistant")
@@ -47,15 +33,9 @@ def test_assistant_pending_turn_provenance():
         f"Expected provenance role 'assistant', got {prov[0].get('role')}"
     )
 
-
-# ---------------------------------------------------------------------------
-# Default (no role kwarg) — back-compat must remain role:user
-# ---------------------------------------------------------------------------
-
 def test_default_role_is_user_in_tags():
-    pt = _make()  # no role kwarg
+    pt = _make()
     assert "role:user" in pt.tags, f"Expected 'role:user' in tags, got {pt.tags}"
-
 
 def test_default_role_is_user_in_provenance():
     pt = _make()
@@ -65,15 +45,9 @@ def test_default_role_is_user_in_provenance():
         f"Expected provenance role 'user', got {prov[0].get('role')}"
     )
 
-
-# ---------------------------------------------------------------------------
-# Explicit role="user" matches the default
-# ---------------------------------------------------------------------------
-
 def test_explicit_user_role_in_tags():
     pt = _make(role="user")
     assert "role:user" in pt.tags
-
 
 def test_explicit_user_role_in_provenance():
     pt = _make(role="user")

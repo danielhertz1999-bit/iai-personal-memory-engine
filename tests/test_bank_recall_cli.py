@@ -1,35 +1,3 @@
-"""Contract — bank-recall CLI substring helpers + subprocess JSON surface.
-
-Six tests in one file:
-
-  1. ``read_processed_records()`` yields every JSON line in
-     ``~/.iai-mcp/.memory-bank/processed/salience-top-N.jsonl`` as a dict.
-
-  2. ``read_processed_records()`` silently skips malformed JSON lines and
-     keeps yielding the good ones.
-
-  3. ``read_recent_records(key=...)`` decrypts every line in
-     ``window-YYYY-MM-DD.jsonl`` using AAD derived from the filename date.
-
-  4. ``bank_recall_substring(query, limit, key=...)`` case-insensitive
-     substring-matches across processed + recent, ranks processed before
-     recent (then salience DESC inside processed, ts DESC inside recent),
-     and returns the 7-key top-level response shape that mirrors the
-     daemon's memory_recall.
-
-  5. ``bank_recall_substring`` honors ``limit`` and ranks by salience
-     DESC inside the processed tier when more than ``limit`` records
-     match.
-
-  6. ``iai-mcp bank-recall --query <q> --limit <n> --json`` (subprocess)
-     emits a JSON object to stdout with the seven top-level keys and
-     exits 0.
-
-Tests 1-5 import the new helpers from ``iai_mcp.memory_bank`` at module
-top — those symbols do not exist yet, so collecting this file under
-pytest fails with ImportError (RED gate). Task 2 lands the helpers and
-flips the file GREEN.
-"""
 from __future__ import annotations
 
 import base64
@@ -56,36 +24,18 @@ from iai_mcp.store import MemoryStore
 from iai_mcp.types import SCHEMA_VERSION_CURRENT, MemoryRecord
 
 
-# ---------------------------------------------------------------------------
-# Fixture — HOME + keyring isolation + IAI_MCP_STORE under tmp.
-# Lifted verbatim from tests/test_memory_bank_recent.py.
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture
 def iai_home(tmp_path, monkeypatch):
-    """HOME=tmp_path + keyring fail-backend + crypto passphrase.
-
-    Forces the passphrase fallback so the macOS Security
-    framework's interactive keychain prompt never fires.
-    """
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("PYTHON_KEYRING_BACKEND", "keyring.backends.fail.Keyring")
     monkeypatch.setenv("IAI_MCP_CRYPTO_PASSPHRASE", "test-recent-passphrase")
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path / ".iai-mcp" / "hippo"))
 
-    # Force keyring to re-resolve the backend (it caches on first access).
     import keyring.core
 
     keyring.core._keyring_backend = None
     yield tmp_path
     keyring.core._keyring_backend = None
-
-
-# ---------------------------------------------------------------------------
-# Helpers — directories + record builder.
-# Lifted from tests/test_memory_bank_recent.py.
-# ---------------------------------------------------------------------------
 
 
 def _recent_dir(home: Path) -> Path:
@@ -104,7 +54,6 @@ def _make_record(
     role: str = "user",
     rec_id: UUID | None = None,
 ) -> MemoryRecord:
-    """Build a valid MemoryRecord with a deterministic float32-exact embedding."""
     rid = rec_id if rec_id is not None else uuid4()
     embedding = np.linspace(0.0, 1.0, embed_dim).astype(np.float32).tolist()
     now = datetime.now(timezone.utc)
@@ -142,9 +91,6 @@ def _make_record(
 def _write_processed(
     home: Path, rows: list[dict[str, object]], *, raw_extra: str = ""
 ) -> Path:
-    """Write rows (one per line) into salience-top-N.jsonl. Optional raw_extra
-    is appended after the json lines (used to seed malformed input).
-    """
     pdir = _processed_dir(home)
     pdir.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(pdir, 0o700)
@@ -166,7 +112,6 @@ def _make_processed_row(
     ts: str | None = None,
     rec_id: UUID | None = None,
 ) -> dict[str, object]:
-    """Build one processed-tier row matching the P2 schema."""
     rid = rec_id if rec_id is not None else uuid4()
     emb = np.linspace(0.0, 1.0, embed_dim).astype(np.float32).tobytes()
     return {
@@ -177,11 +122,6 @@ def _make_processed_row(
         "ts": ts or datetime.now(timezone.utc).isoformat(),
         "salience": float(salience),
     }
-
-
-# ---------------------------------------------------------------------------
-# Test 1 — read_processed_records yields lines from the P2 file.
-# ---------------------------------------------------------------------------
 
 
 def test_read_processed_records_yields_lines_from_p2_file(iai_home):
@@ -199,17 +139,11 @@ def test_read_processed_records_yields_lines_from_p2_file(iai_home):
         assert set(d.keys()) == expected_keys, (
             f"schema mismatch: got {set(d.keys())}, expected {expected_keys}"
         )
-    # Order-preserving (the function is allowed to be a stable iterator).
     assert [d["text"] for d in out] == [
         "alpha record",
         "beta record",
         "gamma record",
     ]
-
-
-# ---------------------------------------------------------------------------
-# Test 2 — bad lines are silently skipped.
-# ---------------------------------------------------------------------------
 
 
 def test_read_processed_records_skips_bad_lines(iai_home, caplog):
@@ -237,11 +171,6 @@ def test_read_processed_records_skips_bad_lines(iai_home, caplog):
     assert [d["text"] for d in out] == ["apple", "banana", "cherry"]
 
 
-# ---------------------------------------------------------------------------
-# Test 3 — read_recent_records decrypts using AAD = filename date bytes.
-# ---------------------------------------------------------------------------
-
-
 def test_read_recent_records_decrypts_with_filename_aad(iai_home):
     store = MemoryStore()
     rec = _make_record(embed_dim=store.embed_dim, text="hello carrot")
@@ -259,12 +188,6 @@ def test_read_recent_records_decrypts_with_filename_aad(iai_home):
     assert obj["text"] == "hello carrot"
     assert obj["id"] == str(rec.id)
     assert obj["role"] == "user"
-
-
-# ---------------------------------------------------------------------------
-# Test 4 — bank_recall_substring matches across processed + recent and
-# orders processed before recent.
-# ---------------------------------------------------------------------------
 
 
 def test_bank_recall_substring_matches_processed_and_recent(iai_home):
@@ -301,7 +224,6 @@ def test_bank_recall_substring_matches_processed_and_recent(iai_home):
     hits = result["hits"]
     assert len(hits) == 2, f"expected 2 hits, got {len(hits)}"
 
-    # Processed hit ranks first (by tier order rule).
     h0, h1 = hits
     assert h0["literal_surface"] == "alpha carrot pie", (
         f"first hit must be processed; got {h0}"
@@ -327,11 +249,6 @@ def test_bank_recall_substring_matches_processed_and_recent(iai_home):
     assert h1["record_id"] == str(rec.id)
 
 
-# ---------------------------------------------------------------------------
-# Test 5 — bank_recall_substring honors limit + ranks processed by salience.
-# ---------------------------------------------------------------------------
-
-
 def test_bank_recall_substring_respects_limit(iai_home):
     store = MemoryStore()
 
@@ -345,17 +262,11 @@ def test_bank_recall_substring_respects_limit(iai_home):
     hits = result["hits"]
     assert len(hits) == 5, f"expected 5 hits, got {len(hits)}"
 
-    # Highest five saliences: 29, 28, 27, 26, 25.
     expected_scores = [29.0, 28.0, 27.0, 26.0, 25.0]
     actual_scores = [h["score"] for h in hits]
     assert actual_scores == expected_scores, (
         f"expected {expected_scores}, got {actual_scores}"
     )
-
-
-# ---------------------------------------------------------------------------
-# Test 6 — subprocess: iai-mcp bank-recall --json emits valid JSON.
-# ---------------------------------------------------------------------------
 
 
 def test_cli_bank_recall_emits_json_to_stdout(iai_home):
@@ -365,10 +276,6 @@ def test_cli_bank_recall_emits_json_to_stdout(iai_home):
     ]
     _write_processed(iai_home, rows)
 
-    # Ensure the subprocess resolves iai_mcp from the SAME source tree the
-    # in-process tests use. pytest itself prepends `src` via
-    # [tool.pytest.ini_options] pythonpath; the spawned subprocess does not
-    # inherit that, so we lift it onto PYTHONPATH explicitly.
     import iai_mcp as _iai_mcp_pkg
 
     pkg_root = Path(_iai_mcp_pkg.__file__).resolve().parent.parent

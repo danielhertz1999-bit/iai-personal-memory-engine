@@ -1,12 +1,3 @@
-"""GREEN: memory_recall_structural via core.dispatch.
-
-Verifies the new MCP tool branch:
-- Structural query enters as a dict[str, str] of role->filler pairs.
-- Pipeline ranks by Hamming similarity over the packed structure_hv.
-- ZERO LLM token cost: no Embedder() instantiated, no anthropic client called.
-- Budget knob honoured: smaller budget -> fewer hits returned.
-- Pipeline-level structural_weight knob shifts ranking when set.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -55,7 +46,6 @@ def _make_record(text="x", **overrides):
 
 
 def _seed(store, n=5):
-    """Seed N records with varied tags so structure_hv differs per record."""
     recs = []
     for i in range(n):
         rec = _make_record(text=f"text-{i}", tags=[f"topic-{i}"])
@@ -64,11 +54,7 @@ def _seed(store, n=5):
     return recs
 
 
-# ------------------------------------------------------------ dispatch happy
-
-
 def test_memory_recall_structural_returns_hits(tmp_path, monkeypatch):
-    """The new branch returns a hits list with score / record_id / literal_surface."""
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
     from iai_mcp.core import dispatch
     from iai_mcp.store import MemoryStore
@@ -96,8 +82,6 @@ def test_memory_recall_structural_returns_hits(tmp_path, monkeypatch):
 
 
 def test_memory_recall_structural_zero_llm_cost(tmp_path, monkeypatch):
-    """The branch must NOT instantiate Embedder() OR call anthropic.messages.create.
-    Hard guarantee for the 0-LLM-cost invariant (constitutional fit)."""
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
     from iai_mcp.core import dispatch
     from iai_mcp.store import MemoryStore
@@ -105,7 +89,6 @@ def test_memory_recall_structural_zero_llm_cost(tmp_path, monkeypatch):
     store = MemoryStore()
     _seed(store, n=3)
 
-    # Trip-wire: replace Embedder with a sentinel that raises on instantiation.
     embedder_called = {"n": 0}
 
     class _BoomEmbedder:
@@ -113,13 +96,12 @@ def test_memory_recall_structural_zero_llm_cost(tmp_path, monkeypatch):
             embedder_called["n"] += 1
             raise AssertionError(
                 "memory_recall_structural must NOT instantiate Embedder() "
-                "(constitutional 0-LLM-cost invariant)"
+                "(zero-LLM-cost invariant)"
             )
 
     import iai_mcp.embed as embed_mod
     monkeypatch.setattr(embed_mod, "Embedder", _BoomEmbedder)
 
-    # Trip-wire: any anthropic client call raises immediately.
     try:
         import anthropic
         def _boom_client(*a, **kw):
@@ -138,7 +120,6 @@ def test_memory_recall_structural_zero_llm_cost(tmp_path, monkeypatch):
 
 
 def test_memory_recall_structural_budget_honoured(tmp_path, monkeypatch):
-    """A tiny budget returns fewer hits than a large budget."""
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
     from iai_mcp.core import dispatch
     from iai_mcp.store import MemoryStore
@@ -155,16 +136,10 @@ def test_memory_recall_structural_budget_honoured(tmp_path, monkeypatch):
         {"structure_query": {"TIER": "episodic"}, "budget_tokens": 5},
     )
     assert len(big["hits"]) >= len(small["hits"])
-    assert len(small["hits"]) >= 1  # At least one hit always returned.
-
-
-# --------------------------------------------------------- pipeline peer wire
+    assert len(small["hits"]) >= 1
 
 
 def test_pipeline_ranker_structural_weight_shifts_ordering(tmp_path, monkeypatch):
-    """Setting profile_state["structural_weight"]=0.9 changes the ranker's
-    output relative to weight=0.0 -- proving structural is a ranking peer,
-    not a no-op cosmetic kwarg."""
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
     from iai_mcp.community import CommunityAssignment
     from iai_mcp.graph import MemoryGraph
@@ -173,13 +148,11 @@ def test_pipeline_ranker_structural_weight_shifts_ordering(tmp_path, monkeypatch
 
     store = MemoryStore()
     recs = []
-    # Seed records with distinguishable structures (different tiers).
     for i, tier in enumerate(["episodic", "semantic", "episodic", "semantic"]):
         rec = _make_record(text=f"row-{i}", tier=tier, tags=[f"tag-{i}"])
         store.insert(rec)
         recs.append(rec)
 
-    # Build a minimal graph + assignment so recall_for_response can run.
     graph = MemoryGraph()
     for r in recs:
         graph.add_node(r.id, community_id=r.id, embedding=r.embedding)
@@ -195,7 +168,7 @@ def test_pipeline_ranker_structural_weight_shifts_ordering(tmp_path, monkeypatch
         DIM = len(recs[0].embedding)
         DEFAULT_DIM = DIM
         DEFAULT_MODEL_KEY = "test"
-        def embed(self, text):  # deterministic vector keyed off length
+        def embed(self, text):
             return [0.1] * self.DIM
 
     e = _StaticEmbedder()
@@ -210,42 +183,27 @@ def test_pipeline_ranker_structural_weight_shifts_ordering(tmp_path, monkeypatch
         embedder=e, cue="hello", session_id="-",
         budget_tokens=5000, profile_state={"structural_weight": 0.9},
     )
-    # Both runs return some hits.
     assert len(baseline.hits) >= 1
     assert len(weighted.hits) >= 1
-    # The weighted ranker exposes structural-score reasoning in its reason
-    # strings (proves it's reading the new branch). Baseline does not.
     assert any("structural" in h.reason for h in weighted.hits)
     assert all("structural" not in h.reason for h in baseline.hits)
 
 
 def test_unknown_method_does_not_match(tmp_path, monkeypatch):
-    """The new branch only matches the canonical method name.
-
-     V3-03 fix: dispatch fall-through now raises
-    UnknownMethodError instead of returning {"error":...} dict. The
-    bogus-suffix branch is name-gated; an exact-match-only assertion is
-    that the bogus method raises UnknownMethodError specifically.
-    """
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
     from iai_mcp.core import UnknownMethodError, dispatch
     from iai_mcp.store import MemoryStore
 
     store = MemoryStore()
-    # Unknown method falls through to UnknownMethodError post-.
-    # We don't care about the exception details -- just that our branch is
-    # name-gated and a non-canonical name doesn't accidentally match.
     try:
         dispatch(store, "memory_recall_structural_BOGUS", {})
     except (UnknownMethodError, KeyError, ValueError, TypeError):
-        pass  # acceptable -- the bogus method failed downstream or fell through
-    # The valid method still works.
+        pass
     resp = dispatch(store, "memory_recall_structural", {"structure_query": {}})
     assert "hits" in resp
 
 
 def test_memory_recall_structural_max_records_caps(tmp_path, monkeypatch):
-    """V3-07: max_records limits how many rows enter the O(N) scoring loop."""
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
     from iai_mcp.core import dispatch
     from iai_mcp.store import MemoryStore

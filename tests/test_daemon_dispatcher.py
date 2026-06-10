@@ -1,18 +1,3 @@
-"""End-to-end round-trip tests for the daemon socket dispatcher.
-
-Unlike tests/test_core_bedtime_inject.py (which uses _ThreadedFakeDaemon that
-echoes canned OK replies), these tests spin up the REAL serve_control_socket
-with the REAL _dispatch_socket_request bound to a REAL state dict. They send
-each of the 6 message types as real NDJSON over a real AF_UNIX socket and
-assert:
-  - correct response shape per message type
-  - state mutations actually persisted to ~/.iai-mcp/.daemon-state.json
-    (scoped to tmp_path via monkeypatch of daemon_state.STATE_PATH)
-  - invalid messages rejected with invalid_message reason code
-  - unknown types rejected with unknown_message_type reason code
-  - version field present in status response
-  - concurrent clients handled without corruption
-"""
 from __future__ import annotations
 
 import asyncio
@@ -24,20 +9,8 @@ from pathlib import Path
 import pytest
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture
 def short_socket_paths(tmp_path, monkeypatch):
-    """Redirect SOCKET_PATH + STATE_PATH to tmp_path.
-
-    AF_UNIX on macOS caps socket paths at ~104 bytes; pytest's tmp_path can
-    be too long under xdist. Use a short /tmp/iai-<pid>-<n>/ fallback for
-    the socket. The state file lives under tmp_path (regular filesystem,
-    no length limit).
-    """
     from iai_mcp import concurrency, daemon_state
 
     sock_dir = Path(f"/tmp/iai-disp-{os.getpid()}-{id(tmp_path)}")
@@ -49,8 +22,6 @@ def short_socket_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(daemon_state, "STATE_PATH", state_path)
 
     try:
-        # First tuple slot retained for back-compat with the `_, sock_path, ...`
-        # unpacking used across the test bodies.
         yield None, sock_path, state_path
     finally:
         try:
@@ -65,7 +36,6 @@ def short_socket_paths(tmp_path, monkeypatch):
 
 
 async def _send_ndjson(sock_path: Path, message: dict, *, timeout: float = 5.0) -> dict:
-    """Connect, send one NDJSON line, read one line back, close."""
     reader, writer = await asyncio.wait_for(
         asyncio.open_unix_connection(path=str(sock_path)),
         timeout=timeout,
@@ -86,9 +56,6 @@ async def _send_ndjson(sock_path: Path, message: dict, *, timeout: float = 5.0) 
 
 
 async def _with_real_dispatcher(sock_path: Path, state: dict, coro_fn):
-    """Boot real serve_control_socket + real _dispatch_socket_request, run
-    `coro_fn(sock_path, state)`, tear down cleanly.
-    """
     from iai_mcp.concurrency import serve_control_socket
 
     shutdown = asyncio.Event()
@@ -100,7 +67,6 @@ async def _with_real_dispatcher(sock_path: Path, state: dict, coro_fn):
             socket_path=sock_path,
         ),
     )
-    # Wait for bind.
     for _ in range(250):
         if sock_path.exists():
             break
@@ -119,11 +85,6 @@ async def _with_real_dispatcher(sock_path: Path, state: dict, coro_fn):
         except Exception:
             pass
     return result
-
-
-# ---------------------------------------------------------------------------
-# Test 1: status returns version + fsm_state + uptime + pending_digest shape
-# ---------------------------------------------------------------------------
 
 
 def test_status_returns_version_and_full_snapshot(short_socket_paths):
@@ -151,17 +112,14 @@ def test_status_returns_version_and_full_snapshot(short_socket_paths):
     resp = asyncio.run(_with_real_dispatcher(sock_path, state, _runner))
 
     assert resp["ok"] is True
-    # Backwards-compat keys.
     assert resp["state"] == "WAKE"
     assert isinstance(resp["uptime_sec"], (int, float))
-    # Additional keys.
     assert resp["version"] == pkg_version
     assert resp["fsm_state"] == "WAKE"
     assert resp["last_tick_at"] == "2026-04-18T12:30:00+00:00"
     assert resp["quiet_window"] == [44, 16]
     assert resp["daemon_started_at"] == "2026-04-18T00:00:00+00:00"
     assert resp["scheduler_paused"] is False
-    # pending_digest is truncated to top-level counters (no main_insight_text).
     pd = resp["pending_digest"]
     assert pd["rem_cycles_completed"] == 2
     assert pd["episodes_processed"] == 15
@@ -170,11 +128,6 @@ def test_status_returns_version_and_full_snapshot(short_socket_paths):
     assert "main_insight_text" not in pd, (
         "truncated digest leaked verbose text over the socket"
     )
-
-
-# ---------------------------------------------------------------------------
-# Test 2: user_initiated_sleep persists state AND respects already_sleeping
-# ---------------------------------------------------------------------------
 
 
 def test_user_initiated_sleep_sets_pending_flag(short_socket_paths):
@@ -195,7 +148,6 @@ def test_user_initiated_sleep_sets_pending_flag(short_socket_paths):
 
     assert resp == {"ok": True, "state": "TRANSITIONING"}
 
-    # State mutation persisted to disk.
     from iai_mcp.daemon_state import load_state
     loaded = load_state()
     req = loaded["user_sleep_request"]
@@ -222,17 +174,9 @@ def test_user_initiated_sleep_rejects_when_already_sleeping(short_socket_paths):
 
     assert resp == {"ok": False, "reason": "already_sleeping"}
 
-    # State was NOT mutated (no user_sleep_request written).
     from iai_mcp.daemon_state import load_state
     loaded = load_state()
-    # The dispatcher doesn't touch state in the already_sleeping branch, so
-    # the file may not exist (no prior save_state call). Either way: no flag.
     assert "user_sleep_request" not in loaded
-
-
-# ---------------------------------------------------------------------------
-# Test 3: force_wake / force_rem set pending flags + persist
-# ---------------------------------------------------------------------------
 
 
 def test_force_wake_queues_flag(short_socket_paths):
@@ -273,11 +217,6 @@ def test_force_rem_queues_flag(short_socket_paths):
     assert loaded["force_rem_request"]["ts"] == "2026-04-18T10:00:00+00:00"
 
 
-# ---------------------------------------------------------------------------
-# Test 4: pause/resume flip scheduler_paused flag
-# ---------------------------------------------------------------------------
-
-
 def test_pause_then_resume_flips_flag(short_socket_paths):
     _, sock_path, _ = short_socket_paths
     state = {"fsm_state": "WAKE"}
@@ -294,12 +233,10 @@ def test_pause_then_resume_flips_flag(short_socket_paths):
 
     from iai_mcp.daemon_state import load_state
     loaded = load_state()
-    # After resume, scheduler_paused must be False (the LAST value written).
     assert loaded["scheduler_paused"] is False
 
 
 def test_pause_persists_True_before_resume(short_socket_paths):
-    """After only pause (no resume yet), state["scheduler_paused"] is True."""
     _, sock_path, _ = short_socket_paths
     state = {"fsm_state": "WAKE"}
 
@@ -312,11 +249,6 @@ def test_pause_persists_True_before_resume(short_socket_paths):
     from iai_mcp.daemon_state import load_state
     loaded = load_state()
     assert loaded["scheduler_paused"] is True
-
-
-# ---------------------------------------------------------------------------
-# Test 5: unknown type returns structured error
-# ---------------------------------------------------------------------------
 
 
 def test_unknown_message_type_returns_error(short_socket_paths):
@@ -334,11 +266,6 @@ def test_unknown_message_type_returns_error(short_socket_paths):
     assert resp["ok"] is False
     assert resp["reason"] == "unknown_message_type"
     assert resp["type"] == "nuke_from_orbit"
-
-
-# ---------------------------------------------------------------------------
-# Test 6: invalid messages rejected with ASVS V5 reason code
-# ---------------------------------------------------------------------------
 
 
 def test_invalid_message_missing_ts_on_force_wake(short_socket_paths):
@@ -397,17 +324,7 @@ def test_invalid_message_pause_wrong_seconds_type(short_socket_paths):
     assert "seconds" in resp["error"]
 
 
-# ---------------------------------------------------------------------------
-# Test 7: C2 guard -- dispatcher never transitions FSM directly
-# ---------------------------------------------------------------------------
-
-
 def test_dispatcher_does_not_transition_fsm_directly(short_socket_paths):
-    """C2: the socket dispatcher thread never calls daemon.transition().
-    user_initiated_sleep sets a pending flag; the FSM stays at WAKE until
-    the scheduler tick picks up the flag. Without this invariant, the
-    dispatcher and scheduler race on the FSM state.
-    """
     _, sock_path, _ = short_socket_paths
     state = {"fsm_state": "WAKE"}
 
@@ -423,14 +340,7 @@ def test_dispatcher_does_not_transition_fsm_directly(short_socket_paths):
         return state["fsm_state"]
 
     fsm_after = asyncio.run(_with_real_dispatcher(sock_path, state, _runner))
-    # The dispatcher MUST leave fsm_state at WAKE; only the scheduler
-    # transitions it (under the fcntl exclusive lock).
     assert fsm_after == "WAKE"
-
-
-# ---------------------------------------------------------------------------
-# Test 8: reason string clipped to 500 chars (ASVS V5 output hardening)
-# ---------------------------------------------------------------------------
 
 
 def test_user_initiated_sleep_reason_clipped(short_socket_paths):
@@ -457,19 +367,11 @@ def test_user_initiated_sleep_reason_clipped(short_socket_paths):
     assert len(loaded["user_sleep_request"]["reason"]) == 500
 
 
-# ---------------------------------------------------------------------------
-# Test 9: concurrent clients handled without data races
-# ---------------------------------------------------------------------------
-
-
 def test_concurrent_clients_both_succeed(short_socket_paths):
-    """Two clients hit the socket in parallel -- the dispatcher must serve
-    both without corrupting the state file or double-writing."""
     _, sock_path, _ = short_socket_paths
     state = {"fsm_state": "WAKE"}
 
     async def _runner(sock_path, state):
-        # Issue two requests concurrently.
         coro1 = _send_ndjson(
             sock_path,
             {"type": "force_rem", "ts": "2026-04-18T01:00:00+00:00"},
@@ -480,26 +382,16 @@ def test_concurrent_clients_both_succeed(short_socket_paths):
 
     r1, r2 = asyncio.run(_with_real_dispatcher(sock_path, state, _runner))
 
-    # Both responses well-formed; dispatcher handled each independently.
     assert r1 == {"ok": True, "reason": "rem_queued"}
     assert r2 == {"ok": True, "paused": True}
 
-    # Both state mutations persisted.
     from iai_mcp.daemon_state import load_state
     loaded = load_state()
     assert loaded["force_rem_request"]["pending"] is True
     assert loaded["scheduler_paused"] is True
 
 
-# ---------------------------------------------------------------------------
-# Test 10: full suite hitting all 6 message types against one daemon
-# ---------------------------------------------------------------------------
-
-
 def test_full_message_type_matrix_end_to_end(short_socket_paths):
-    """Single live daemon instance serves all 6 message types sequentially.
-    Mirrors what the CLI + MCP wrapper do in production.
-    """
     _, sock_path, _ = short_socket_paths
     state = {
         "fsm_state": "WAKE",
@@ -539,11 +431,9 @@ def test_full_message_type_matrix_end_to_end(short_socket_paths):
     assert results["pause"] == {"ok": True, "paused": True}
     assert results["resume"] == {"ok": True, "paused": False}
 
-    # All mutations land in the ONE state file.
     from iai_mcp.daemon_state import load_state
     loaded = load_state()
     assert loaded["user_sleep_request"]["pending"] is True
     assert loaded["force_rem_request"]["pending"] is True
     assert loaded["force_wake_request"]["pending"] is True
-    # scheduler_paused was toggled last via resume -> False.
     assert loaded["scheduler_paused"] is False

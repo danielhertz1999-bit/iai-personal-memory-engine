@@ -1,37 +1,3 @@
-"""Acceptance: bridge.ts is a pure connector (no spawn).
-
-# Behaviour under test
-
-The wrapper ONLY connects to ~/.iai-mcp/.daemon.sock with a 5s timeout; on
-miss it throws `DaemonUnreachableError` (code -32002) and the wrapper process
-exits non-zero. Daemon spawning is launchd's job (plist + install.sh +
-LISTEN_FDS branch).
-
-  - `test_start_throws_DaemonUnreachableError_when_socket_missing` asserts
-    NO daemon is spawned and the wrapper exits non-zero with the error in
-    stderr.
-  - `test_start_succeeds_with_warm_daemon_no_extra_spawn` pre-starts a daemon
-    manually (subprocess.Popen of `python -m iai_mcp.daemon`), waits for
-    socket bind, then spawns the wrapper and asserts the initialize handshake
-    succeeds AND daemon process count delta == 0 (the wrapper did NOT spawn a
-    second daemon).
-
-# Test isolation strategy
-
-Both tests use the IAI_DAEMON_SOCKET_PATH env override so they target a tmp
-socket and never touch the user's real ~/.iai-mcp/.daemon.sock — the
-production daemon (if any) is not disturbed.
-
-Delta-snapshot psutil pattern: we count `iai_mcp.daemon` processes BEFORE and
-AFTER the wrapper boot and assert the DELTA, not the absolute. On a developer
-machine with a live production daemon, `before["daemon"] >= 1`; an absolute
-`assert after["daemon"] == 1` would falsely fail.
-
-# Pattern reuse
-
-The `_count_iai_mcp_processes` shape mirrors
-`tests/test_socket_subagent_reuse.py` and `tests/test_socket_fail_loud.py`.
-"""
 from __future__ import annotations
 
 import json
@@ -49,14 +15,8 @@ REPO = Path(__file__).resolve().parent.parent
 WRAPPER = REPO / "mcp-wrapper"
 
 
-# ---------------------------------------------------------------------------
-# Fixture: built wrapper (npm install + npm run build once per module).
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture(scope="module")
 def built_wrapper() -> Path:
-    """Build the TS wrapper once per test module; reuse across tests."""
     if not (WRAPPER / "node_modules").exists():
         subprocess.run(["npm", "install"], cwd=WRAPPER, check=True)
     subprocess.run(["npm", "run", "build"], cwd=WRAPPER, check=True)
@@ -65,17 +25,7 @@ def built_wrapper() -> Path:
     return dist
 
 
-# ---------------------------------------------------------------------------
-# Helpers: psutil snapshot, wrapper spawn, MCP handshake + recall round-trip.
-# ---------------------------------------------------------------------------
-
-
 def _count_iai_mcp_processes() -> dict[str, int]:
-    """Snapshot iai_mcp.core / iai_mcp.daemon process counts.
-
-    Mirrors `tests/test_socket_fail_loud.py:_count_iai_mcp_processes` —
-    same shape, same delta-snapshot assertion strategy.
-    """
     counts = {"core": 0, "daemon": 0}
     for p in psutil.process_iter(["cmdline"]):
         try:
@@ -93,15 +43,6 @@ def _count_iai_mcp_processes() -> dict[str, int]:
 
 
 def _kill_test_daemons(sock_path: Path) -> None:
-    """Kill iai_mcp.daemon processes that hold sock_path open via lsof.
-
-    setproctitle() clobbers the external psutil.Process.environ() view on
-    macOS — the daemon's own os.environ is intact but external readers lose
-    injected vars after the title is set.  lsof on the specific tmp socket
-    path is setproctitle-proof: only the process that HOLDS the file open
-    is matched.  This is path-exact and never touches the production daemon,
-    which binds ~/.iai-mcp/.daemon.sock — a completely different path.
-    """
     target = str(sock_path)
     res = subprocess.run(
         ["lsof", "-U", "-F", "pn"],
@@ -130,7 +71,6 @@ def _spawn_wrapper(
     built_wrapper: Path,
     env_overrides: dict[str, str] | None = None,
 ) -> subprocess.Popen:
-    """Spawn the built TS wrapper with stdin/stdout pipes for JSON-RPC."""
     env = os.environ.copy()
     env["IAI_MCP_PYTHON"] = sys.executable
     env["PYTHONPATH"] = str(REPO / "src") + os.pathsep + env.get("PYTHONPATH", "")
@@ -149,12 +89,6 @@ def _spawn_wrapper(
 def _spawn_daemon_in_background(
     sock_path: Path, store_dir: Path
 ) -> subprocess.Popen:
-    """Pre-start a daemon manually via `python -m iai_mcp.daemon`.
-
-    Wrappers no longer spawn the daemon themselves — that's launchd's job in
-    production and the test's job here. We use the manual-run code path
-    (no LISTEN_FDS env set), which the daemon supports for backward compat.
-    """
     env = os.environ.copy()
     env["IAI_DAEMON_SOCKET_PATH"] = str(sock_path)
     env["IAI_MCP_STORE"] = str(store_dir)
@@ -170,7 +104,6 @@ def _spawn_daemon_in_background(
 
 
 def _initialize(proc: subprocess.Popen, rpc_id: int = 1) -> dict:
-    """MCP initialize handshake — required before tools/call works."""
     assert proc.stdin is not None and proc.stdout is not None
     init = {
         "jsonrpc": "2.0",
@@ -201,7 +134,6 @@ def _call_memory_recall(
     *,
     timeout_sec: float = 10.0,
 ) -> tuple[float, dict]:
-    """Send tools/call memory_recall + return (wall-clock-elapsed, response)."""
     assert proc.stdin is not None and proc.stdout is not None
     req = {
         "jsonrpc": "2.0",
@@ -233,7 +165,6 @@ def _call_memory_recall(
 
 
 def _wait_for_daemon_socket(sock_path: Path, timeout_sec: float = 30.0) -> bool:
-    """Poll for sock_path existence at 0.1s cadence; True on bind."""
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline:
         if sock_path.exists():
@@ -242,40 +173,17 @@ def _wait_for_daemon_socket(sock_path: Path, timeout_sec: float = 30.0) -> bool:
     return False
 
 
-# ---------------------------------------------------------------------------
-# Tests — contract: wrappers are pure connectors, no spawn.
-# ---------------------------------------------------------------------------
-
-
 def test_start_throws_DaemonUnreachableError_when_socket_missing(
     built_wrapper, tmp_path
 ):
-    """With no daemon on the test socket, the wrapper MUST stay alive and MUST
-    serve tools/list from the static registry within an MCP-client-friendly
-    timeout. tools/call MUST surface daemon_unreachable as an isError
-    response (fail-loud at the right layer).
-
-    Ordering contract: `server.connect(transport)` runs FIRST; bridge.start()
-    is fire-and-forget; tools/list is independent of daemon state;
-    tools/call lazy-awaits bridge readiness and surfaces daemon_unreachable
-    as a structured tool-result error. The transport reports "Connected"
-    because it genuinely is, and daemon-down failures are actionable per-call
-    instead of opaque registry-empty.
-
-    The load-bearing invariant — `daemon_delta == 0` — is asserted here: the
-    wrapper still must NOT spawn the daemon under any condition.
-    """
     sock_dir = Path(f"/tmp/iai-7.1-noconn-{os.getpid()}-{id(tmp_path)}")
     sock_dir.mkdir(parents=True, exist_ok=True)
     sock_path = sock_dir / "d.sock"
     store_dir = sock_dir / "store"
     store_dir.mkdir(parents=True, exist_ok=True)
 
-    # Verify clean state — no socket file at our tmp path.
     assert not sock_path.exists(), f"tmp socket pre-exists: {sock_path}"
 
-    # Baseline snapshot. The user's production daemon may exist on the
-    # host (different socket path); we count globally and assert delta.
     baseline = _count_iai_mcp_processes()
     daemon_baseline = baseline["daemon"]
     core_baseline = baseline["core"]
@@ -286,18 +194,9 @@ def test_start_throws_DaemonUnreachableError_when_socket_missing(
     }
     wrapper_proc = _spawn_wrapper(built_wrapper, env_overrides)
     try:
-        # ---- Assertion 1 (NEW contract): wrapper survives daemon miss ----
-        # Wait past the bridge's 5s connectWithTimeout window (and a
-        # generous slack for the fire-and-forget rejection to land in
-        # the .catch handler). Wrapper MUST still be alive — its job
-        # is to serve tools/list to MCP clients regardless of daemon
-        # state.
         init_resp = _initialize(wrapper_proc, rpc_id=1)
         assert "result" in init_resp, f"initialize failed: {init_resp}"
 
-        # tools/list — must respond from static registry within the
-        # MCP-client tools/list timeout window (~3s observed; we allow
-        # 4s for CI overhead).
         list_req = {
             "jsonrpc": "2.0",
             "id": 2,
@@ -324,12 +223,6 @@ def test_start_throws_DaemonUnreachableError_when_socket_missing(
             f"bridge.start (the mcp-tools-list-empty-cache bug)."
         )
 
-        # ---- Assertion 2 (NEW contract): wait past bridge timeout ----
-        # 5s SOCKET_CONNECT_TIMEOUT_MS in bridge.ts means the in-flight
-        # bridge.start() promise rejects ~5s after wrapper boot. The
-        # `.catch(() => {})` on the fire-and-forget chain in index.ts
-        # MUST swallow this rejection — wrapper must remain alive.
-        # 7s budget = 5s timeout + 2s slack for slow Node startup.
         time.sleep(7.0)
         assert wrapper_proc.poll() is None, (
             f"wrapper exited (rc={wrapper_proc.returncode}) past the "
@@ -339,11 +232,6 @@ def test_start_throws_DaemonUnreachableError_when_socket_missing(
             f"DaemonUnreachableError."
         )
 
-        # ---- Assertion 3 (fail-loud at right layer): tools/call surfaces error ----
-        # Daemon-down failures must NOT be silent. Pre-fix the symptom
-        # was an empty tools list (silent). Post-fix the wrapper serves
-        # tools/list, but tools/call MUST return an error envelope so
-        # the user sees what happened.
         call_req = {
             "jsonrpc": "2.0",
             "id": 3,
@@ -355,8 +243,6 @@ def test_start_throws_DaemonUnreachableError_when_socket_missing(
         }
         wrapper_proc.stdin.write((json.dumps(call_req) + "\n").encode("utf-8"))
         wrapper_proc.stdin.flush()
-        # bridge.start() lazy-await inside the call handler will hit
-        # the 5s connect timeout again. Allow 7s.
         import select as _select
         deadline = time.monotonic() + 12.0
         call_line = b""
@@ -369,16 +255,6 @@ def test_start_throws_DaemonUnreachableError_when_socket_missing(
         call_resp = json.loads(call_line.decode("utf-8"))
         assert "result" in call_resp, f"tools/call missing result: {call_resp}"
         result = call_resp["result"]
-        # memory_recall daemon-down is a graceful STORE-backed degraded recall
-        # (direct-store, no bank scan). The wrapper routes start-rejection to
-        # runDirectRecall first; only if that also fails does it propagate the
-        # error.
-        #
-        # New contract: the result must NOT be silently wrong.  Acceptable:
-        #   (a) isError=True  (direct-store failed too — last-resort error)
-        #   (b) isError=False and content is non-empty store-backed result
-        #       (direct-store succeeded — correct graceful degrade)
-        # NOT acceptable: isError=False AND empty/missing content (silent fail).
         is_error = result.get("isError") is True
         content_text = ""
         if isinstance(result.get("content"), list) and result["content"]:
@@ -388,9 +264,6 @@ def test_start_throws_DaemonUnreachableError_when_socket_missing(
             f"daemon is missing — silent-fail invariant violated. result={result}"
         )
 
-        # ---- Assertion 4 (no-spawn invariant) ----
-        # Allow ≤1.5s for any (hypothetically) spawned-but-detached
-        # daemon to surface in psutil.
         time.sleep(1.0)
         after = _count_iai_mcp_processes()
         daemon_delta = after["daemon"] - daemon_baseline
@@ -420,21 +293,7 @@ def test_start_throws_DaemonUnreachableError_when_socket_missing(
             pass
 
 
-
 def test_start_succeeds_with_warm_daemon_no_extra_spawn(built_wrapper, tmp_path):
-    """Happy path: with a daemon ALREADY running on the test
-    socket (started manually by the test, mimicking what launchd does
-    in production), the wrapper must connect successfully, complete
-    the MCP initialize handshake, run a memory_recall round-trip, AND
-    NOT spawn a second daemon.
-
-    This proves:
-      (a) bridge.ts start() still works against a warm socket
-          (no regression in the connect path).
-      (b) The wrapper does NOT spawn a second daemon when one already
-          exists (the singleton property — trivially true now that the
-          spawn code is GONE).
-    """
     sock_dir = Path(f"/tmp/iai-7.1-warm-{os.getpid()}-{id(tmp_path)}")
     sock_dir.mkdir(parents=True, exist_ok=True)
     sock_path = sock_dir / "d.sock"
@@ -442,20 +301,12 @@ def test_start_succeeds_with_warm_daemon_no_extra_spawn(built_wrapper, tmp_path)
     store_dir.mkdir(parents=True, exist_ok=True)
     assert not sock_path.exists()
 
-    # Pre-start a daemon manually (mimics launchd socket-activated spawn
-    # in production; in tests we use the manual-run code path for
-    # backward compat).
     daemon_proc = _spawn_daemon_in_background(sock_path, store_dir)
     try:
-        # Wait for the daemon to bind. Cold-start (bge-small load +
-        # store open + asyncio.start_unix_server) is empirically
-        # 3-10s on macOS.
         assert _wait_for_daemon_socket(sock_path, timeout_sec=30.0), (
             f"daemon did not bind socket {sock_path} within 30s"
         )
 
-        # Snapshot AFTER daemon is up but BEFORE wrapper spawns. Any
-        # new daemon during wrapper boot = singleton-violation regression.
         baseline = _count_iai_mcp_processes()
         daemon_baseline = baseline["daemon"]
         core_baseline = baseline["core"]
@@ -466,36 +317,23 @@ def test_start_succeeds_with_warm_daemon_no_extra_spawn(built_wrapper, tmp_path)
         }
         wrapper_proc = _spawn_wrapper(built_wrapper, env_overrides)
         try:
-            # MCP initialize handshake — wrapper must connect to the
-            # warm daemon and reply.
             init_resp = _initialize(wrapper_proc, rpc_id=1)
             assert "result" in init_resp, f"initialize failed: {init_resp}"
 
-            # memory_recall round-trip — proves the JSON-RPC wire path
-            # over the socket works end-to-end.
             elapsed, recall_resp = _call_memory_recall(
                 wrapper_proc, cue="phase 7.1 warm-daemon test",
                 rpc_id=2, timeout_sec=10.0,
             )
-            # Either a result (recall hit/miss) or an error envelope is
-            # acceptable — what we care about is that JSON-RPC came back.
             assert "result" in recall_resp or "error" in recall_resp, recall_resp
 
-            # Round-trip should be sub-second on a warm daemon. Generous
-            # 2s budget against test-harness overhead (subprocess startup,
-            # MCP handshake jitter); the 250ms acceptance budget is verified
-            # separately against the production daemon.
             assert elapsed < 2.0, (
                 f"warm-daemon memory_recall took {elapsed:.2f}s, exceeds "
                 f"2.0s safety budget"
             )
 
-            # Allow ≤1s for any (hypothetically) spawned daemon to surface.
             time.sleep(0.5)
             after = _count_iai_mcp_processes()
 
-            # No new daemon — singleton property holds (trivially now that
-            # the spawn code is gone).
             daemon_delta = after["daemon"] - daemon_baseline
             assert daemon_delta == 0, (
                 f"REGRESSION: wrapper spawned a second daemon during boot "
@@ -514,7 +352,6 @@ def test_start_succeeds_with_warm_daemon_no_extra_spawn(built_wrapper, tmp_path)
             except subprocess.TimeoutExpired:
                 wrapper_proc.kill()
     finally:
-        # Stop the test daemon (we started it; we stop it).
         try:
             daemon_proc.terminate()
             daemon_proc.wait(timeout=10)

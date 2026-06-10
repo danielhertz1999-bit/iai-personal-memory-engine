@@ -1,11 +1,3 @@
-"""Tests for schema_instance_of edge semantics (Task 3).
-
-schema_instance_of edges:
-- Point from an evidence episode record to a schema hub record.
-- Never decay (edge-type exempt from FSRS sweep).
-- Make the schema record a first-class hub: pipeline retrieval should
-  surface schema records when evidence is activated.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -15,7 +7,6 @@ import pytest
 
 from iai_mcp.store import EDGES_TABLE, MemoryStore
 from iai_mcp.types import EMBED_DIM, MemoryRecord
-
 
 @pytest.fixture(autouse=True)
 def _patch_embedder(monkeypatch):
@@ -37,7 +28,6 @@ def _patch_embedder(monkeypatch):
 
     monkeypatch.setattr(embed_mod, "Embedder", _FakeEmbedder)
     yield
-
 
 def _rec(*, text: str = "t", tags: list[str] | None = None) -> MemoryRecord:
     now = datetime.now(timezone.utc)
@@ -63,12 +53,7 @@ def _rec(*, text: str = "t", tags: list[str] | None = None) -> MemoryRecord:
         language="en",
     )
 
-
-# ---------------------------------------------------------------- edge creation
-
-
 def test_schema_instance_of_edge_created_on_persist(tmp_path):
-    """persist_schema creates schema_instance_of edges."""
     from iai_mcp.schema import SchemaCandidate, persist_schema
 
     store = MemoryStore(path=tmp_path)
@@ -88,9 +73,7 @@ def test_schema_instance_of_edge_created_on_persist(tmp_path):
     sio = edges[edges["edge_type"] == "schema_instance_of"]
     assert len(sio) == 5
 
-
 def test_schema_instance_of_edge_never_decays(tmp_path):
-    """schema_instance_of edges survive FSRS decay sweep."""
     from iai_mcp.schema import SchemaCandidate, persist_schema
     from iai_mcp.sleep import _decay_edges
 
@@ -105,28 +88,21 @@ def test_schema_instance_of_edge_never_decays(tmp_path):
     )
     persist_schema(store, cand)
 
-    # Backdate the schema_instance_of edges to 500d ago
     import lancedb
     edges_tbl = store.db.open_table(EDGES_TABLE)
-    # Update all schema_instance_of edges to have an ancient updated_at
     from datetime import timedelta
     ancient = datetime.now(timezone.utc) - timedelta(days=500)
     edges_tbl.update(
         where="edge_type = 'schema_instance_of'",
         values={"updated_at": ancient, "weight": 0.0001},
     )
-    # Run the decay sweep
     _decay_edges(store)
 
-    # schema_instance_of edges must still exist
     df = edges_tbl.to_pandas()
     sio = df[df["edge_type"] == "schema_instance_of"]
     assert len(sio) == 3
 
-
 def test_schema_record_becomes_hub(tmp_path):
-    """After persist, the schema record has detail_level=3 (never_decay) and
-    many schema_instance_of edges (hub property)."""
     from iai_mcp.schema import SchemaCandidate, persist_schema
 
     store = MemoryStore(path=tmp_path)
@@ -144,7 +120,6 @@ def test_schema_record_becomes_hub(tmp_path):
     assert rec is not None
     assert rec.detail_level == 3
     assert rec.never_decay is True
-    # Hub: 5 incoming schema_instance_of edges (one per evidence)
     edges = store.db.open_table(EDGES_TABLE).to_pandas()
     sio = edges[edges["edge_type"] == "schema_instance_of"]
     assert len(sio) == 5

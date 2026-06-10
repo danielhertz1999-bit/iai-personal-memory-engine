@@ -1,21 +1,4 @@
 #!/usr/bin/env python3
-"""ship-gate analyzer for contradiction_longitudinal_claude.
-
-Reads the per-probe CSV emitted by `bench/contradiction_longitudinal_claude.py`
-(with the `route` + `cue_hash` columns added in Task 1), groups by
-route in {efe_real, efe_shadow}, computes per-seed Rescue@10, and exits 0
-iff cross-seed mean(delta) >= +0.10 (the ship gate per
- and).
-
-Usage:
-    python bench/analyze_efe_ab.py <results-dir>
-    python -m bench.analyze_efe_ab <results-dir>
-
-Exit codes:
-    0 = cross_seed_mean_delta >= +0.10 (ship gate hit; safe to close phase)
-    1 = cross_seed_mean_delta < +0.10 (data fail; iterate per)
-    2 = setup error (no CSV / missing column / missing arm)
-"""
 
 from __future__ import annotations
 
@@ -35,18 +18,7 @@ REQUIRED_COLS: frozenset[str] = frozenset({
 })
 
 
-# ---------------------------------------------------------------------------
-# Pure-Python core (importable; covered directly by tests)
-# ---------------------------------------------------------------------------
-
-
 def _is_hit_at_k(rank_str: str, k: int = K_RESCUE) -> bool:
-    """Robust hit-at-k decision from a CSV cell value.
-
-    Empty / non-numeric / non-positive / >k → miss. 1..k → hit. Matches the
-    bench's own `pipeline_hit_at_k` flag for default K=10 but stays robust if
-    K ever changes downstream.
-    """
     try:
         r = int(rank_str)
     except (TypeError, ValueError):
@@ -58,12 +30,6 @@ def compute_per_route_rescue_at_k(
     rows: Iterable[dict[str, str]],
     k: int = K_RESCUE,
 ) -> dict[str, dict[str, float]]:
-    """Return `{seed_str: {route: rescue_at_k}}` for attributable rows.
-
-    Filters out rows where `route not in {efe_real, efe_shadow}` — empty
-    route (legacy CSV) and `efe_skip` (fallback on EFE-call exception) are
-    both unattributable to a specific arm.
-    """
     attributable = [
         r for r in rows
         if r.get("route") in ("efe_real", "efe_shadow")
@@ -86,16 +52,6 @@ def aggregate_across_seeds(
     per_seed: dict[str, dict[str, float]],
     threshold: float = SHIP_GATE_THRESHOLD,
 ) -> dict:
-    """Reduce per-seed Rescue@10 to a ship-gate verdict.
-
-    Returns:
-        {
-            "per_seed": {seed: {efe_real_rescue, efe_shadow_rescue, delta}},
-            "cross_seed_mean_delta": float,
-            "ship_gate_hit": bool,
-            "threshold": float,
-        }
-    """
     per_seed_delta: dict[str, dict[str, float]] = {}
     deltas: list[float] = []
     for seed, by_route in per_seed.items():
@@ -115,11 +71,6 @@ def aggregate_across_seeds(
         "ship_gate_hit": mean_d >= threshold,
         "threshold": threshold,
     }
-
-
-# ---------------------------------------------------------------------------
-# CLI plumbing
-# ---------------------------------------------------------------------------
 
 
 def _find_newest_csv(results_dir: Path) -> Path:
@@ -194,7 +145,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    # Resolve CSV path
     try:
         csv_path = args.csv if args.csv else _find_newest_csv(args.results_dir)
     except FileNotFoundError as e:
@@ -210,7 +160,6 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"[analyze_efe_ab] reading {csv_path}", file=sys.stderr)
 
-    # Read CSV + column-presence gate
     with csv_path.open(newline="") as fh:
         reader = csv.DictReader(fh)
         fieldnames = set(reader.fieldnames or [])
@@ -226,7 +175,6 @@ def main(argv: list[str] | None = None) -> int:
 
     per_seed = compute_per_route_rescue_at_k(rows)
 
-    # Both-arms gate: must see at least one seed on each of efe_real and efe_shadow.
     all_routes_seen = {
         route for by_route in per_seed.values() for route in by_route
     }
@@ -251,7 +199,6 @@ def main(argv: list[str] | None = None) -> int:
         **agg,
     }
 
-    # Write JSON + markdown side-by-side with the CSV
     out_dir = csv_path.parent
     (out_dir / "EFE-AB-SUMMARY.json").write_text(
         json.dumps(summary, indent=2)

@@ -1,18 +1,3 @@
-"""Tests for schema-pattern dedup in persist_schema.
-
-Behaviour covered:
-- persist_schema dedups by tag `pattern:{candidate.pattern}` against
-  existing tier="semantic" records; reinforces schema_instance_of edges
-  onto the keeper instead of inserting a duplicate row.
-- new event kind `schema_reinforced` with payload
-  `{schema_id, pattern, evidence_added, total_evidence}`; severity "info";
-  source_ids `[keeper_id, *new_evidence_ids[:5]]`.
-- single test file, pytest convention (`tmp_path` store root).
-
-N persist_schema calls for the same pattern collapse to ONE schema record,
-with the keeper's incoming `schema_instance_of` edge count equal to the
-cumulative distinct evidence count across all calls.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -23,9 +8,6 @@ import pytest
 from iai_mcp.events import query_events
 from iai_mcp.store import EDGES_TABLE, MemoryStore
 from iai_mcp.types import EMBED_DIM, MemoryRecord
-
-
-# ---------------------------------------------------------------- helpers
 
 
 def _rec(
@@ -62,7 +44,6 @@ def _rec(
 
 @pytest.fixture(autouse=True)
 def _patch_embedder(monkeypatch):
-    """Avoid loading bge-m3 during dedup tests — perf hygiene."""
     from iai_mcp import embed as embed_mod
 
     class _FakeEmbedder:
@@ -83,11 +64,7 @@ def _patch_embedder(monkeypatch):
     yield
 
 
-# ---------------------------------------------------------------- events taxonomy + write-event smoke
-
-
 def test_events_module_docstring_lists_schema_reinforced():
-    """events.py module docstring documents the `schema_reinforced` kind."""
     import iai_mcp.events as events_mod
 
     doc = events_mod.__doc__ or ""
@@ -99,7 +76,6 @@ def test_events_module_docstring_lists_schema_reinforced():
 
 
 def test_write_event_accepts_schema_reinforced_kind(tmp_path):
-    """schema_reinforced event round-trips through write_event + query_events."""
     from iai_mcp.events import write_event
 
     store = MemoryStore(path=tmp_path)
@@ -129,16 +105,7 @@ def test_write_event_accepts_schema_reinforced_kind(tmp_path):
     assert payload["schema_id"] == str(keeper_id)
 
 
-# ---------------------------------------------------------------- persist_schema dedup branch
-
-
 def _seed_evidence(store: MemoryStore, n: int) -> list[MemoryRecord]:
-    """Insert n fresh episodic evidence records (one per call iteration).
-
-    Each record carries the canonical capture/role tags so a downstream
-    induced schema for `tags:capture+role:user` traces back to genuine
-    evidence. Returns the list in insertion order.
-    """
     recs = [_rec(text=f"ev{i}", tags=["capture", "role:user"]) for i in range(n)]
     for r in recs:
         store.insert(r)
@@ -146,7 +113,6 @@ def _seed_evidence(store: MemoryStore, n: int) -> list[MemoryRecord]:
 
 
 def test_persist_schema_dedups_same_pattern(tmp_path):
-    """10 persist_schema calls for the same pattern produce ONE schema record."""
     from iai_mcp.schema import SchemaCandidate, persist_schema
 
     store = MemoryStore(path=tmp_path)
@@ -174,7 +140,6 @@ def test_persist_schema_dedups_same_pattern(tmp_path):
 
 
 def test_persist_schema_reinforces_edges_on_dedup(tmp_path):
-    """schema_instance_of edge count to keeper == cumulative evidence count."""
     from iai_mcp.schema import SchemaCandidate, persist_schema
 
     store = MemoryStore(path=tmp_path)
@@ -196,11 +161,6 @@ def test_persist_schema_reinforces_edges_on_dedup(tmp_path):
         keeper_id = keeper_id or sid
         cumulative_evidence += 1
 
-    # store.boost_edges canonicalises (src, dst) to a sorted tuple, so the
-    # keeper appears in EITHER column depending on the string ordering of
-    # the paired evidence UUID. OR-count both columns to recover the true
-    # edge-incidence count (each edge row has the keeper in exactly one
-    # column — no double-count).
     edges_df = store.db.open_table(EDGES_TABLE).to_pandas()
     keeper_str = str(keeper_id)
     sio = edges_df[
@@ -212,7 +172,6 @@ def test_persist_schema_reinforces_edges_on_dedup(tmp_path):
         f"got {len(sio)}"
     )
 
-    # Sanity: exactly one keeper survives.
     keepers = [
         r for r in store.all_records()
         if r.tier == "semantic" and pattern_tag in (r.tags or [])
@@ -221,7 +180,6 @@ def test_persist_schema_reinforces_edges_on_dedup(tmp_path):
 
 
 def test_persist_schema_emits_schema_reinforced_event(tmp_path):
-    """9 reinforced events + 1 induction event after 10 calls."""
     from iai_mcp.schema import SchemaCandidate, persist_schema
 
     store = MemoryStore(path=tmp_path)
@@ -254,8 +212,6 @@ def test_persist_schema_emits_schema_reinforced_event(tmp_path):
         f"expected 9 schema_reinforced events, got {len(matching_reinforcements)}"
     )
 
-    # query_events sorts newest first; the FIRST in the list is the most
-    # recent reinforcement and must carry the highest total_evidence.
     payloads = [e["data"] for e in matching_reinforcements]
     for p in payloads:
         assert "schema_id" in p
@@ -263,14 +219,12 @@ def test_persist_schema_emits_schema_reinforced_event(tmp_path):
         assert isinstance(p["evidence_added"], int)
         assert isinstance(p["total_evidence"], int)
     totals = [p["total_evidence"] for p in payloads]
-    # Newest first → totals should be monotonically non-increasing in list order.
     assert totals == sorted(totals, reverse=True), (
         f"total_evidence should grow over time; saw {totals}"
     )
 
 
 def test_persist_schema_returns_keeper_id(tmp_path):
-    """persist_schema returns the SAME UUID across N calls for same pattern."""
     from iai_mcp.schema import SchemaCandidate, persist_schema
 
     store = MemoryStore(path=tmp_path)
@@ -295,7 +249,6 @@ def test_persist_schema_returns_keeper_id(tmp_path):
 
 
 def test_persist_schema_does_not_collapse_distinct_patterns(tmp_path):
-    """Negative case: distinct patterns produce distinct schema records."""
     from iai_mcp.schema import SchemaCandidate, persist_schema
 
     store = MemoryStore(path=tmp_path)

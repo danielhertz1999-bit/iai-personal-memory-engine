@@ -1,13 +1,3 @@
-"""Daemon WAKE->DROWSY edge triggers drain exactly once per DROWSY entry.
-
-Contract:
-- The edge predicate `_should_drain_on_drowsy_edge(prev, current)` returns
-  True only when prev is WAKE and current is DROWSY.
-- The sync helper `_run_drowsy_drain(store, drain_fn, write_event_fn)`
-  runs drain and writes a `deferred_drain_drowsy` event on success.
-- On drain raising, the helper swallows and writes `deferred_drain_failed`
-  with phase="drowsy".
-"""
 from __future__ import annotations
 
 import platform
@@ -28,7 +18,6 @@ def _states():
 
 
 def test_drowsy_transition_triggers_drain_once():
-    """Edge predicate fires exactly on WAKE -> DROWSY transition."""
     from iai_mcp.daemon import _should_drain_on_drowsy_edge
     L = _states()
 
@@ -37,7 +26,6 @@ def test_drowsy_transition_triggers_drain_once():
 
 
 def test_subsequent_ticks_in_drowsy_do_not_redrain():
-    """Staying in DROWSY across ticks does not re-trigger the edge."""
     from iai_mcp.daemon import _should_drain_on_drowsy_edge
     L = _states()
 
@@ -54,7 +42,6 @@ def test_subsequent_ticks_in_drowsy_do_not_redrain():
 
 
 def test_wake_to_drowsy_to_wake_to_drowsy_drains_twice():
-    """Two distinct WAKE->DROWSY edges produce two drain triggers."""
     from iai_mcp.daemon import _should_drain_on_drowsy_edge
     L = _states()
 
@@ -70,7 +57,6 @@ def test_wake_to_drowsy_to_wake_to_drowsy_drains_twice():
 
 
 def test_drain_failure_does_not_crash_helper():
-    """Helper swallows drain exception and writes a `deferred_drain_failed` event."""
     from iai_mcp.daemon import _run_drowsy_drain
 
     events: list[tuple] = []
@@ -91,7 +77,6 @@ def test_drain_failure_does_not_crash_helper():
 
 
 def test_drain_success_writes_drowsy_event_when_files_processed():
-    """When drain reports non-zero work, helper writes `deferred_drain_drowsy`."""
     from iai_mcp.daemon import _run_drowsy_drain
 
     events: list[tuple] = []
@@ -117,7 +102,6 @@ def test_drain_success_writes_drowsy_event_when_files_processed():
 
 
 def test_drain_zero_work_is_quiet():
-    """Drain returning zero counts writes no event (avoid log noise)."""
     from iai_mcp.daemon import _run_drowsy_drain
 
     events: list[tuple] = []

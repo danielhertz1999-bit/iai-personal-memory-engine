@@ -1,23 +1,3 @@
-"""Concept mode schema separation tests.
-
-Acceptance:
-- Test seeds 10 verbatim records (varying cosine to a chosen cue) +
-  5 schema hubs (high degree, tier=semantic, tag pattern:*).
-- With concept cue:
-    (a) hits[0..4] are the 5 highest-cos verbatim records.
-    (b) hits[] contains zero records that satisfy
-        tier=='semantic' AND any(t.startswith('pattern:') for t in tags).
-    (c) patterns_observed[] contains 1..3 entries.
-    (d) Each entry shape: {pattern, evidence_count, schema_id}.
-    (e) cue_mode == 'concept'.
-- Edge cases:
-    (i) Max 3 entries enforced (even if 5 schemas would qualify).
-    (ii) evidence_count equals incoming schema_instance_of edge count.
-    (iii) pattern field equals substring after 'pattern:' in the schema's tags.
-
-Verbatim and schema results live at different levels; patterns_observed[]
-surfaces schema results without collapsing them into the verbatim hits.
-"""
 from __future__ import annotations
 
 import math
@@ -28,12 +8,6 @@ import numpy as np
 import pytest
 
 from iai_mcp.types import EMBED_DIM, MemoryRecord
-
-
-# --------------------------------------------------------- Fixture machinery
-# Same _ControlledEmbedder + _unit_vector_with_cosine pattern as
-# tests/test_recall_verbatim_mode.py — duplicated here so this file can
-# evolve independently.
 
 
 class _ControlledEmbedder:
@@ -110,8 +84,6 @@ def _make_episodic(vec: list[float], text: str) -> MemoryRecord:
 
 
 def _make_schema_hub_with_pattern(vec: list[float], text: str, pattern: str) -> MemoryRecord:
-    """Real schema-shape: tier=semantic + tag 'pattern:{pattern}' triggers
-    the strip from hits[] into patterns_observed[]."""
     now = datetime.now(timezone.utc)
     return MemoryRecord(
         id=uuid4(),
@@ -154,7 +126,6 @@ def _isolated_keyring(monkeypatch: pytest.MonkeyPatch):
 HUB_DEGREE = 8
 CONCEPT_CUE = "concept question about the project structure overall"
 
-# 5 distinct schema patterns so Test 4 can verify pattern-field extraction.
 SCHEMA_PATTERNS = [
     "tags:capture+role:user",
     "tags:capture+role:assistant",
@@ -165,17 +136,6 @@ SCHEMA_PATTERNS = [
 
 
 def _seed_10_verbatim_plus_5_schema_hubs(tmp_path, hub_cos: float = 0.65):
-    """Fixture: 10 verbatim episodic records (varying cosine) + 5 schema
-    hubs (each tagged pattern:* with HUB_DEGREE incoming edges).
-
-    hub_cos lets tests choose whether hubs would-have-ranked HIGH (0.65 > some
-    verbatims so they would displace those slots) or LOW (so hubs don't
-    appear in top-K and patterns_observed[] stays empty).
-
-    Returns:
-        (store, embedder, graph, assignment, rich_club,
-         verbatim_ids, hub_records, cue_text)
-    """
     from iai_mcp.retrieve import build_runtime_graph
     from iai_mcp.store import MemoryStore
 
@@ -185,8 +145,6 @@ def _seed_10_verbatim_plus_5_schema_hubs(tmp_path, hub_cos: float = 0.65):
     cue_vec = embedder.embed(CONCEPT_CUE)
     embedder.set_fixed(CONCEPT_CUE, cue_vec)
 
-    # 10 verbatim records: cos varies from 0.95 down to 0.05 in 0.10 steps.
-    # All but the last few should beat the schema hubs at hub_cos=0.65.
     verbatim_ids: list = []
     cos_values = [0.95, 0.85, 0.75, 0.65, 0.55, 0.45, 0.35, 0.25, 0.15, 0.05]
     for i, c in enumerate(cos_values):
@@ -195,9 +153,6 @@ def _seed_10_verbatim_plus_5_schema_hubs(tmp_path, hub_cos: float = 0.65):
         store.insert(rec)
         verbatim_ids.append(rec.id)
 
-    # 5 schema hubs, each at hub_cos to cue + each gets HUB_DEGREE distractor
-    # edges. Each hub uses a DISTINCT pattern string so Test 4 can verify
-    # pattern-field extraction.
     hub_records: list = []
     edge_pairs: list = []
     distractor_idx = 0
@@ -224,15 +179,7 @@ def _seed_10_verbatim_plus_5_schema_hubs(tmp_path, hub_cos: float = 0.65):
     )
 
 
-# ============================================================================
-# Acceptance tests
-# ============================================================================
-
-
 def test_concept_mode_excludes_schemas_from_hits(tmp_path):
-    """Acceptance: hits[] contains zero records satisfying
-    (tier='semantic' AND any tag startswith 'pattern:').
-    """
     from iai_mcp.pipeline import recall_for_response
 
     (store, embedder, graph, assignment, rich_club,
@@ -252,7 +199,6 @@ def test_concept_mode_excludes_schemas_from_hits(tmp_path):
             f"schema {h.record_id} appeared at position "
             f"{[hh.record_id for hh in resp.hits].index(h.record_id)}"
         )
-        # Also verify by reading the actual record back from the store.
         rec = store.get(h.record_id)
         assert rec is not None, f"unknown record id {h.record_id} in hits"
         is_schema = (
@@ -266,12 +212,8 @@ def test_concept_mode_excludes_schemas_from_hits(tmp_path):
 
 
 def test_concept_mode_patterns_observed_capped_at_three(tmp_path):
-    """Even with 5 schema hubs that ALL outrank verbatims, patterns_observed[]
-    has at most 3 entries."""
     from iai_mcp.pipeline import recall_for_response
 
-    # hub_cos=0.95 puts hubs at the top of the score distribution so all 5
-    # would qualify for patterns_observed if the cap weren't enforced.
     (store, embedder, graph, assignment, rich_club,
      verbatim_ids, hub_records, cue_text) = _seed_10_verbatim_plus_5_schema_hubs(
         tmp_path, hub_cos=0.95,
@@ -290,8 +232,6 @@ def test_concept_mode_patterns_observed_capped_at_three(tmp_path):
 
 
 def test_concept_mode_patterns_observed_evidence_count_matches_edges(tmp_path):
-    """For each entry in patterns_observed, evidence_count == number of
-    incoming schema_instance_of edges to that schema_id."""
     from iai_mcp.pipeline import recall_for_response
 
     (store, embedder, graph, assignment, rich_club,
@@ -305,25 +245,16 @@ def test_concept_mode_patterns_observed_evidence_count_matches_edges(tmp_path):
         session_id="r6_evidence", mode="concept",
     )
 
-    # Read edges table once to verify against ground truth.
     edges_df = store.db.open_table("edges").to_pandas()
     assert resp.patterns_observed, (
         "expected at least one pattern_observed entry on this fixture"
     )
     for entry in resp.patterns_observed:
         schema_id = entry["schema_id"]
-        # boost_edges canonicalises the (src, dst) tuple to sorted order
-        # — so the schema appears in EITHER the dst or the src column.
-        # OR-count both columns (idiom).
         true_count = int(
             ((edges_df["edge_type"] == "schema_instance_of")
              & ((edges_df["dst"] == schema_id) | (edges_df["src"] == schema_id))).sum()
         )
-        # The pipeline implementation queries dst-only (not src) for simplicity,
-        # so we accept either: the documented count from the implementation,
-        # which is the dst-only count, OR the OR-counted total. The
-        # acceptance is "evidence_count derived from the edges table" — both
-        # counts faithfully reflect the edge structure.
         dst_only_count = int(
             ((edges_df["edge_type"] == "schema_instance_of")
              & (edges_df["dst"] == schema_id)).sum()
@@ -336,8 +267,6 @@ def test_concept_mode_patterns_observed_evidence_count_matches_edges(tmp_path):
 
 
 def test_concept_mode_patterns_observed_pattern_field_matches_tag(tmp_path):
-    """The pattern field equals the substring after 'pattern:' in the
-    schema's tags."""
     from iai_mcp.pipeline import recall_for_response
 
     (store, embedder, graph, assignment, rich_club,
@@ -351,7 +280,6 @@ def test_concept_mode_patterns_observed_pattern_field_matches_tag(tmp_path):
         session_id="r6_pattern_field", mode="concept",
     )
 
-    # Build a {schema_id -> expected pattern} mapping from the seeded hubs.
     expected_patterns: dict[str, str] = {}
     for hub in hub_records:
         for t in hub.tags:

@@ -1,11 +1,9 @@
-"""Tests for the (q) iai CLI reachable doctor row added in."""
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
 
 def test_check_q_pass_when_iai_in_path(monkeypatch):
-    """`iai --version` exits 0 -> PASS with version surfaced in detail."""
     from iai_mcp.doctor import check_q_iai_cli_reachable
 
     monkeypatch.setattr("shutil.which", lambda _: "/Users/test/.venv/bin/iai")
@@ -27,19 +25,17 @@ def test_check_q_pass_when_iai_in_path(monkeypatch):
 
 
 def test_check_q_warn_when_iai_not_in_path(monkeypatch):
-    """No iai in PATH -> WARN (advisory; daemon still works)."""
     from iai_mcp.doctor import check_q_iai_cli_reachable
 
     monkeypatch.setattr("shutil.which", lambda _: None)
 
     r = check_q_iai_cli_reachable()
     assert r.status == "WARN"
-    assert r.passed is True  # advisory only; does not flip doctor exit code
+    assert r.passed is True
     assert "pip install" in r.detail.lower()
 
 
 def test_check_q_warn_on_nonzero_exit(monkeypatch):
-    """iai is installed but --version errors out -> WARN with stderr."""
     from iai_mcp.doctor import check_q_iai_cli_reachable
 
     monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/iai")
@@ -59,7 +55,6 @@ def test_check_q_warn_on_nonzero_exit(monkeypatch):
 
 
 def test_check_q_warn_on_subprocess_error(monkeypatch):
-    """OSError / SubprocessError -> WARN, daemon unaffected."""
     import subprocess
 
     from iai_mcp.doctor import check_q_iai_cli_reachable
@@ -77,8 +72,6 @@ def test_check_q_warn_on_subprocess_error(monkeypatch):
 
 
 def test_check_q_in_run_diagnosis():
-    """run_diagnosis() includes the (q) row in the correct order
-    (after (p), before (z))."""
     from iai_mcp.doctor import run_diagnosis
 
     results = run_diagnosis()

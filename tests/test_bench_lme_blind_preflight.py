@@ -1,34 +1,3 @@
-"""Pre-flight crypto check + ERROR-vs-MISS classification + summary counters.
-
-Background: today, running `bench/longmemeval_blind.py` without
-`IAI_MCP_CRYPTO_PASSPHRASE` set (and no `.crypto.key` file) produces a
-clean-looking JSON saying we scored 0/500 — every row errors out inside
-`store.insert` on the encryption path and gets folded into R@5 / R@10 as
-a MISS. The harness writes a final JSON with `r_at_5 == 0.0`, no loud
-signal that crypto was the real problem.
-
-This file pins five contracts:
-
-Pre-flight crypto check:
-    1. `test_preflight_exits_when_no_crypto` — no env var, no key file =>
-       exits with code 2 BEFORE any adapter / row work; the output JSON
-       is never created.
-    2. `test_preflight_passes_with_passphrase` — `IAI_MCP_CRYPTO_PASSPHRASE`
-       set => happy path.
-    3. `test_preflight_passes_with_key_file` — `.crypto.key` in store
-       root => happy path.
-
-ERROR-vs-MISS classification + summary line:
-    4. `test_error_row_classified_as_error_not_miss` — per-row errors
-       written to checkpoint JSONL with `"classification": "ERROR"`;
-       output JSON carries `n_hits` / `n_misses` / `n_errors` as three
-       separate top-level integers.
-    5. `test_summary_line_separates_errors_from_misses` — stderr DONE
-       line contains `hits=N misses=N errors=N` in that order.
-
-Adapter calls are stubbed via `_patch_adapter`; row execution is stubbed
-via `_patch_run_one_row`. No HuggingFace network access at any point.
-"""
 from __future__ import annotations
 
 import json
@@ -40,23 +9,7 @@ from pathlib import Path
 import pytest
 
 
-# --------------------------------------------------------------------------- #
-# Shared mocking helpers (referenced verbatim from the PLAN's
-# <adapter_mocking_fixture> block). Duplicated inline in
-# tests/test_bench_lme_blind_checkpoint.py per the plan note ("duplication
-# is fine for a quick-mode plan").
-# --------------------------------------------------------------------------- #
-
-
 class _StubLMESession:
-    """Minimal stand-in for bench.adapters.longmemeval.LMESession.
-
-    The blind-run grouping loop reads ``q = lme_session.queries[0]`` and
-    pulls ``question_id`` / ``query`` / ``question_type`` /
-    ``relevant_turn_ids`` off it. For tests that route through
-    `_run_one_row` we monkeypatch `_run_one_row` itself, so the session
-    payload only needs to be structurally valid — no real turns required.
-    """
 
     def __init__(self, qid: str, question_type: str = "test") -> None:
         self.queries = [
@@ -68,16 +21,10 @@ class _StubLMESession:
             }
         ]
         self.session_id = f"sess-{qid}"
-        self.turns = []  # _run_one_row is monkeypatched in tests
+        self.turns = []
 
 
 def _patch_adapter(monkeypatch, qids: list[str] | None = None) -> None:
-    """Replace BOTH LongMemEvalAdapter.load_dataset AND
-    CleanedLongMemEvalAdapter.load_dataset with a stub iterator.
-
-    `qids=None` / `qids=[]` yields nothing (empty-rows happy path tests).
-    Non-empty `qids` yields one `_StubLMESession` per qid.
-    """
     sessions = [_StubLMESession(qid) for qid in (qids or [])]
 
     def _stub_load_dataset(self, split="S"):
@@ -102,16 +49,6 @@ def _patch_run_one_row(
     raise_on_indices: set[int],
     success_template: dict | None = None,
 ) -> list[int]:
-    """Wrap `bench.longmemeval_blind._run_one_row` so calls at indices in
-    `raise_on_indices` raise `RuntimeError('synthetic')`; other calls return
-    a deep-copied `success_template` with the row's `question_id` spliced
-    in. Returns the call counter (list-of-one int) so a test can assert on
-    the number of calls.
-
-    Default `success_template` gives `r_at_5_retrieve=0.0` (a genuine MISS)
-    so `test_summary_line_separates_errors_from_misses` can mix ERROR +
-    MISS without extra wiring.
-    """
     counter = [0]
     default_success = success_template or {
         "question_id": None,
@@ -160,20 +97,7 @@ def _patch_run_one_row(
     return counter
 
 
-# --------------------------------------------------------------------------- #
-# Pre-flight crypto check
-# --------------------------------------------------------------------------- #
-
-
 def test_preflight_exits_when_no_passphrase(tmp_path, monkeypatch, capsys):
-    """No IAI_MCP_CRYPTO_PASSPHRASE => bench auto-fills a default passphrase
-    and runs successfully (does not exit with code 2).
-
-    The preflight function self-configures the bench passphrase when the
-    env var is absent, so per-row stores can encrypt without user setup.
-    This test pins that contract: the bench completes (rc=0) and the output
-    JSON is written even when the user did not set the passphrase.
-    """
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
     monkeypatch.delenv("IAI_MCP_CRYPTO_PASSPHRASE", raising=False)
 
@@ -186,13 +110,11 @@ def test_preflight_exits_when_no_passphrase(tmp_path, monkeypatch, capsys):
 
     rc = mod.main(["--limit", "1", "--out", str(out_path)])
 
-    # Pre-flight auto-fills passphrase; bench completes normally.
     assert rc == 0, f"expected rc=0 (passphrase auto-filled); got {rc}"
     assert out_path.exists(), "output JSON must be written when pre-flight passes"
 
 
 def test_preflight_passes_with_passphrase(tmp_path, monkeypatch):
-    """Passphrase env var set => happy path (n_rows == 0 via empty adapter)."""
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
     monkeypatch.setenv("IAI_MCP_CRYPTO_PASSPHRASE", "hunter2")
     _patch_adapter(monkeypatch, qids=[])
@@ -210,14 +132,6 @@ def test_preflight_passes_with_passphrase(tmp_path, monkeypatch):
 
 
 def test_preflight_rejects_keyfile_only(tmp_path, monkeypatch, capsys):
-    """`.crypto.key` present but no env passphrase => bench auto-fills default
-    passphrase and runs (does not exit early).
-
-    The preflight auto-fills a deterministic bench passphrase so per-row
-    tmp stores can encrypt without the user needing to configure anything.
-    The key file at IAI_MCP_STORE is ignored by pre-flight — only the env
-    var matters for bench isolation.
-    """
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
     monkeypatch.delenv("IAI_MCP_CRYPTO_PASSPHRASE", raising=False)
     key_path = tmp_path / ".crypto.key"
@@ -233,25 +147,11 @@ def test_preflight_rejects_keyfile_only(tmp_path, monkeypatch, capsys):
 
     rc = mod.main(["--limit", "1", "--out", str(out_path)])
 
-    # Pre-flight auto-fills passphrase; bench completes.
     assert rc == 0, f"expected rc=0 (passphrase auto-filled); got {rc}"
     assert out_path.exists(), "output JSON must be written when pre-flight passes"
 
 
-# --------------------------------------------------------------------------- #
-# ERROR-vs-MISS classification + summary counters
-# --------------------------------------------------------------------------- #
-
-
 def test_error_row_classified_as_error_not_miss(tmp_path, monkeypatch):
-    """Per-row errors written with `classification == "ERROR"`; output JSON
-    carries `n_hits`, `n_misses`, `n_errors` as three separate top-level
-    integers.
-
-    Pre-Task-1 the error row writes `"error": {...}` only — no
-    `classification` field, no `n_hits` / `n_misses` / `n_errors` summary
-    triple. This test pins both the JSONL shape and the summary triple.
-    """
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
     monkeypatch.setenv("IAI_MCP_CRYPTO_PASSPHRASE", "hunter2")
     _patch_adapter(monkeypatch, qids=["q1", "q2"])
@@ -264,7 +164,6 @@ def test_error_row_classified_as_error_not_miss(tmp_path, monkeypatch):
     rc = mod.main(["--limit", "2", "--out", str(out_path)])
     assert rc == 0
 
-    # Checkpoint JSONL — both rows must carry the new top-level classification.
     cp_path = tmp_path / "o.json.jsonl"
     assert cp_path.exists(), "checkpoint JSONL must be written"
     lines = [
@@ -277,11 +176,9 @@ def test_error_row_classified_as_error_not_miss(tmp_path, monkeypatch):
         assert rec.get("classification") == "ERROR", (
             "every errored row must carry classification=ERROR: " + repr(rec)
         )
-        # Backward-compat: existing `error` payload preserved.
         assert isinstance(rec.get("error"), dict)
         assert "error_class" in rec["error"]
 
-    # Output JSON — summary triple at top level.
     with open(out_path, "r", encoding="utf-8") as f:
         out = json.load(f)
     assert len(out["errors"]) == 2
@@ -293,12 +190,6 @@ def test_error_row_classified_as_error_not_miss(tmp_path, monkeypatch):
 def test_summary_line_separates_errors_from_misses(
     tmp_path, monkeypatch, capsys
 ):
-    """Stderr DONE line contains `hits=N misses=N errors=N` in that order.
-
-    Setup: 3 rows. Rows 0 and 1 raise (-> 2 errors). Row 2 succeeds with
-    `r_at_5_retrieve=0.0` (the default-template MISS). Expect:
-      hits=0 misses=1 errors=2.
-    """
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
     monkeypatch.setenv("IAI_MCP_CRYPTO_PASSPHRASE", "hunter2")
     _patch_adapter(monkeypatch, qids=["q1", "q2", "q3"])
@@ -312,13 +203,9 @@ def test_summary_line_separates_errors_from_misses(
     assert rc == 0
 
     err = capsys.readouterr().err
-    # All three counts must appear in the same line, in this order.
-    # Use a regex-flexible substring search: locate `hits=0`, then ensure
-    # `misses=1` follows in the same DONE block, then `errors=2`.
     assert "hits=0" in err, "hits count missing from DONE line: " + err
     assert "misses=1" in err, "misses count missing from DONE line: " + err
     assert "errors=2" in err, "errors count missing from DONE line: " + err
-    # Order check: hits before misses before errors (substring indices).
     hi = err.index("hits=0")
     mi = err.index("misses=1")
     ei_ = err.index("errors=2")

@@ -1,4 +1,3 @@
-"""Tests for crypto_key_watch baseline + rotation detection."""
 
 from __future__ import annotations
 

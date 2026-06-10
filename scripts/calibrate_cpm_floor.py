@@ -1,21 +1,3 @@
-"""Task 2 -- CPM-Q floor calibration sweep.
-
-One-shot calibration script. Runs ONE Leiden pass on each (fixture, gamma)
-combination, records CPM-Q + classical-Q + singleton-ratio + community count,
-and computes the 5th-percentile CPM-Q among "good" partitions (classical-Q
->= 0.2 AND singleton-ratio < 0.3).
-
-This is NOT a test -- it produces the empirical value that is hard-coded into
-`src/iai_mcp/mosaic_policy.py` as `CPM_MODULARITY_FLOOR`. Re-run only
-when fixtures change OR an auditor wants to verify the empirical floor.
-
-Output:
-  - JSON sweep table printed to stdout (15 rows: 3 fixtures x 5 gammas)
-  - Final `CPM_MODULARITY_FLOOR` value printed at the end
-
-Usage:
-  PYTHONPATH=src python scripts/calibrate_cpm_floor.py
-"""
 from __future__ import annotations
 
 import json
@@ -26,7 +8,6 @@ from uuid import UUID, uuid4, uuid5
 
 import numpy as np
 
-# Repo path discovery -- this script is always run from the worktree root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from iai_mcp.mosaic import (  # noqa: E402
@@ -74,8 +55,6 @@ def _load_football() -> MemoryGraph:
 
 
 def _build_lfr_n2000() -> MemoryGraph:
-    """3-community planted graph, N=2000. Slightly denser intra than the N=5000
-    regression test (intra_p=0.04) to keep good-partition counts robust."""
     n = 2000
     intra_p = 0.04
     inter_p = 0.001
@@ -105,9 +84,6 @@ def _build_lfr_n2000() -> MemoryGraph:
 
 
 def _compute_singleton_ratio_inline(partition: np.ndarray) -> float:
-    """Standalone helper (mirrors `compute_singleton_ratio` we will land in
-    `mosaic_policy.py` -- inlined here so this script does not depend
-    on the policy module being already updated)."""
     if partition.size == 0:
         return 0.0
     _, counts = np.unique(partition, return_counts=True)
@@ -118,13 +94,6 @@ def _compute_singleton_ratio_inline(partition: np.ndarray) -> float:
 def _run_one_leiden_pass_inline(
     graph: MemoryGraph, gamma: float, seed: int = 42
 ):
-    """ONE-SHOT inline Leiden pass for calibration.
-
-    Pattern mirrors `_run_one_leiden_pass` we will add to `mosaic.py`
-    in Task 3 (work on copies, run LM + refinement, return refined +
-    sigma_tot_refined + CPM-Q). Plan-B kernel signature: precompute
-    visit_order outside @njit.
-    """
     csr, _order, _idx_map = build_csr_sanitized(graph)
     if csr.nnz == 0:
         return None, None, None, None
@@ -136,21 +105,18 @@ def _run_one_leiden_pass_inline(
     partition = np.arange(n, dtype=np.int64)
     sigma_tot = compute_sigma_tot(indptr, indices, data, partition, n)
 
-    # Plan-B: visit_order computed OUTSIDE @njit.
     rng_lm = np.random.Generator(np.random.PCG64(seed))
     visit_lm = rng_lm.permutation(n).astype(np.int64)
     _njit_local_move(
         indptr, indices, data, partition, sigma_tot, gamma, visit_lm, 20
     )
 
-    # Defensive split.
     import scipy.sparse
     curr_csr = scipy.sparse.csr_matrix((data, indices, indptr), shape=(n, n))
     partition, sigma_tot, _ = _split_disconnected_communities(
         curr_csr, partition, sigma_tot, {}, LineageTracker()
     )
 
-    # Refinement.
     refined = np.arange(n, dtype=np.int64)
     sigma_refined = compute_sigma_tot(indptr, indices, data, refined, n)
     rng_ref = np.random.Generator(np.random.PCG64(seed + 1))
@@ -201,7 +167,6 @@ def main() -> None:
                 file=sys.stderr,
             )
 
-    # Good partitions: classical Q >= 0.2 AND singleton-ratio < 0.3.
     good = [
         d for d in calibration
         if d["classical_q"] >= 0.2 and d["singleton_ratio"] < 0.3

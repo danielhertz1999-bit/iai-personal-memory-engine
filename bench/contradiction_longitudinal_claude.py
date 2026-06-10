@@ -1,32 +1,6 @@
 #!/usr/bin/env python3
-"""Contradiction-longitudinal falsifiability bench.
-
-Companion to `bench/contradiction_longitudinal.py`.
-
-Usage:
-    python bench/contradiction_longitudinal_claude.py \\
-        --scale=smoke \\
-        --store-dir=/tmp/iai-mcp-bench-claude/store \\
-        --seeds 13 42 137 \\
-        --n-slices 0 1 \\
-        --output-dir=bench/results
-
-Exit codes:
-    0 = all gates pass (numbers safe to quote)
-    1 = data-driven failure (gate / slice / seed identified in JSON)
-    2 = setup error (missing dep, store conflict, single-seed attempt, etc.)
-
-Hard isolation guarantees:
-    - Refuses to run if --store-dir resolves to ~/.iai-mcp (production brain)
-    - SleepPipeline gets isolated lifecycle_state_path + event_log dir
-    - Never calls memory_capture / memory_contradict / memory_recall MCP tools
-    - Daemon coexistence: bench process does not acquire any production lock
-"""
 from __future__ import annotations
 
-# Resolve iai_mcp.* (via src) AND bench.* (via worktree root) to THIS
-# worktree, not the parent venv's editable install. Idempotent: each
-# `sys.path.insert` is guarded by an "if not already present" check.
 import sys
 from pathlib import Path
 _SRC_PATH = str(Path(__file__).resolve().parent.parent / "src")
@@ -54,16 +28,9 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
 
 PRODUCTION_STORE = Path.home() / ".iai-mcp"
 
-# Crypto-gate: bench-isolated stores need an encryption key.
-# Use a fixed bench-only passphrase so each per-seed store gets its own
-# derived key without disturbing the user's keychain or.crypto.key files.
-# This is bench-only, never production data — safe to hardcode.
 BENCH_PASSPHRASE = "iai-mcp-bench-falsifiability-deterministic-2026"
 
 DEFAULT_STORE_DIR = "/tmp/iai-mcp-bench-claude/store"
@@ -75,11 +42,10 @@ WARMUP_PASSES = 5
 BOOTSTRAP_RESAMPLES = 10_000
 BOOTSTRAP_CI = 0.95
 WILCOXON_MIN_N = 30
-MAX_RANK_REGRESSION = 20  # catastrophic-rank regression floor
+MAX_RANK_REGRESSION = 20
 
 
 SCALE_PRESETS = {
-    # name sessions probes_pre probes_post
     "smoke":      (4,       2,         2),
     "mvp":        (200,     50,        50),
     "honest":     (1000,    250,       250),
@@ -87,13 +53,6 @@ SCALE_PRESETS = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Synthetic flip facts — used by corpus generator
-# ---------------------------------------------------------------------------
-
-# Pool of (topic, original_text, flipped_text, gold_after, gold_before)
-# Each flip pair is a probe target: A asks for the original verbatim, B asks for
-# current truth. Topics are generic so retrieval geometry isn't biased by names.
 SYNTHETIC_FLIPS: list[tuple[str, str, str, str, str]] = [
     ("launch_date",
      "The product launches on 2026-06-01.",
@@ -137,8 +96,6 @@ SYNTHETIC_FLIPS: list[tuple[str, str, str, str, str]] = [
      "$35k", "$50k"),
 ]
 
-# Generic filler sentences — provide cosine-noise that the contradiction
-# probes have to be distinguishable against.
 FILLER_SENTENCES: list[str] = [
     "The team meets every Tuesday for sync.",
     "Documentation is hosted internally on the wiki.",
@@ -163,73 +120,52 @@ FILLER_SENTENCES: list[str] = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Bench data structures
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class CorpusEntry:
-    """One row in the synthetic corpus."""
 
     session_id: str
     role: str
     text: str
-    is_flip_original: bool = False    # original (pre-flip) record for a topic
-    is_flip_correction: bool = False  # correction (post-flip) record for a topic
-    topic: str = ""                    # only set for flip-pair members
+    is_flip_original: bool = False
+    is_flip_correction: bool = False
+    topic: str = ""
 
 
 @dataclass
 class Probe:
-    """One probe issued at evaluation time."""
 
     probe_id: str
-    cue: str                           # the natural-language query
-    expects: str                       # gold substring expected to appear
-    condition: str                     # "post_flip" | "historical_verbatim"
-    topic: str                         # which flip topic this probe targets
-    flip_original_id: str = ""         # UUID of the pre-flip record
-    flip_correction_id: str = ""       # UUID of the post-flip record
+    cue: str
+    expects: str
+    condition: str
+    topic: str
+    flip_original_id: str = ""
+    flip_correction_id: str = ""
 
 
 @dataclass
 class ProbeResult:
-    """Outcome of running a single probe on a single seed × N slice."""
 
     probe_id: str
     seed: int
     n_slice: int
     condition: str
     topic: str
-    pipeline_rank: int                 # 1-based rank of expected hit; -1 if miss
-    cosine_rank: int                   # same, on cosine baseline
+    pipeline_rank: int
+    cosine_rank: int
     pipeline_hit_at_k: bool
     cosine_hit_at_k: bool
-    pipeline_top1_text: str            # for catastrophic-floor check (Metric A)
-    # B-revised metrics — captured per probe to test the system's architectural contract:
-    # pipeline emits contradiction hints and anti_hits; cosine baseline cannot.
-    s4_contradiction_emitted: bool = False  # did pipeline emit s4_contradiction hint?
-    anti_hits_count: int = 0                # how many anti_hits were returned?
-    hint_kinds: str = ""                    # comma-separated list of hint.kind values
-    # EFE A/B attribution — `route` mirrors what _recall_core executed for this
-    # cue; `cue_hash` is the 8-hex MD5 prefix for join.
+    pipeline_top1_text: str
+    s4_contradiction_emitted: bool = False
+    anti_hits_count: int = 0
+    hint_kinds: str = ""
     route: str = ""
     cue_hash: str = ""
-    # arousal_budget A/B attribution — `arousal_route` mirrors the route
-    # _recall_core executed for the arousal plumb-in; `arousal_cue_hash` is
-    # the 8-hex MD5 prefix for join. Independent from EFE columns above.
     arousal_route: str = ""
     arousal_cue_hash: str = ""
 
 
-# ---------------------------------------------------------------------------
-# Setup-gate helpers
-# ---------------------------------------------------------------------------
-
-
 def _refuse_production_store(store_path: Path) -> None:
-    """Hard rail: bench MUST NOT touch ~/.iai-mcp (production brain setup gate)."""
     resolved_store = store_path.expanduser().resolve()
     resolved_prod = PRODUCTION_STORE.expanduser().resolve()
     if resolved_store == resolved_prod or resolved_prod in resolved_store.parents:
@@ -242,7 +178,6 @@ def _refuse_production_store(store_path: Path) -> None:
 
 
 def _gather_env_metadata(store_dir: Path, seed_list: list[int]) -> dict[str, Any]:
-    """Capture strict env metadata for reproducibility."""
     repo_root = Path(__file__).resolve().parent.parent
 
     def _git(cmd: list[str]) -> str:
@@ -290,7 +225,7 @@ def _gather_env_metadata(store_dir: Path, seed_list: list[int]) -> dict[str, Any
         "iai_mcp_git_sha": sha,
         "iai_mcp_git_dirty": dirty,
         "lance_version": _pkg_version("lance"),
-        "lancedb_version": _pkg_version("lancedb"),
+        "hnswlib_version": _pkg_version("hnswlib"),
         "pyarrow_version": _pkg_version("pyarrow"),
         "sentence_transformers_version": _pkg_version("sentence-transformers"),
         "embedder_model": embedder_model,
@@ -300,43 +235,26 @@ def _gather_env_metadata(store_dir: Path, seed_list: list[int]) -> dict[str, Any
     }
 
 
-# ---------------------------------------------------------------------------
-# Corpus generator
-# ---------------------------------------------------------------------------
-
-
 def generate_corpus(
     seed: int,
     n_sessions: int,
     n_probes_pre: int,
     n_probes_post: int,
 ) -> tuple[list[CorpusEntry], list[Probe]]:
-    """Build a synthetic corpus + probe set for one seed.
-
-    Layout:
-      - For ~half of n_sessions, place a flip pair (original at session t, correction at session t+1).
-      - Filler sessions in between (random sentences).
-      - Probes split:
-        * post_flip cues — ask for current truth, expect the corrected fact
-        * historical_verbatim cues — ask for original verbatim, expect the original text
-    """
     rng = random.Random(seed)
 
-    # How many flips fit, given two sessions per flip + filler
     n_flips_max = min(len(SYNTHETIC_FLIPS), n_sessions // 4)
     n_flips_max = max(n_flips_max, 1)
     flips = rng.sample(SYNTHETIC_FLIPS, n_flips_max)
 
     entries: list[CorpusEntry] = []
-    flip_metadata: dict[str, dict[str, str]] = {}  # topic -> {orig_session, corr_session}
+    flip_metadata: dict[str, dict[str, str]] = {}
 
     session_idx = 0
     for topic, original, correction, gold_after, gold_before in flips:
-        # Reserve at least 2 slots for orig+corr; filler-before consumes whatever
-        # is left over (so smoke / small corpora still get flip_metadata populated).
         remaining = n_sessions - session_idx
         if remaining < 2:
-            break  # cannot fit another flip pair
+            break
         max_filler_before = max(0, min(rng.randint(0, 3), remaining - 2))
         for _ in range(max_filler_before):
             entries.append(CorpusEntry(
@@ -346,7 +264,6 @@ def generate_corpus(
             ))
             session_idx += 1
 
-        # Original (pre-flip) record — guaranteed to fit
         orig_session = f"s{session_idx:05d}-{seed}"
         entries.append(CorpusEntry(
             session_id=orig_session,
@@ -357,7 +274,6 @@ def generate_corpus(
         ))
         session_idx += 1
 
-        # 0-2 filler sessions between original and correction (reserve 1 for corr)
         remaining = n_sessions - session_idx
         max_filler_between = max(0, min(rng.randint(0, 2), remaining - 1))
         for _ in range(max_filler_between):
@@ -368,7 +284,6 @@ def generate_corpus(
             ))
             session_idx += 1
 
-        # Correction (post-flip) record — guaranteed to fit
         corr_session = f"s{session_idx:05d}-{seed}"
         entries.append(CorpusEntry(
             session_id=corr_session,
@@ -388,7 +303,6 @@ def generate_corpus(
             "correction_text": correction,
         }
 
-    # Pad to n_sessions with filler
     while len(entries) < n_sessions:
         entries.append(CorpusEntry(
             session_id=f"s{len(entries):05d}-{seed}",
@@ -396,7 +310,6 @@ def generate_corpus(
             text=rng.choice(FILLER_SENTENCES),
         ))
 
-    # Build probes — distribute across known flip topics
     probes: list[Probe] = []
     topics = list(flip_metadata.keys())
     if not topics:
@@ -428,7 +341,6 @@ def generate_corpus(
 
 
 def _post_flip_cue_for(topic: str) -> str:
-    """Generate a natural post-flip query for a topic (current-truth question)."""
     cues = {
         "launch_date": "When does the product launch?",
         "ceo_name": "Who is the current CEO?",
@@ -445,7 +357,6 @@ def _post_flip_cue_for(topic: str) -> str:
 
 
 def _historical_verbatim_cue_for(topic: str) -> str:
-    """Generate a natural historical-verbatim query (original wording)."""
     cues = {
         "launch_date": "Quote the original announcement about the launch date.",
         "ceo_name": "Quote the first CEO announcement verbatim.",
@@ -461,20 +372,7 @@ def _historical_verbatim_cue_for(topic: str) -> str:
     return cues.get(topic, f"Quote the original {topic} announcement.")
 
 
-# ---------------------------------------------------------------------------
-# EFE A/B route helper
-# ---------------------------------------------------------------------------
-
-
-# Must stay in sync with the EFE A/B routing logic in _recall_core.
-# tests/test_contradiction_longitudinal_route_columns.py is the regression guard.
 def _bench_efe_route_for_cue(cue: str) -> tuple[str, str]:
-    """Return (route, cue_hash_hex_8) for an EFE A/B probe cue.
-
-    Route is one of {"efe_real", "efe_shadow"}; "efe_skip" is never set here
-    (it can only be set inside `_recall_core` on EFE-call exception).
-    cue_hash is the first 8 hex chars of MD5(cue).
-    """
     digest = hashlib.md5(str(cue).encode("utf-8")).digest()
     cue_hash_hex = digest[:4].hex()
     if os.environ.get("IAI_MCP_EFE_USE_SHADOW") == "1":
@@ -484,16 +382,7 @@ def _bench_efe_route_for_cue(cue: str) -> tuple[str, str]:
     return route, cue_hash_hex
 
 
-# Must stay in sync with the arousal_budget A/B routing logic in _recall_core.
-# Parity test: tests/test_arousal_budget_ab.py::test_bench_production_route_parity.
 def _bench_arousal_route_for_cue(cue: str) -> tuple[str, str]:
-    """Return (route, cue_hash_hex_8) for the arousal A/B route.
-
-    Route is one of {"arousal_real", "arousal_shadow"}; "arousal_skip" is
-    only ever assigned inside _recall_core on RetrievalParams compute
-    failure (see _recall_core exception path). cue_hash is the first 8 hex
-    chars of MD5(cue).
-    """
     digest = hashlib.md5(str(cue).encode("utf-8")).digest()
     cue_hash_hex = digest[:4].hex()
     if os.environ.get("IAI_MCP_AROUSAL_USE_SHADOW") == "1":
@@ -501,12 +390,6 @@ def _bench_arousal_route_for_cue(cue: str) -> tuple[str, str]:
     else:
         route = "arousal_real" if (digest[0] & 1) else "arousal_shadow"
     return route, cue_hash_hex
-
-
-# ---------------------------------------------------------------------------
-# Bench driver — depends on iai_mcp internals; imported lazily so --help works
-# without the heavy ML/store stack.
-# ---------------------------------------------------------------------------
 
 
 def run_one_seed(
@@ -518,12 +401,6 @@ def run_one_seed(
     embedder_key: str,
     k_hits: int,
 ) -> tuple[list[ProbeResult], dict[str, Any]]:
-    """Run one (seed, n_slice) cell. Returns (probe_results, gate_status).
-
-    gate_status = {"insert_ok": bool, "contradict_ok": bool, "sleep_ok": bool,
-                   "errors": [...]}
-    """
-    # Lazy imports — ML stack is ~5s cold-start
     from iai_mcp.embed import Embedder
     from iai_mcp.lifecycle_event_log import LifecycleEventLog
     from iai_mcp.pipeline import recall_for_benchmark
@@ -537,25 +414,19 @@ def run_one_seed(
             "errors": []}
 
     store_dir_for_seed.mkdir(parents=True, exist_ok=True)
-    # Force store path via env for any deeper code-paths that read IAI_MCP_STORE.
     os.environ["IAI_MCP_STORE"] = str(store_dir_for_seed)
-    # Crypto-gate: supply bench passphrase so each isolated
-    # store derives its own encryption key without keychain or file games.
     if not os.environ.get("IAI_MCP_CRYPTO_PASSPHRASE"):
         os.environ["IAI_MCP_CRYPTO_PASSPHRASE"] = BENCH_PASSPHRASE
 
     store = MemoryStore(path=store_dir_for_seed / "hippo")
     embedder = Embedder(model_key=embedder_key)
 
-    # Warm-up: 5 dummy embeds
     _ = embedder.embed_batch(["warm-up " + str(i) for i in range(WARMUP_PASSES)])
 
-    # ----- INSERT phase -----
     text_to_id: dict[str, UUID] = {}
     topic_to_orig_id: dict[str, UUID] = {}
     topic_to_corr_text: dict[str, str] = {}
     try:
-        # Embed all entries in one batch (deterministic, faster)
         all_texts = [e.text for e in entries]
         embeddings = embedder.embed_batch(all_texts)
         now = datetime.now(timezone.utc)
@@ -595,7 +466,6 @@ def run_one_seed(
         gate["errors"].append(f"insert: {exc!r}")
         return [], gate
 
-    # ----- CONTRADICT phase -----
     try:
         for topic, orig_id in topic_to_orig_id.items():
             corr_text = topic_to_corr_text.get(topic, "")
@@ -608,7 +478,6 @@ def run_one_seed(
         gate["errors"].append(f"contradict: {exc!r}")
         return [], gate
 
-    # ----- SLEEP phase (n_slice times) -----
     if n_slice > 0:
         try:
             iso_state_path = store_dir_for_seed / "lifecycle_state.json"
@@ -619,10 +488,10 @@ def run_one_seed(
                 store=store,
                 lifecycle_state_path=iso_state_path,
                 event_log=event_log,
-                quarantine_ttl_hours=0.001,  # near-zero so any quarantine clears fast
+                quarantine_ttl_hours=0.001,
             )
             for _ in range(n_slice):
-                result = pipeline.force_run()  # bypass quarantine for bench
+                result = pipeline.force_run()
                 if result.get("failed_step"):
                     gate["errors"].append(
                         f"sleep_pipeline failed_step={result.get('failed_step')}"
@@ -633,39 +502,25 @@ def run_one_seed(
             gate["errors"].append(f"sleep: {exc!r}")
             return [], gate
     else:
-        gate["sleep_ok"] = True  # N=0 control: no sleep is success
+        gate["sleep_ok"] = True
 
-    # ----- BUILD GRAPH (for recall_for_benchmark) -----
     try:
         graph, assignment, rich_club = build_runtime_graph(store)
     except Exception as exc:
         gate["errors"].append(f"build_runtime_graph: {exc!r}")
         return [], gate
 
-    # ----- PROBE phase -----
     probe_results: list[ProbeResult] = []
     for probe in probes:
         try:
             cue_emb = list(embedder.embed_batch([probe.cue])[0])
 
-            # Compute route + cue_hash on the bench side BEFORE the recall, so
-            # the CSV row carries the same arm _recall_core will execute.
             _route, _cue_hash = _bench_efe_route_for_cue(probe.cue)
-            # Compute arousal_route + arousal_cue_hash on the bench side so the
-            # CSV row carries the same arm pipeline.py arousal block will execute.
             _arousal_route, _arousal_cue_hash = _bench_arousal_route_for_cue(probe.cue)
 
-            # Pre-classify cue intent on the bench side for observability.
-            # recall_for_benchmark internally also calls _classify_cue and
-            # routes the intent into Stage 8 (so the bench gets historical-
-            # verbatim downweight without changing the bench-side call
-            # signature). This explicit call surfaces the intent label
-            # available for future bench CSV columns / debugging — keep
-            # visible so the wiring is documented at the call site.
             from iai_mcp.cue_router import _classify_cue
             _bench_mode_unused, _bench_intent, _bench_label_unused = _classify_cue(probe.cue)
 
-            # Pipeline retrieval
             resp = recall_for_benchmark(
                 store=store, graph=graph, assignment=assignment,
                 rich_club=rich_club, embedder=embedder,
@@ -676,7 +531,6 @@ def run_one_seed(
             pipe_hits = list(resp.hits) if hasattr(resp, "hits") else []
             pipe_rank = _rank_of(pipe_hits, probe.expects)
 
-            # Cosine baseline — same candidate pool top-200 by raw cosine
             cosine_hits = _cosine_baseline_topk(
                 store, embedder, cue_emb, k=max(k_hits, CANDIDATE_POOL_SIZE)
             )
@@ -684,7 +538,6 @@ def run_one_seed(
 
             pipe_top1 = pipe_hits[0].literal_surface if pipe_hits else ""
 
-            # Capture B-revised signals per architectural contract.
             anti_hits_count = len(getattr(resp, "anti_hits", []) or [])
             hints = list(getattr(resp, "hints", []) or [])
             kinds = []
@@ -708,7 +561,7 @@ def run_one_seed(
                 pipeline_top1_text=pipe_top1,
                 s4_contradiction_emitted=s4_emitted,
                 anti_hits_count=anti_hits_count,
-                hint_kinds=",".join(kinds[:10]),  # cap for CSV cleanliness
+                hint_kinds=",".join(kinds[:10]),
                 route=_route,
                 cue_hash=_cue_hash,
                 arousal_route=_arousal_route,
@@ -721,11 +574,6 @@ def run_one_seed(
 
 
 def _rank_of(hits: list, expected_substring: str) -> int:
-    """Return 1-based rank of first hit whose literal_surface contains expected.
-
-    Returns -1 if not found. Handles both attr-access (MemoryRecord) and
-    dict-access (some pipeline paths return dicts).
-    """
     for i, h in enumerate(hits, start=1):
         if hasattr(h, "literal_surface"):
             surface = h.literal_surface
@@ -739,17 +587,13 @@ def _rank_of(hits: list, expected_substring: str) -> int:
 
 
 def _cosine_baseline_topk(store, embedder, cue_emb, k: int) -> list:
-    """Flat cosine baseline: rank ALL stored records by raw cosine, return top-k.
-
-    Returns objects with.literal_surface attribute (for _rank_of compatibility).
-    """
     import numpy as np
 
     @dataclass
     class _Hit:
         literal_surface: str
 
-    rows = store.all_records()  # whatever the public API exposes
+    rows = store.all_records()
     if not rows:
         return []
     cue = np.asarray(cue_emb, dtype=np.float32)
@@ -765,13 +609,7 @@ def _cosine_baseline_topk(store, embedder, cue_emb, k: int) -> list:
     return [_Hit(literal_surface=t[1]) for t in scored[:k]]
 
 
-# ---------------------------------------------------------------------------
-# Statistics: bootstrap CI + Wilcoxon
-# ---------------------------------------------------------------------------
-
-
 def reciprocal_rank(rank: int) -> float:
-    """RR = 1/rank if hit found, else 0."""
     return 0.0 if rank <= 0 else 1.0 / rank
 
 
@@ -780,10 +618,6 @@ def bootstrap_ci_delta_mrr(
     resamples: int = BOOTSTRAP_RESAMPLES, ci: float = BOOTSTRAP_CI,
     seed: int = 0,
 ) -> tuple[float, float, float]:
-    """Bootstrap CI on paired ΔMRR (pipeline - cosine).
-
-    Returns (point_estimate, ci_lower, ci_upper).
-    """
     n = len(pipe_ranks)
     if n == 0 or n != len(cos_ranks):
         return (0.0, 0.0, 0.0)
@@ -802,7 +636,6 @@ def bootstrap_ci_delta_mrr(
 
 
 def wilcoxon_signed_rank_p(pipe_ranks: list[int], cos_ranks: list[int]) -> float | None:
-    """Wilcoxon p-value (paired). Returns None if N < WILCOXON_MIN_N or scipy missing."""
     n = sum(1 for p, c in zip(pipe_ranks, cos_ranks)
             if reciprocal_rank(p) != reciprocal_rank(c))
     if n < WILCOXON_MIN_N:
@@ -819,11 +652,6 @@ def wilcoxon_signed_rank_p(pipe_ranks: list[int], cos_ranks: list[int]) -> float
         return None
 
 
-# ---------------------------------------------------------------------------
-# Aggregation + gates
-# ---------------------------------------------------------------------------
-
-
 def aggregate(
     all_results: list[ProbeResult],
     seeds: list[int],
@@ -832,10 +660,8 @@ def aggregate(
     a_threshold: float = 0.98,
     floor_mode: str = "relaxed",
 ) -> dict[str, Any]:
-    """Compute per-(seed, n_slice) and cross-seed metrics + gate verdicts."""
     summary: dict[str, Any] = {"per_cell": [], "cross_seed": {}, "gates": {}}
 
-    # Per-cell metrics
     per_cell_b_deltas: dict[int, list[float]] = {n: [] for n in n_slices}
     per_cell_a_hit: dict[int, list[float]] = {n: [] for n in n_slices}
     per_cell_a_floor_violations: dict[int, list[int]] = {n: [] for n in n_slices}
@@ -845,7 +671,6 @@ def aggregate(
         for n in n_slices:
             cell_results = [r for r in all_results if r.seed == seed and r.n_slice == n]
 
-            # Metric B: post-flip probes
             b_probes = [r for r in cell_results if r.condition == "post_flip"]
             pipe_ranks_b = [r.pipeline_rank for r in b_probes]
             cos_ranks_b = [r.cosine_rank for r in b_probes]
@@ -862,12 +687,10 @@ def aggregate(
             rr_at_1_pipe = sum(1 for r in b_probes if r.pipeline_rank == 1) / max(len(b_probes), 1)
             rr_at_1_cos = sum(1 for r in b_probes if r.cosine_rank == 1) / max(len(b_probes), 1)
 
-            # Metric A: historical_verbatim probes
             a_probes = [r for r in cell_results if r.condition == "historical_verbatim"]
             a_hits_pipe = sum(1 for r in a_probes if r.pipeline_hit_at_k) / max(len(a_probes), 1)
             a_hits_cos = sum(1 for r in a_probes if r.cosine_hit_at_k) / max(len(a_probes), 1)
             if floor_mode == "strict":
-                # Strict: top-1 must NOT be a post-flip correction.
                 a_floor_viols = sum(
                     1 for r in a_probes
                     if any(marker in r.pipeline_top1_text
@@ -876,15 +699,8 @@ def aggregate(
                                           "venue changed"))
                 )
             else:
-                # Relaxed: catastrophic only when the original is NOT in top-k
-                # at all (i.e., truly lost from retrieval). Spirit of "no
-                # collapse" rather than literal "top-1 strict".
                 a_floor_viols = sum(1 for r in a_probes if not r.pipeline_hit_at_k)
 
-            # B-revised metrics: compute over post-flip probes only (since they
-            # are the cues that touch a contradiction-pair). Pipeline SHOULD signal
-            # contradiction via s4_contradiction hint AND/OR anti_hits;
-            # cosine baseline cannot.
             n_b = len(b_probes)
             hint_emit_rate = (
                 sum(1 for r in b_probes if r.s4_contradiction_emitted) / n_b
@@ -930,7 +746,6 @@ def aggregate(
             per_cell_a_floor_violations[n].append(a_floor_viols)
             catastrophic_b[n].append(max_regression)
 
-    # Cross-seed gate
     cross: dict[str, Any] = {}
     for n in n_slices:
         deltas = per_cell_b_deltas[n]
@@ -949,31 +764,21 @@ def aggregate(
             }
     summary["cross_seed"] = cross
 
-    # Gates (B-revised per architectural contract)
     gates: dict[str, dict[str, Any]] = {}
     for cell in summary["per_cell"]:
         key = f"seed{cell['seed']}_n{cell['n_slice']}"
         b = cell["metric_b"]
         b_rev = cell["metric_b_revised"]
         a = cell["metric_a"]
-        # Original Metric B (rank-based) — kept for transparency, but expected
-        # to be 0 since system doesn't promise to outrank cosine on post-flip
         gate_b_classical = (
             b["delta_mrr_ci_lo"] > 0 and
             b["max_rank_regression"] < MAX_RANK_REGRESSION and
             b["rr_at_1_pipeline"] >= b["rr_at_1_cosine"]
         )
-        # B-revised — what the system actually promises (architectural contract)
-        # Pass: pipeline emits s4_contradiction hint OR anti_hits on ≥80% of
-        # post-flip probes that touch a contradicted pair. Cosine cannot do
-        # either, so a passing pipeline beats cosine on the architectural
-        # contract metric (NOT on rank).
         gate_b_contract = (
             b_rev["hint_emission_rate"] >= 0.80 or
             b_rev["anti_hits_coverage"] >= 0.80
         )
-        # Metric A: hit_at_k must hold ≥ a_threshold of cosine baseline,
-        # AND zero catastrophic floor violations.
         a_baseline = max(a["hit_at_k_cosine"], 1e-6)
         gate_a = (
             (a["hit_at_k_pipeline"] / a_baseline >= a_threshold) and
@@ -989,19 +794,11 @@ def aggregate(
     cross_gate = all(c["robust"] for c in cross.values())
     summary["gates"]["cross_seed_robust"] = cross_gate
 
-    # Overall pass: gate_a + gate_b_contract pass for all cells.
-    # gate_b_classical is NOT required (system doesn't promise it per docs).
-    # Cross-seed gate is informational for B-classical only.
     summary["gates"]["overall_pass"] = (
         all(g["gate_a"] and g["gate_b_contract"] for g in gates.values())
     )
 
     return summary
-
-
-# ---------------------------------------------------------------------------
-# Output writers
-# ---------------------------------------------------------------------------
 
 
 def write_outputs(
@@ -1020,8 +817,6 @@ def write_outputs(
 
     with csv_path.open("w", newline="") as fh:
         w = csv.writer(fh)
-        # `route` + `cue_hash` appended at the end so legacy CSV readers that
-        # index by leading columns keep working.
         w.writerow([
             "probe_id", "seed", "n_slice", "condition", "topic",
             "pipeline_rank", "cosine_rank",
@@ -1029,8 +824,6 @@ def write_outputs(
             "s4_contradiction_emitted", "anti_hits_count", "hint_kinds",
             "pipeline_top1_text",
             "route", "cue_hash",
-            # arousal_budget A/B columns; appended at end so legacy readers
-            # that index by leading columns keep working.
             "arousal_route", "arousal_cue_hash",
         ])
         for r in all_results:
@@ -1044,7 +837,6 @@ def write_outputs(
                 r.arousal_route, r.arousal_cue_hash,
             ])
 
-    # Markdown report (README-quote-friendly)
     overall = "PASS" if summary["gates"]["overall_pass"] else "FAIL"
     lines = [
         f"# Contradiction-longitudinal falsifiability bench — {overall}",
@@ -1113,11 +905,6 @@ def write_outputs(
     print(f"[bench] Wrote: {csv_path}")
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Contradiction-longitudinal falsifiability bench (Claude impl)",
@@ -1140,7 +927,6 @@ def main(argv: list[str] | None = None) -> int:
                               "relaxed = original must be in top-k (more lenient, default)."))
     args = parser.parse_args(argv)
 
-    # ------- Setup gates -------
     if len(args.seeds) < 3:
         print(f"[setup-gate] REFUSE: need ≥3 seeds, got {len(args.seeds)} "
               f"(mandatory for cross-seed gate).", file=sys.stderr)

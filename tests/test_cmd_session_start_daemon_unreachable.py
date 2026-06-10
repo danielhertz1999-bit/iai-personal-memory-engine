@@ -1,7 +1,3 @@
-"""Contract:
-- Daemon socket unreachable (path does not exist) -> CLI prints nothing on
-  stdout, returns 0. Never blocks Claude Code session start.
-"""
 from __future__ import annotations
 
 import argparse

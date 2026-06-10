@@ -1,16 +1,3 @@
-"""Tests for Task 3 LEARN-03 schema induction (+).
-
-: dual-path schema surfacing.
-- Primary: batch induction inside sleep cycle (Tier 1 Haiku when allowed, Tier 0
-  cooccurrence + TF-IDF otherwise).
-- Secondary: entropy-gated provisional schemas surfaced during pipeline_recall.
-
- (autism-tuned):
-- Auto-induct at co_occurrence >= 5 AND confidence >= 0.85.
-- User-approval flag at [3, 5) AND [0.65, 0.85).
-- Exception preservation: exceptions stored as first-class records.
-- Abstraction level: concrete (Dawson-).
-"""
 from __future__ import annotations
 
 import os
@@ -22,7 +9,6 @@ import pytest
 from iai_mcp.events import query_events
 from iai_mcp.store import MemoryStore
 from iai_mcp.types import EMBED_DIM, MemoryRecord
-
 
 def _rec(
     *,
@@ -55,10 +41,8 @@ def _rec(
         language=language,
     )
 
-
 @pytest.fixture(autouse=True)
 def _patch_embedder(monkeypatch):
-    """Avoid loading bge-m3 during schema tests."""
     from iai_mcp import embed as embed_mod
 
     class _FakeEmbedder:
@@ -78,10 +62,6 @@ def _patch_embedder(monkeypatch):
     monkeypatch.setattr(embed_mod, "Embedder", _FakeEmbedder)
     yield
 
-
-# ---------------------------------------------------------------- constants
-
-
 def test_schema_d21_thresholds_encoded():
     from iai_mcp import schema
 
@@ -90,16 +70,10 @@ def test_schema_d21_thresholds_encoded():
     assert schema.USER_APPROVAL_COOCCURRENCE == 3
     assert schema.USER_APPROVAL_CONFIDENCE == 0.65
 
-
-# ---------------------------------------------------------------- Tier-0 induction
-
-
 def test_induce_schemas_tier0_returns_candidates_at_threshold(tmp_path):
-    """9+ records on the same tag pair -> auto candidate (confidence = count/10)."""
     from iai_mcp.schema import induce_schemas_tier0
 
     store = MemoryStore(path=tmp_path)
-    # Confidence scales count/10. Need count >= 9 for confidence >= 0.9 (auto).
     for i in range(10):
         store.insert(_rec(text=f"r{i}", tags=["meeting", "notes"]))
     candidates = induce_schemas_tier0(store)
@@ -108,27 +82,18 @@ def test_induce_schemas_tier0_returns_candidates_at_threshold(tmp_path):
     assert len(hit) >= 1
     assert hit[0].status == "auto"
 
-
 def test_induce_schemas_tier0_threshold_lowered_requires_approval(tmp_path):
-    """4 records -> status pending_user_approval."""
     from iai_mcp.schema import induce_schemas_tier0
 
     store = MemoryStore(path=tmp_path)
     for i in range(4):
         store.insert(_rec(text=f"r{i}", tags=["report", "deadline"]))
     candidates = induce_schemas_tier0(store)
-    # At least one candidate with user-approval status
     match = [c for c in candidates if c.evidence_count == 4]
-    # Confidence 4/10=0.4 is below 0.65 -> NO candidate emitted.
-    # Raise the confidence path: 4 occurrences with small base set should
-    # yield candidates if we scale confidence up. We'll assert no auto-mode
-    # candidate exists at count=4.
     auto_hits = [c for c in candidates if c.status == "auto"]
     assert len(auto_hits) == 0
 
-
 def test_induce_schemas_tier0_discards_below_threshold(tmp_path):
-    """2 records -> no candidate."""
     from iai_mcp.schema import induce_schemas_tier0
 
     store = MemoryStore(path=tmp_path)
@@ -137,9 +102,7 @@ def test_induce_schemas_tier0_discards_below_threshold(tmp_path):
     candidates = induce_schemas_tier0(store)
     assert len(candidates) == 0
 
-
 def test_induce_schemas_tier0_no_llm_call(tmp_path, monkeypatch):
-    """Tier-0 never calls should_call_llm or anthropic."""
     from iai_mcp.schema import induce_schemas_tier0
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -147,15 +110,9 @@ def test_induce_schemas_tier0_no_llm_call(tmp_path, monkeypatch):
     for i in range(3):
         store.insert(_rec(text=f"r{i}", tags=["work", "design"]))
     candidates = induce_schemas_tier0(store)
-    # Should not raise regardless of API key.
     assert isinstance(candidates, list)
 
-
-# ---------------------------------------------------------------- Tier-1 falls back
-
-
 def test_induce_schemas_tier1_falls_back_on_guard_block(tmp_path, monkeypatch):
-    """should_call_llm returns False -> tier1 delegates to tier0 + logs llm_health."""
     from iai_mcp.guard import BudgetLedger, RateLimitLedger
     from iai_mcp.schema import induce_schemas_tier1
 
@@ -170,22 +127,14 @@ def test_induce_schemas_tier1_falls_back_on_guard_block(tmp_path, monkeypatch):
         store, budget=budget, rate=rate, llm_enabled=False,
     )
     assert isinstance(candidates, list)
-    # llm_health event should reflect the fallback
     events = query_events(store, kind="llm_health")
-    # Expect at least one schema_induction llm_health event
     matching = [e for e in events if e["data"].get("component") == "schema_induction"]
     assert len(matching) >= 1
 
-
-# ---------------------------------------------------------------- persist schema
-
-
 def test_persist_schema_creates_semantic_record(tmp_path):
-    """persist_schema inserts a semantic-tier record with detail_level=3."""
     from iai_mcp.schema import SchemaCandidate, persist_schema
 
     store = MemoryStore(path=tmp_path)
-    # Seed source evidence records
     ev_recs = [_rec(text=f"ev{i}", tags=["meeting", "notes"]) for i in range(3)]
     for r in ev_recs:
         store.insert(r)
@@ -205,9 +154,7 @@ def test_persist_schema_creates_semantic_record(tmp_path):
     assert schema_rec.detail_level == 3
     assert schema_rec.never_decay is True
 
-
 def test_persist_schema_creates_schema_instance_of_edges(tmp_path):
-    """Each evidence record gets a schema_instance_of edge to the schema record."""
     from iai_mcp.schema import SchemaCandidate, persist_schema
     from iai_mcp.store import EDGES_TABLE
 
@@ -229,12 +176,7 @@ def test_persist_schema_creates_schema_instance_of_edges(tmp_path):
     sio = edges_df[edges_df["edge_type"] == "schema_instance_of"]
     assert len(sio) == 3
 
-
-# ---------------------------------------------------------------- provisional
-
-
 def test_provisional_schemas_for_recall_returns_hint(tmp_path):
-    """High-entropy hits -> provisional schema hints."""
     from iai_mcp.schema import provisional_schemas_for_recall
 
     store = MemoryStore(path=tmp_path)
@@ -242,19 +184,15 @@ def test_provisional_schemas_for_recall_returns_hint(tmp_path):
     for r in recs:
         store.insert(r)
 
-    # Build synthetic hits referencing these records
     class _Hit:
         def __init__(self, rid, score):
             self.record_id = rid
             self.score = score
 
     hits = [_Hit(recs[i].id, 0.3) for i in range(3)]
-    # Entropy of three equal probabilities is ~1.58 bits -> above 0.8
     provisionals = provisional_schemas_for_recall(store, hits, entropy_bits=1.5)
     assert isinstance(provisionals, list)
-    # Return at least one (tag pattern cohesive)
     assert any(p.get("kind") == "provisional_schema" for p in provisionals)
-
 
 def test_provisional_schemas_below_entropy_empty(tmp_path):
     from iai_mcp.schema import provisional_schemas_for_recall
@@ -262,12 +200,7 @@ def test_provisional_schemas_below_entropy_empty(tmp_path):
     store = MemoryStore(path=tmp_path)
     assert provisional_schemas_for_recall(store, [], entropy_bits=0.5) == []
 
-
-# ---------------------------------------------------------------- integration
-
-
 def test_autistic_threshold_stricter_than_nt():
-    """auto-induct threshold 5/0.85 is stricter than typical NT 2/0.65."""
     from iai_mcp.schema import (
         AUTO_INDUCT_COOCCURRENCE,
         AUTO_INDUCT_CONFIDENCE,
@@ -275,7 +208,6 @@ def test_autistic_threshold_stricter_than_nt():
         USER_APPROVAL_CONFIDENCE,
     )
 
-    # Explicit autism-aware limits
     assert AUTO_INDUCT_COOCCURRENCE >= 5
     assert AUTO_INDUCT_CONFIDENCE >= 0.85
     assert USER_APPROVAL_COOCCURRENCE == 3

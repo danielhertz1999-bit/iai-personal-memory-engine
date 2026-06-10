@@ -1,37 +1,4 @@
 #!/usr/bin/env python3
-"""Embedder construction and encode cost measurement.
-
-Measures four things using the real Rust native embedder (bge-small-en-v1.5):
-
-  1. COLD-disk first construction — best-effort; macOS page cache cannot be
-     cleanly evicted without sudo purge (which this script does NOT do). The
-     first subprocess sample is labeled 'cold_attempt' but the model is likely
-     already cached. The documented cold figure (~8 s) is reported for reference.
-
-  2. WARM-cache fresh-process construction + first-encode — Embedder() called
-     in a fresh Python subprocess 5 times with the model already in the OS page
-     cache. Each subprocess times Embedder() construction only (inner timer),
-     then times the FIRST embed() call separately — this is the number that
-     reveals whether weights are loaded lazily on first forward pass (common in
-     Candle/safetensors) vs. fully at construction. Both are reported.
-
-  3. Warm per-encode latency — after construction + first-encode, embed(text)
-     run 50 additional times inside the same subprocess. Median + p95 reported
-     over these fully-warm samples (no warmup-discard needed; construction and
-     first-encode already warmed the model).
-
-  4. Standalone RSS — two measurements in one fresh subprocess: RSS before any
-     encode (construction-only RSS) and RSS after the first encode (serving-
-     footprint RSS). On macOS ru_maxrss is BYTES; converted to MB (÷ 1048576).
-
-Design: pure measurement — no store open, no daemon touch, no ~/.iai-mcp
-mutation. Subprocesses run SEQUENTIALLY (one at a time).
-
-Usage:
-    source.venv/bin/activate
-    python bench/embed_warm_cost.py
-    python bench/embed_warm_cost.py --n-warm 5 --n-encode 50 --out bench/embed_warm_cost.json
-"""
 from __future__ import annotations
 
 import argparse
@@ -50,12 +17,7 @@ if _SRC_PATH not in sys.path:
 
 REPO = Path(__file__).resolve().parent.parent
 
-# ---------------------------------------------------------------------------
-# Inner subprocess payloads (executed via -c)
-# ---------------------------------------------------------------------------
 
-# Payload A: time Embedder() construction, then time the FIRST embed() call
-# separately. Prints key=value lines.
 _PAYLOAD_CONSTRUCT = r"""
 import sys, time
 sys.path.insert(0, {src_path!r})
@@ -78,9 +40,6 @@ print(f"import_plus_construction_ms={{(t_inner_end - t_outer_start) * 1000:.3f}}
 print(f"subprocess_total_ms={{(t_outer_end - t_outer_start) * 1000:.3f}}")
 """
 
-# Payload B: per-encode latency measurement (warm — after construction and one
-# prior encode, which warms any lazy model load). Runs inside one long-lived
-# subprocess; no warmup-discard needed.
 _PAYLOAD_ENCODE = r"""
 import sys, time
 sys.path.insert(0, {src_path!r})
@@ -100,9 +59,6 @@ for _ in range(n_measure):
 print("encode_ms=" + ",".join(f"{{x:.4f}}" for x in samples))
 """
 
-# Payload C: RSS before and after first encode.
-# macOS: ru_maxrss in BYTES; converted to MB (÷ 1048576).
-# Reports both construction-only RSS and post-first-encode RSS.
 _PAYLOAD_RSS = r"""
 import sys, resource
 sys.path.insert(0, {src_path!r})
@@ -125,15 +81,10 @@ print(f"unit_is_bytes={{is_mac}}")
 
 
 def _python() -> str:
-    """Return the Python executable path of the active venv."""
     return sys.executable
 
 
 def _run_subprocess(code: str, label: str) -> tuple[str, float]:
-    """Run a Python -c payload in a fresh subprocess.
-
-    Returns (stdout, wall_time_seconds).
-    """
     t0 = time.monotonic()
     result = subprocess.run(
         [_python(), "-c", code],
@@ -149,7 +100,6 @@ def _run_subprocess(code: str, label: str) -> tuple[str, float]:
 
 
 def _parse_kv(stdout: str) -> dict[str, str]:
-    """Parse key=value lines from subprocess stdout."""
     out: dict[str, str] = {}
     for line in stdout.splitlines():
         if "=" in line:
@@ -159,7 +109,6 @@ def _parse_kv(stdout: str) -> dict[str, str]:
 
 
 def _pct(samples: list[float], p: float) -> float:
-    """Return p-th percentile (0-100) from a list of samples."""
     if not samples:
         return float("nan")
     n = len(samples)
@@ -172,11 +121,6 @@ def _pct(samples: list[float], p: float) -> float:
 
 
 def measure_construction(n_warm: int, src_path: str, text: str) -> dict:
-    """Run n_warm fresh-subprocess Embedder() + first-encode measurements.
-
-    The first sample is labeled 'cold_attempt' (no purge — likely warm cache).
-    Returns dict with per-sample results + stats.
-    """
     payload = _PAYLOAD_CONSTRUCT.format(src_path=src_path, text=text)
     samples_construction_ms: list[float] = []
     samples_first_encode_ms: list[float] = []
@@ -202,7 +146,6 @@ def measure_construction(n_warm: int, src_path: str, text: str) -> dict:
             }
         )
         if i > 0:
-            # exclude cold_attempt from warm stats
             samples_construction_ms.append(construction_ms)
             samples_first_encode_ms.append(first_encode_ms)
             samples_subprocess_wall_ms.append(subprocess_wall_ms)
@@ -235,11 +178,6 @@ def measure_construction(n_warm: int, src_path: str, text: str) -> dict:
 
 
 def measure_encode(n_measure: int, src_path: str, text: str) -> dict:
-    """Run warm per-encode latency measurement inside a single subprocess.
-
-    One prior encode is done before measurement to ensure any lazy model load
-    is complete; n_measure subsequent encodes are timed.
-    """
     payload = _PAYLOAD_ENCODE.format(
         src_path=src_path,
         text=text,
@@ -267,7 +205,6 @@ def measure_encode(n_measure: int, src_path: str, text: str) -> dict:
 
 
 def measure_rss(src_path: str, text: str) -> dict:
-    """Measure RSS before and after first encode in a fresh subprocess."""
     payload = _PAYLOAD_RSS.format(src_path=src_path, text=text)
     print("  Running RSS measurement subprocess...")
     stdout, wall = _run_subprocess(payload, "rss")
@@ -319,22 +256,18 @@ def main() -> None:
     print(f"n_warm={args.n_warm}  n_encode={args.n_encode}")
     print()
 
-    # --- Construction + first-encode ---
     print(f"[1] Construction + first-encode ({args.n_warm} fresh-subprocess samples):")
     construction = measure_construction(args.n_warm, src_path, text)
     print()
 
-    # --- Warm encode ---
     print(f"[2] Warm per-encode latency (inside one subprocess):")
     encode = measure_encode(args.n_encode, src_path, text)
     print()
 
-    # --- RSS ---
     print("[3] Standalone RSS (post-construct and post-first-encode):")
     rss = measure_rss(src_path, text)
     print()
 
-    # --- Summary ---
     cold_note = (
         "NOTE: 'cold_attempt' is NOT a true cold-disk sample — "
         "macOS page cache was NOT purged (no sudo). "

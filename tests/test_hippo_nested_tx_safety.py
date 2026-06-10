@@ -1,18 +1,3 @@
-"""TDD regression tests for nested-transaction safety in Hippo.
-
-Three scenarios:
-  (a) Direct nested call: outer BEGIN open, then call HippoMergeInsert.execute()
-      — must succeed (pre-fix: OperationalError "cannot start a transaction
-      within a transaction").
-  (b) Nested rollback safety: outer BEGIN open, force error inside
-      HippoMergeInsert.execute() — outer transaction must survive (not be
-      corrupted by a partial inner state).
-  (c) Non-nested control: no outer BEGIN — HippoMergeInsert.execute() must
-      still commit cleanly.
-
-All tests use real SQLite tmp files (not in-memory) so the encryption layer
-can operate correctly.
-"""
 from __future__ import annotations
 
 import sqlite3
@@ -26,15 +11,10 @@ import pytest
 from iai_mcp.hippo import HippoDB
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 _EMBED_DIM = 384
 
 
 def _make_db(tmp_path: Path) -> HippoDB:
-    """Open a fresh HippoDB against tmp_path (no ~/.iai-mcp state touched)."""
     store_dir = tmp_path / "hippo"
     store_dir.mkdir(parents=True, exist_ok=True)
     return HippoDB(str(store_dir))
@@ -68,17 +48,7 @@ def _edge_arrow(rows: list[dict]) -> pa.Table:
     )
 
 
-# ---------------------------------------------------------------------------
-# Scenario (a): nested call succeeds under outer transaction
-# ---------------------------------------------------------------------------
-
-
 def test_nested_merge_insert_under_outer_tx_succeeds(tmp_path: Path) -> None:
-    """HippoMergeInsert.execute() must not raise when conn already in a tx.
-
-    Pre-fix: sqlite3.OperationalError "cannot start a transaction within a
-    transaction" was raised at hippo.py.
-    """
     db = _make_db(tmp_path)
     conn = db._conn
     tbl = db.open_table("edges")
@@ -87,22 +57,17 @@ def test_nested_merge_insert_under_outer_tx_succeeds(tmp_path: Path) -> None:
     dst_id = str(uuid.uuid4())
     row = _sample_edge_row(src_id, dst_id)
 
-    # Open an outer transaction manually (simulates the caller already being
-    # in a transaction — exactly the daemon's live state at crash time).
     conn.execute("BEGIN")
     assert conn.in_transaction, "Expected conn to be in transaction after BEGIN"
 
-    # This must NOT raise OperationalError.
     (
         tbl.merge_insert(["src", "dst", "edge_type"])
         .when_matched_update_all()
         .execute(_edge_arrow([row]))
     )
 
-    # Outer transaction still open — caller controls commit.
     conn.execute("COMMIT")
 
-    # Verify the row landed.
     result = conn.execute(
         "SELECT COUNT(*) FROM edges WHERE src=? AND dst=?",
         (src_id, dst_id),
@@ -112,20 +77,9 @@ def test_nested_merge_insert_under_outer_tx_succeeds(tmp_path: Path) -> None:
     db.close()
 
 
-# ---------------------------------------------------------------------------
-# Scenario (b): nested error inside HippoMergeInsert does not corrupt outer tx
-# ---------------------------------------------------------------------------
-
-
 def test_nested_merge_insert_error_does_not_corrupt_outer_tx(
     tmp_path: Path,
 ) -> None:
-    """Outer transaction survives an error raised inside HippoMergeInsert.execute().
-
-    After the inner error:
-    - The outer transaction is still valid (not rolled back).
-    - A subsequent SQL op on the outer transaction succeeds.
-    """
     db = _make_db(tmp_path)
     conn = db._conn
     tbl = db.open_table("edges")
@@ -135,9 +89,7 @@ def test_nested_merge_insert_error_does_not_corrupt_outer_tx(
 
     conn.execute("BEGIN")
 
-    # Pass a row with a deliberately broken schema (missing required columns)
-    # so executemany raises inside _txn — but conn state must remain usable.
-    bad_arrow = pa.table({"src": [src_id]})  # missing dst, edge_type, weight, etc.
+    bad_arrow = pa.table({"src": [src_id]})
     with pytest.raises(Exception):
         (
             tbl.merge_insert(["src", "dst", "edge_type"])
@@ -145,26 +97,14 @@ def test_nested_merge_insert_error_does_not_corrupt_outer_tx(
             .execute(bad_arrow)
         )
 
-    # The outer transaction must still be operable (not in an error state).
-    # Issue a harmless SELECT inside the outer tx.
     count = conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
-    # count is whatever — the important thing is it didn't raise.
     assert isinstance(count, int)
 
     conn.execute("ROLLBACK")
     db.close()
 
 
-# ---------------------------------------------------------------------------
-# Scenario (c): non-nested call commits cleanly (regression control)
-# ---------------------------------------------------------------------------
-
-
 def test_non_nested_merge_insert_commits_cleanly(tmp_path: Path) -> None:
-    """HippoMergeInsert.execute() without any outer tx commits correctly.
-
-    This is the existing happy path — must continue to work after the fix.
-    """
     db = _make_db(tmp_path)
     conn = db._conn
     tbl = db.open_table("edges")
@@ -173,7 +113,6 @@ def test_non_nested_merge_insert_commits_cleanly(tmp_path: Path) -> None:
     dst_id = str(uuid.uuid4())
     row = _sample_edge_row(src_id, dst_id)
 
-    # No outer transaction open.
     assert not conn.in_transaction, "Expected no active transaction before call"
 
     (
@@ -182,10 +121,8 @@ def test_non_nested_merge_insert_commits_cleanly(tmp_path: Path) -> None:
         .execute(_edge_arrow([row]))
     )
 
-    # Transaction should be closed after the call.
     assert not conn.in_transaction, "Expected transaction closed after execute()"
 
-    # Verify row committed.
     result = conn.execute(
         "SELECT COUNT(*) FROM edges WHERE src=? AND dst=?",
         (src_id, dst_id),
@@ -195,13 +132,7 @@ def test_non_nested_merge_insert_commits_cleanly(tmp_path: Path) -> None:
     db.close()
 
 
-# ---------------------------------------------------------------------------
-# Scenario (d): HippoTable.update() is also safe under outer tx
-# ---------------------------------------------------------------------------
-
-
 def test_update_under_outer_tx_succeeds(tmp_path: Path) -> None:
-    """HippoTable.update() must not raise when conn already in a transaction."""
     from datetime import datetime, timezone
 
     db = _make_db(tmp_path)
@@ -212,14 +143,12 @@ def test_update_under_outer_tx_succeeds(tmp_path: Path) -> None:
     dst_id = str(uuid.uuid4())
     row = _sample_edge_row(src_id, dst_id)
 
-    # Insert first (clean, no outer tx).
     (
         tbl.merge_insert(["src", "dst", "edge_type"])
         .when_matched_update_all()
         .execute(_edge_arrow([row]))
     )
 
-    # Now open outer tx and call update() inside it.
     conn.execute("BEGIN")
     tbl.update(
         where=f"src = '{src_id}' AND dst = '{dst_id}' AND edge_type = 'hebbian'",
@@ -236,13 +165,7 @@ def test_update_under_outer_tx_succeeds(tmp_path: Path) -> None:
     db.close()
 
 
-# ---------------------------------------------------------------------------
-# Scenario (e): HippoTable.delete() is also safe under outer tx
-# ---------------------------------------------------------------------------
-
-
 def test_delete_under_outer_tx_succeeds(tmp_path: Path) -> None:
-    """HippoTable.delete() (non-records path) is safe under outer transaction."""
     db = _make_db(tmp_path)
     conn = db._conn
     tbl = db.open_table("edges")

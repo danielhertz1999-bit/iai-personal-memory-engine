@@ -1,13 +1,3 @@
-"""RED scaffolds for REQ-1: direct no-flock recency read, daemon-free, ≤1.5 s.
-
-Validation rows: F6 (latency SLO), partial F2 (no daemon gating), REQ-1.
-
-Both tests are xfail(strict=True) because the direct-read primary path does not
-yet exist. The production code currently routes every recency read through the
-daemon socket; the daemon-down fallback reads only the live deferred-captures
-layer, not the Hippo store. These tests will flip from xfail to pass when the
-direct LOCK_SH recency read path is wired.
-"""
 from __future__ import annotations
 
 import time
@@ -18,16 +8,7 @@ from pathlib import Path
 import pytest
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def _make_user_turn(text: str = "generic user turn"):
-    """Return a minimal episodic role:user MemoryRecord with a zero-vector embedding.
-
-    The zero vector is valid here because REQ-1 recency reads are embedding-
-    independent — recency never calls into hnswlib.
-    """
     from iai_mcp.types import EMBED_DIM, MemoryRecord
 
     return MemoryRecord(
@@ -53,28 +34,9 @@ def _make_user_turn(text: str = "generic user turn"):
     )
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
-
-
 def test_recency_read_daemon_up_steady(hermetic_store: Path) -> None:
-    """F6 / REQ-1: a stored turn is returned by the direct recency path in ≤1.5 s.
-
-    Constructs a HippoDB on the hermetic store, inserts a role:user turn,
-    then asserts the *direct* primary recency path (not the daemon-socket
-    path) returns that turn within the 1.5 s SLO.
-
-    RED: this test imports the not-yet-existing direct_recency_read helper
-    so it fails with ImportError (collection stays green; body xfails).
-    """
-    # Import the future direct recency helper inside the body so a collection-
-    # time ImportError does not prevent other tests from being collected.
     from iai_mcp.store import MemoryStore, flush_record_buffer
 
-    # Import the not-yet-wired direct primary read path. This import will
-    # raise ImportError until the direct path is implemented, which is the
-    # correct RED failure mode.
     from iai_mcp.direct_recency import read_recent_user_turns_direct  # type: ignore[import]
 
     store = MemoryStore(hermetic_store)
@@ -97,19 +59,9 @@ def test_recency_read_daemon_up_steady(hermetic_store: Path) -> None:
 
 
 def test_recency_read_daemon_down_sigkill(hermetic_store: Path, tmp_path: Path) -> None:
-    """F6 / REQ-1: direct recency read survives a missing -shm file (SIGKILL residue).
-
-    A non-clean daemon exit leaves brain.sqlite3-shm absent. Opening with
-    mode=ro raises an error (SQLite READONLY_CANTINIT); the direct path must
-    open with mode=memory (WAL + read-write) so it can create a fresh shm.
-    This test asserts the turn is still returned in ≤1.5 s.
-
-    RED: imports the not-yet-existing direct_recency helper.
-    """
     from iai_mcp.store import MemoryStore, flush_record_buffer
     from iai_mcp.direct_recency import read_recent_user_turns_direct  # type: ignore[import]
 
-    # Seed the store.
     store = MemoryStore(hermetic_store)
     try:
         rec = _make_user_turn("sigkill survival probe text")
@@ -118,7 +70,6 @@ def test_recency_read_daemon_down_sigkill(hermetic_store: Path, tmp_path: Path) 
     finally:
         store.close()
 
-    # Simulate a SIGKILL residue: remove the WAL shm file if it exists.
     db_path = hermetic_store / "hippo" / "brain.sqlite3"
     shm_path = Path(str(db_path) + "-shm")
     if shm_path.exists():

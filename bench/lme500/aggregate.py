@@ -1,28 +1,4 @@
-"""bench/lme500/aggregate.py — post-process LongMemEval-S blind-run output.
-
-Usage:
-    python bench/lme500/aggregate.py \
-        --in bench/lme500/output/lme500-v1.json \
-        --report bench/lme500/output/lme500-v1-report.md \
-        --summary bench/lme500/output/lme500-v1-summary.json
-
-The --in path may be:
-- the final summary JSON ({"per_row": [...],...} schema), or
-- the per-row JSONL checkpoint (one JSON dict per line — works on
-  partial runs while the bench is still in progress).
-
-Computes:
-- Overall R@5 / R@10 per prong (X = retrieve_recall, Y = recall_for_benchmark)
-- Architecture lift Y - X
-- Per-question-type stratification with n per bin (low-power flag if n<30)
-- Bootstrap 95% CI via percentile method (10000 resamples, seed=42)
-- Errors counted as miss for both prongs
-
-Output:
-- Markdown report (--report)
-- Aggregated JSON summary (--summary)
-- One-line stderr summary at end
-"""
+"""Post-process LongMemEval-S blind-run output into report + summary JSON."""
 from __future__ import annotations
 
 import argparse
@@ -36,16 +12,8 @@ from typing import Any
 
 
 def load_rows(input_path: Path) -> list[dict[str, Any]]:
-    """Load per-row dicts from JSON, JSONL, or list-JSON.
-
-    Order of detection:
-    1. JSONL: every non-empty line parses as a dict.
-    2. JSON object with "per_row" key → return per_row.
-    3. JSON list → return as-is.
-    """
     text = input_path.read_text(encoding="utf-8")
     stripped = text.strip()
-    # Try JSON first
     if stripped.startswith("{"):
         try:
             data = json.loads(text)
@@ -58,7 +26,6 @@ def load_rows(input_path: Path) -> list[dict[str, Any]]:
             return list(json.loads(text))
         except json.JSONDecodeError:
             pass
-    # Fall back to JSONL
     rows: list[dict[str, Any]] = []
     for lineno, line in enumerate(text.splitlines(), 1):
         line = line.strip()
@@ -79,10 +46,6 @@ def bootstrap_ci(
     n_resamples: int = 10000,
     seed: int = 42,
 ) -> tuple[float, float, float]:
-    """Bootstrap mean + 95% percentile CI.
-
-    Returns (mean, ci_lo, ci_hi). Empty input → (0, 0, 0).
-    """
     if not values:
         return 0.0, 0.0, 0.0
     rng = random.Random(seed)
@@ -100,14 +63,12 @@ def bootstrap_ci(
 
 
 def _get_prong_value(row: dict[str, Any], prong: str, k: int) -> float:
-    """Extract r_at_<k>_<prong> from a row, treating error rows as 0."""
     if "error" in row and isinstance(row.get("error"), dict):
         return 0.0
     return float(row.get(f"r_at_{k}_{prong}", 0.0))
 
 
 def aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Aggregate overall + per-type bootstrap CIs."""
     if not rows:
         return {"overall": {"n": 0, "n_errors": 0}, "per_type": {}}
 

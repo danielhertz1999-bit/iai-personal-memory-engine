@@ -1,40 +1,3 @@
-"""HIPPEA activation-cascade prefetch.
-
-Daemon receives ``session_open`` over the unix socket and this module
-computes precision-weighted salience over 7 days of ``session_started`` +
-``retrieval_used`` events, selects top-K communities, and pre-warms their
-top-N records into a process-local LRU cache (cachetools.TTLCache) guarded
-by an asyncio.Lock.
-
-Salience formula (Van de Cruys 2014 HIPPEA):
-    f(c)   = count(session_gated_to_community=c, last_7_days) / total_sessions_7d
-    p(c)   = 1 / |communities|
-    PE(c)  = |f(c) - p(c)|
-    sigma2 = Var[day_i_count(c) : i in 7 days]
-    w(c)   = 1 / (sigma2(c) + 0.01)
-    S(c)   = w(c) * PE(c)
-    top_K  = argmax_K S(c)                                  # K=3 default
-    warm   = union over c in top_K of top_N_by_centrality(records(c))
-
-Cold-fallback (<3 sessions in 7-day window): return
-assignment.top_communities[:top_k] without variance weighting.
-
-Off-loop dispatch contract (event-loop safety):
-  - ``fetch_warm_records`` is SYNC and LOCK-FREE: runs the store.get loop
-    on the caller's thread (must be an executor thread, not the event loop).
-  - ``_install_warm`` is ASYNC, on-loop: only touches the in-memory _warm_lru
-    dict under _warm_lru_lock. No store.get, no SQLite, no decrypt.
-  - ``compute_and_fetch_warm`` is SYNC, the off-loop callable the daemon
-    submits to a dedicated bounded executor. Returns (records, top) so the
-    caller can reconstruct the full stats dict without a second store pass.
-  - ``warm_records`` and ``run_cascade`` are thin async wrappers preserved
-    for direct (non-daemon) callers and existing tests.
-
-Invariants (asserted by grep guards in the test suite):
-- Human-first: cascade task yields on shutdown within 5s.
-- Zero API cost: pure local -- no paid-API env var, no Anthropic SDK import.
-- Read-only: no store.insert / store.append_provenance / store.update calls.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -49,10 +12,6 @@ from cachetools import TTLCache
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------- process-local LRU
-
-# Cache constants: maxsize=200, ttl=1800 (30 min).
-# These keep the cache small enough to fit in MCP core RAM headroom.
 _WARM_MAXSIZE = 200
 _WARM_TTL_SECONDS = 1800
 
@@ -62,12 +21,6 @@ _warm_lru_lock = asyncio.Lock()
 
 
 def snapshot_warm_ids() -> list[UUID]:
-    """Lock-free snapshot of warm record IDs.
-
-    CPython GIL makes `list(dict.keys())` atomic for simple types. A concurrent
-    mutator may race and invalidate the iterator -- we catch RuntimeError and
-    return an empty list rather than propagating the rare race.
-    """
     try:
         return list(_warm_lru.keys())
     except RuntimeError:
@@ -75,7 +28,6 @@ def snapshot_warm_ids() -> list[UUID]:
 
 
 def get_warm_record(rid: UUID) -> Any | None:
-    """Return the warmed record or None. Silent on miss / structural error."""
     try:
         return _warm_lru.get(rid)
     except (KeyError, TypeError):
@@ -83,14 +35,6 @@ def get_warm_record(rid: UUID) -> Any | None:
 
 
 def fetch_warm_records(store: Any, ids: Iterable[UUID]) -> list:
-    """Fetch records from the store for the given ids. SYNC, LOCK-FREE.
-
-    Intended to run on an off-loop executor thread. Performs the store.get
-    loop with per-record exception swallowing. Does NOT touch _warm_lru and
-    acquires no asyncio.Lock — safe to call from any thread.
-
-    C6: READ-ONLY (store.get only, no mutations).
-    """
     result = []
     for rid in ids:
         try:
@@ -104,12 +48,6 @@ def fetch_warm_records(store: Any, ids: Iterable[UUID]) -> list:
 
 
 async def _install_warm(records: list) -> int:
-    """Insert already-fetched records into the warm LRU. ASYNC, on-loop.
-
-    Only touches the in-memory _warm_lru dict under _warm_lru_lock.
-    No store.get, no SQLite, no decrypt. The records must already be
-    resolved (i.e. returned by fetch_warm_records).
-    """
     inserted = 0
     async with _warm_lru_lock:
         for rec in records:
@@ -125,18 +63,7 @@ async def _install_warm(records: list) -> int:
 
 
 async def warm_records(record_ids: Iterable[UUID], store: Any) -> int:
-    """Load records into the LRU. Returns count inserted.
-
-    Thin wrapper over fetch_warm_records + _install_warm.
-    Signature and return value are unchanged so direct callers and
-    existing tests are unaffected.
-
-    C6: READ-ONLY against the store -- only store.get is called.
-    """
     return await _install_warm(fetch_warm_records(store, record_ids))
-
-
-# ---------------------------------------------------------- salience formula
 
 
 def compute_salient_communities(
@@ -146,12 +73,6 @@ def compute_salient_communities(
     lookback_days: int = 7,
     top_k: int = 3,
 ) -> list[UUID]:
-    """Return top-K community UUIDs by HIPPEA salience S(c) = w(c) * PE(c).
-
-    Cold fallback (<3 sessions in window): return
-    `assignment.top_communities[:top_k]` with no variance weighting.
-    """
-    # Lazy import to keep the module's surface clean of store-mutating paths.
     from iai_mcp.events import query_events
 
     since = datetime.now(timezone.utc) - timedelta(days=lookback_days)
@@ -162,8 +83,6 @@ def compute_salient_communities(
         sessions = []
 
     if len(sessions) < 3:
-        # Cold fallback (<3 sessions): simplified formula drops the variance term.
-        # Use the existing Leiden top-communities as a reasonable default.
         return list(getattr(assignment, "top_communities", []))[:top_k]
 
     try:
@@ -174,7 +93,6 @@ def compute_salient_communities(
         logger.debug("hippea_retrieval_query_failed", extra={"err": str(exc)[:80]})
         retrievals = []
 
-    # session_id -> dominant community for that session (most retrieved).
     per_session_counter: dict[str, Counter] = defaultdict(Counter)
     for ev in retrievals:
         data = ev.get("data", {}) if isinstance(ev, dict) else {}
@@ -190,9 +108,6 @@ def compute_salient_communities(
 
     total_sessions = len(sessions)
     community_pool: list[UUID] = list(getattr(assignment, "top_communities", []) or [])
-    # Also admit any community seen in retrievals during the window even if it
-    # isn't in top_communities -- the salience formula evaluates all observed
-    # communities, not just the Leiden-top.
     seen: set[str] = set(session_comm.values())
     for cid in (str(c) for c in community_pool):
         seen.add(cid)
@@ -200,10 +115,8 @@ def compute_salient_communities(
         return []
     p = 1.0 / len(seen)
 
-    # f(c) across the window.
     freq: Counter = Counter(session_comm.values())
 
-    # Day-bucketed counts (0 = today, lookback_days-1 = oldest).
     day_buckets: dict[str, list[int]] = defaultdict(lambda: [0] * lookback_days)
     now = datetime.now(timezone.utc)
     for sev in sessions:
@@ -231,7 +144,6 @@ def compute_salient_communities(
         if c:
             day_buckets[c][day_idx] += 1
 
-    # Compute S(c) per community.
     scores: dict[str, float] = {}
     for c in seen:
         f_c = freq.get(c, 0) / max(1, total_sessions)
@@ -245,7 +157,7 @@ def compute_salient_communities(
 
     ranked = sorted(
         scores.items(),
-        key=lambda kv: (-kv[1], kv[0]),  # deterministic tiebreak by cid str
+        key=lambda kv: (-kv[1], kv[0]),
     )
     top: list[UUID] = []
     for cid_str, _ in ranked:
@@ -258,24 +170,9 @@ def compute_salient_communities(
     return top
 
 
-# ---------------------------------------------------------- centrality helper
-
-
 def _top_n_records_by_centrality(
     store: Any, assignment: Any, community_id: UUID, n: int,
 ) -> list[UUID]:
-    """READ-ONLY: return top-N record ids for ``community_id`` by centrality.
-
-    Uses ``assignment.mid_regions[community_id]`` to enumerate member records.
-    Reads all members' centrality values in ONE bulk projection — no per-member
-    full-record fetch and no AES-GCM decrypt.  The projection flows through the
-    connection-lock-guarded ``to_batches`` path and scales as a single bounded
-    scan over the table, not as member-count x per-record-decrypt.
-
-    Sort order: descending centrality, then ascending ``str(id)`` as a
-    deterministic tiebreak.  Members absent from the store are omitted.
-    Missing or NULL centrality is treated as 0.0.
-    """
     mid_regions = getattr(assignment, "mid_regions", {}) or {}
     member_ids = list(mid_regions.get(community_id) or [])
     if not member_ids:
@@ -290,9 +187,6 @@ def _top_n_records_by_centrality(
     return [rid for _c, rid in scored[:n]]
 
 
-# ---------------------------------------------------------- sync core-side helper
-
-
 def compute_core_side_warm_snapshot(
     store: Any,
     assignment: Any,
@@ -301,24 +195,6 @@ def compute_core_side_warm_snapshot(
     per_community: int | None = None,
     max_records: int = 50,
 ) -> list[UUID]:
-    """Synchronous counterpart to :func:`run_cascade`'s compute path.
-
-    The MCP core runs in a different process from the sleep daemon, so
-    the daemon's ``_warm_lru`` is invisible to core --
-    ``snapshot_warm_ids()`` returns ``[]`` in the core on every fresh
-    process boot. This helper lets the core compute its OWN cascade
-    inline (no asyncio dependency) and write the warmed record ids into
-    its own process-local LRU. Duplicates daemon work by design; that
-    is the price of not having shared-memory IPC between the two
-    processes.
-
-    Reuses :func:`compute_salient_communities` (already sync) and
-    :func:`_top_n_records_by_centrality` (sync) -- no new salience
-    formula; only the orchestration that :func:`run_cascade` would do
-    asynchronously.
-
-    READ-ONLY against store; no async I/O; no paid-API import.
-    """
     top = compute_salient_communities(store, assignment, top_k=top_k)
     if not top:
         return []
@@ -332,9 +208,6 @@ def compute_core_side_warm_snapshot(
     return out[:max_records]
 
 
-# ---------------------------------------------------------- off-loop entrypoint
-
-
 def compute_and_fetch_warm(
     store: Any,
     assignment: Any,
@@ -342,25 +215,10 @@ def compute_and_fetch_warm(
     top_k: int = 3,
     per_community: int | None = None,
 ) -> tuple:
-    """Compute community salience, select top-K records, and fetch them. SYNC.
-
-    Intended to run on a dedicated off-loop executor thread. Replicates
-    run_cascade's exact cap math so the warm set is identical.
-
-    Returns ``(records, top)`` where ``records`` is the list of fetched
-    MemoryRecord objects and ``top`` is the list of selected community UUIDs.
-    The caller (daemon or run_cascade wrapper) assembles the stats dict from
-    these values and installs the records via ``_install_warm`` on the loop.
-
-    Does NOT touch _warm_lru. No asyncio.Lock. Safe to call from any thread.
-    C6: READ-ONLY (no store mutations).
-    """
     top = compute_salient_communities(store, assignment, top_k=top_k)
     if not top:
         return [], []
 
-    # Same cap math as run_cascade (NOT compute_core_side_warm_snapshot's
-    # max_records=50 scheme, which uses a different default).
     per_c = per_community or max(1, _WARM_MAXSIZE // max(1, len(top)))
     to_warm: list[UUID] = []
     for cid in top:
@@ -373,9 +231,6 @@ def compute_and_fetch_warm(
     return records, top
 
 
-# ---------------------------------------------------------- public entrypoint
-
-
 async def run_cascade(
     store: Any,
     assignment: Any,
@@ -383,18 +238,6 @@ async def run_cascade(
     top_k: int = 3,
     per_community: int | None = None,
 ) -> dict:
-    """Pre-warm records for top-K salient communities.
-
-    Thin async wrapper over compute_and_fetch_warm + _install_warm.
-    Signature and return value are unchanged so direct callers and
-    existing tests are unaffected.
-
-    Returns a stats dict: {
-        "communities_selected": int,
-        "records_warmed": int,
-        "top_communities": list[str],
-    }
-    """
     recs, top = compute_and_fetch_warm(
         store, assignment, top_k=top_k, per_community=per_community,
     )

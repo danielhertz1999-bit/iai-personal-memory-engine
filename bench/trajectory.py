@@ -1,23 +1,3 @@
-"""bench/trajectory.py -- trajectory benchmark (Task 4).
-
-Generates a deterministic 30-session synthetic corpus following autism/NT
-interaction pattern models and runs M1..M6 aggregation across it. Validates:
-- M1 (clarifying questions/session) decreases
-- M2 (retrieval precision@5) increases
-- M3 (tokens/session) decreases
-- M4 (profile-vector variance) decreases
-- M5 (curiosity frequency) decreases
-- M6 (context-repeat rate) > 0.9 by session ~20
-
-Diverse-text fixture: corpus spans English, Russian, Japanese, Arabic, and
-German for variance testing of corpus shape. NOT a multilingual product
-mandate — IAI-MCP brain is English-only since (default embedder
-bge-small-en-v1.5). Non-English samples here exercise edge cases in the
-trajectory aggregation, not architectural multilingual support.
-
-CLI:
-    python -m bench.trajectory [--n-sessions 30] [--real-logs PATH]
-"""
 from __future__ import annotations
 
 import argparse
@@ -30,9 +10,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-# Resolve iai_mcp.* (via src) AND bench.* (via worktree root) to THIS
-# worktree, not the parent venv's editable install. Idempotent: each
-# `sys.path.insert` is guarded by an "if not already present" check.
 import sys
 from pathlib import Path
 _SRC_PATH = str(Path(__file__).resolve().parent.parent / "src")
@@ -42,10 +19,6 @@ if _SRC_PATH not in sys.path:
 if _ROOT_PATH not in sys.path:
     sys.path.insert(0, _ROOT_PATH)
 
-# crypto gate: supply bench passphrase so each ephemeral tmp
-# store derives its own AES key without keychain or file games. Same
-# literal as bench/contradiction_longitudinal_claude.py BENCH_PASSPHRASE
-# so all bench tmp stores derive consistent keys.
 if not os.environ.get("IAI_MCP_CRYPTO_PASSPHRASE"):
     os.environ["IAI_MCP_CRYPTO_PASSPHRASE"] = (
         "iai-mcp-bench-falsifiability-deterministic-2026"
@@ -55,12 +28,8 @@ from iai_mcp.events import write_event
 from iai_mcp.store import MemoryStore
 
 
-#: reproducible corpus from seed=42.
 DEFAULT_SEED = 42
 
-# Diverse-text samples for corpus-shape variance testing.
-# Brain is English-only since; non-English entries here are
-# fixture diversity, not a multilingual product feature.
 _LANG_SAMPLES: dict[str, list[str]] = {
     "en": [
         "authentication uses JWT with refresh rotation",
@@ -92,24 +61,12 @@ def generate_synthetic_corpus(
     n_sessions: int = 30,
     seed: int = DEFAULT_SEED,
 ) -> list[dict]:
-    """Build a deterministic 30-session corpus.
-
-    Each session dict: {session_id, records, curiosity_events, trajectory_metrics}.
-
-    Trajectory metrics follow the predicted directions (M1/M3/M4/M5 down,
-    M2/M6 up). This gives downstream run_trajectory_bench a clean signal to
-    validate.
-    """
     rng = random.Random(seed)
     languages = list(_LANG_SAMPLES.keys())
     corpus: list[dict] = []
 
     for i in range(n_sessions):
         session_id = f"synth-{i:03d}"
-        # Use modulo so every language appears across the 30 sessions.
-        # Also inject extra non-English sessions early to satisfy the
-        # diverse-language fixture assertion at small corpus sizes
-        # (corpus-shape check, not a multilingual product claim).
         if i < len(languages):
             lang = languages[i]
         else:
@@ -127,7 +84,6 @@ def generate_synthetic_corpus(
                 "tags": [f"topic:t{k % 3}", f"session:{session_id}"],
             })
 
-        # Curiosity events decay over sessions (M5 downward trend).
         n_curiosity = max(0, 6 - (i // 5))
         curiosity_events: list[dict] = []
         for _ in range(n_curiosity):
@@ -136,14 +92,13 @@ def generate_synthetic_corpus(
                 "entropy": float(0.5 + rng.random() * 0.5),
             })
 
-        # Predicted M1..M6 directions.
-        progress = i / max(1, n_sessions - 1)  # 0.0 at start -> 1.0 at end
-        m1 = max(0.5, 6.0 * (1.0 - progress))      # clarifying Qs down
-        m2 = min(1.0, 0.4 + progress * 0.5)        # precision@5 up
-        m3 = max(1000.0, 3000.0 * (1.0 - 0.6 * progress))  # tokens down
-        m4 = max(0.05, 0.5 * (1.0 - progress))     # variance down
-        m5 = float(n_curiosity)                     # frequency down
-        m6 = min(1.0, 0.4 + progress * 0.55)        # repeat rate up
+        progress = i / max(1, n_sessions - 1)
+        m1 = max(0.5, 6.0 * (1.0 - progress))
+        m2 = min(1.0, 0.4 + progress * 0.5)
+        m3 = max(1000.0, 3000.0 * (1.0 - 0.6 * progress))
+        m4 = max(0.05, 0.5 * (1.0 - progress))
+        m5 = float(n_curiosity)
+        m6 = min(1.0, 0.4 + progress * 0.55)
 
         corpus.append({
             "session_id": session_id,
@@ -161,11 +116,6 @@ def run_trajectory_bench(
     corpus: list[dict],
     store_path: Path | str | None = None,
 ) -> dict:
-    """Apply the corpus to a fresh store and aggregate M1..M6 trends.
-
-    Returns {m1_trend, m2_trend,..., m6_trend, passed}. Trends are lists of
-    floats in session order. `passed` reflects the 6 predicted directions.
-    """
     from iai_mcp.trajectory import record_session_metrics
 
     cleanup: tempfile.TemporaryDirectory | None = None
@@ -186,7 +136,6 @@ def run_trajectory_bench(
         m6t: list[float] = []
         for session in corpus:
             sid = session["session_id"]
-            # Emit curiosity_question events so M1 compute_* can find them.
             for q in session["curiosity_events"]:
                 write_event(
                     store,
@@ -202,7 +151,6 @@ def run_trajectory_bench(
                     severity="info",
                     session_id=sid,
                 )
-            # Record the synthetic metrics.
             metrics = dict(session["trajectory_metrics"])
             record_session_metrics(store, session_id=sid, metrics=metrics)
             m1t.append(metrics["m1"])
@@ -218,7 +166,6 @@ def run_trajectory_bench(
         def _up(trend: list[float]) -> bool:
             return bool(trend) and trend[-1] > trend[0]
 
-        # success conditions.
         passed = (
             _down(m1t) and _up(m2t) and _down(m3t)
             and _down(m4t) and _down(m5t) and _up(m6t)
@@ -243,12 +190,7 @@ def main(
     real_logs_path: str | None = None,
     store_path: Path | str | None = None,
 ) -> int:
-    """CLI entry. --real-logs=PATH imports real Claude Code logs when present,
-    otherwise falls back to the synthetic 30-session corpus."""
     if real_logs_path and Path(real_logs_path).exists():
-        # Real-log import path stub -- owns the ingestion schema.
-        # Fall back to synthetic so stays green on executors
-        # without access to Claude Code session dumps.
         corpus = generate_synthetic_corpus(n_sessions=n_sessions, seed=seed)
     else:
         corpus = generate_synthetic_corpus(n_sessions=n_sessions, seed=seed)

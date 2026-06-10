@@ -1,51 +1,3 @@
-"""Cleaned-dataset adapter for LongMemEval-S.
-
-Mempalace's reference benchmark uses ``xiaowu0162/longmemeval-cleaned``
-(commit-pinned via ``huggingface_hub.repo_info()``). This adapter mirrors
-the ``LongMemEvalAdapter`` shape from ``bench/adapters/longmemeval.py`` so
-the orchestrator (`bench/longmemeval_blind.py`) can swap raw vs cleaned
-purely via the ``--dataset {cleaned, raw}`` CLI flag.
-
-## boundary
-
-This adapter is NEW (Task 1). The raw adapter at
-``bench/adapters/longmemeval.py`` is byte-identical to its v2 state — does NOT modify the v1/v2 baseline path. ``--dataset raw`` continues to
-load the raw revision ``2ec2a557f339...``; ``--dataset cleaned`` (the new
-v3 default) routes to this module.
-
-## Pinning discipline
-
-  LOCKED: pin via ``huggingface_hub.repo_info(...)``, NEVER
-hardcode a magic string. The cleaned dataset's HEAD SHA is auto-discovered
-on first instantiation and stored on ``self.revision`` so v3 output JSON
-records exactly which dataset variant was measured. On reproducer runs,
-the caller may pass ``revision=`` to pin a specific historical SHA.
-
-## Schema
-
-The cleaned dataset uses the same row schema as the raw dataset (cleaned
-removed bad evidence; field names preserved). Each row in
-``longmemeval_s_cleaned.json`` is:
-
-    {
-      "question_id": str,
-      "question_type": str,
-      "question": str,
-      "haystack_session_ids": list[str],
-      "haystack_sessions": list[list[{"role","content"}]],
-      "answer_session_ids": list[str],
-    }
-
-The adapter emits one ``LMESession`` per haystack session with the eval
-query attached (matching the raw adapter's emission shape exactly), so
-``main()`` in ``longmemeval_blind.py`` does NOT branch on adapter type —
-it groups LMESessions by ``question_id`` either way.
-
-## Split support
-
-Only ``split="S"`` is supported. The cleaned dataset ships only the S split
-as ``longmemeval_s_cleaned.json``; M and oracle remain in the raw dataset.
-"""
 from __future__ import annotations
 
 import json
@@ -60,15 +12,6 @@ CLEANED_FILENAME: str = "longmemeval_s_cleaned.json"
 
 
 class CleanedLongMemEvalAdapter:
-    """Loads ``xiaowu0162/longmemeval-cleaned`` via ``huggingface_hub``.
-
-    Mirrors ``LongMemEvalAdapter`` so ``bench/longmemeval_blind.py`` can
-    treat them interchangeably (same ``LMESession`` iterator shape).
-
-    Pin discipline: ``revision`` defaults to the current HEAD SHA of the
-    HuggingFace dataset, auto-discovered via ``repo_info()``. Pass an
-    explicit revision to reproduce a historical run.
-    """
 
     DATASET_ID: str = CLEANED_DATASET_ID
 
@@ -87,11 +30,6 @@ class CleanedLongMemEvalAdapter:
         self.revision = info.sha
 
     def load_dataset(self, split: str = "S") -> Iterable[LMESession]:
-        """Stream LMESessions out of ``longmemeval_s_cleaned.json``.
-
-        Only ``split="S"`` is supported (the cleaned dataset ships the S
-        split only). Raises ``ValueError`` on any other split value.
-        """
         if split != "S":
             raise ValueError(
                 f"unknown LongMemEval cleaned split {split!r}; "
@@ -133,10 +71,6 @@ class CleanedLongMemEvalAdapter:
                 row.get("haystack_sessions", [])
             )
 
-            # Emit one LMESession per haystack session; attach the eval
-            # query to every one so the orchestrator can run ONE recall
-            # per row after inserting all haystack turns. Matches the
-            # raw adapter's emission shape exactly.
             for sess_id, turns in zip(
                 haystack_session_ids, haystack_sessions
             ):

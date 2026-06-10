@@ -1,17 +1,3 @@
-"""store.get filter-pushdown fast-path.
-
-Goal: MemoryStore.get(record_id) must use a filter-pushdown
-point read instead of a full-table-scan. At N=1k the old
-path materialised every row + column into a pandas DataFrame and then
-filtered in-process; on the prod schema (embedding 384d + encrypted
-text + many columns) this ate ~34 ms per call -> ~340 ms per recall
-iteration (L0 fast-path + anti-hit lookup = 10 calls/iter).
-
-Invariants preserved:
-  - unknown id -> None
-  - known id   -> MemoryRecord via _from_row (AES-GCM decrypt fidelity)
-  - semantics identical to the full-scan path (byte-identical fields)
-"""
 from __future__ import annotations
 
 import random
@@ -25,23 +11,9 @@ from iai_mcp.types import EMBED_DIM, MemoryRecord
 from tests.test_store import _make
 
 
-# --------------------------------------------------------------------------- #
-# Fixtures                                                                    #
-# --------------------------------------------------------------------------- #
-
 def _seed(
     store: MemoryStore, n: int, *, seed: int = 0, compact: bool = False
 ) -> list[UUID]:
-    """Seed `n` records with deterministic embeddings; return ids in order.
-
-    When ``compact=True``, run ``tbl.optimize()`` after the inserts so the
-    table is in a single-fragment steady state -- this mirrors what the
-    AsyncWriteQueue produces in production and what the
-    bench actually measures after warm-up. Without compaction the
-    per-insert fragments force every scan (filter-pushdown or not) to
-    touch N fragments and perf-fence numbers are dominated by fragment
-    open cost rather than the get-path cost we actually want to measure.
-    """
     from iai_mcp.store import RECORDS_TABLE
 
     rnd = random.Random(seed)
@@ -56,31 +28,18 @@ def _seed(
             tbl = store.db.open_table(RECORDS_TABLE)
             tbl.optimize()
         except Exception:
-            # optimize() requires pylance on some platforms; skipping is
-            # non-fatal -- the test will just see the pre-compaction
-            # numbers, which still exercise the filter-pushdown code path.
             pass
     return ids
 
 
-# --------------------------------------------------------------------------- #
-# G1: unknown id -> None                                                      #
-# --------------------------------------------------------------------------- #
-
 def test_get_unknown_id_returns_none(tmp_path):
-    """G1: unknown uuid returns None (unchanged semantics)."""
     store = MemoryStore(path=tmp_path)
     _seed(store, n=5)
     phantom = uuid4()
     assert store.get(phantom) is None
 
 
-# --------------------------------------------------------------------------- #
-# G2: known id round-trips + literal_surface decrypts                         #
-# --------------------------------------------------------------------------- #
-
 def test_get_known_id_roundtrip_with_decrypt(tmp_path):
-    """G2: known id -> MemoryRecord; encrypted literal_surface decrypts."""
     store = MemoryStore(path=tmp_path)
     verbatim = "пусть каждое слово сохранится точно — G2 fidelity"
     r = _make(text=verbatim)
@@ -91,36 +50,19 @@ def test_get_known_id_roundtrip_with_decrypt(tmp_path):
     assert got.literal_surface == verbatim
 
 
-# --------------------------------------------------------------------------- #
-# no unfiltered to_pandas() on MemoryStore.get                                #
-# --------------------------------------------------------------------------- #
-
 def test_get_does_not_call_unfiltered_to_pandas(tmp_path, monkeypatch):
-    """store.get must NOT call tbl.to_pandas() without a filter.
-
-    Accept either:
-      - tbl.search(...).where(...).to_pandas()
-      - tbl.to_lance().to_table(filter=...).to_pandas()
-    Reject: bare tbl.to_pandas() with no filter kwarg.
-    """
     store = MemoryStore(path=tmp_path)
     _seed(store, n=20)
     target = _seed(store, n=1)[0]
 
-    pytest.importorskip("lancedb")  # legacy LanceDB-backend guard; skip on Hippo-only (clean) installs
+    pytest.importorskip("lancedb")
     import lancedb.table as _lt
 
-    # LanceTable is the concrete subclass of Table that open_table returns
-    # in lancedb 0.30.x; it overrides to_pandas, so we must patch the
-    # concrete class, not the ABC.
     target_cls = _lt.LanceTable
     base_to_pandas = target_cls.to_pandas
     unfiltered_calls: list[dict] = []
 
     def traced(self, *args, **kwargs):
-        # If called on the Table directly (NOT on a search/query builder)
-        # and no filter kwarg is passed, record it — that is the old
-        # full-scan path.
         if "filter" not in kwargs:
             unfiltered_calls.append({"args": args, "kwargs": dict(kwargs)})
         return base_to_pandas(self, *args, **kwargs)
@@ -137,26 +79,7 @@ def test_get_does_not_call_unfiltered_to_pandas(tmp_path, monkeypatch):
     )
 
 
-# --------------------------------------------------------------------------- #
-# G4: perf fence — 100 sequential store.get at N=1k <= 500 ms total           #
-# --------------------------------------------------------------------------- #
-
 def test_get_perf_fence_n1k(tmp_path):
-    """100 sequential store.get at N=1k <= 500 ms total (mean <=5 ms, p95 <=10 ms).
-
-    Uses ``compact=True`` in the fixture so the table is a single-fragment
-    steady state -- this is what the production AsyncWriteQueue
-    produces and what the bench measures after warm-up. Without
-    compaction, per-insert fragments dominate every scan and the numbers
-    measure fragment open cost rather than the get-path cost the plan
-    actually wants to fence.
-
-    Load-robust: this is a tight in-gate fence (mean <=5 ms / p95 <=10 ms), so
-    a busy host can easily push a single 100-call run over. skip_if_loaded()
-    bails on a busy host and best-of-N keeps the run with the MINIMUM p95 (the
-    least-perturbed sample) — wall-clock scheduler noise never produces a false
-    red. The 500/5/10 ms fences themselves are unchanged.
-    """
     from _perf_helpers import best_of_n, skip_if_loaded
 
     skip_if_loaded()
@@ -166,7 +89,6 @@ def test_get_perf_fence_n1k(tmp_path):
     rnd = random.Random(42)
     picks = [rnd.choice(ids) for _ in range(100)]
 
-    # Warmup — pay the first-call table-open / index compile once.
     store.get(picks[0])
 
     def _measure() -> tuple[float, float, float]:
@@ -180,36 +102,21 @@ def test_get_perf_fence_n1k(tmp_path):
         mean = total / len(samples_ms)
         samples_ms.sort()
         p95 = samples_ms[int(0.95 * len(samples_ms)) - 1]
-        # p95 first so best_of_n (min) selects the least-perturbed run; the
-        # total/mean of that same run ride along in the tuple.
         return (p95, total, mean)
 
-    # Same store/ids across runs (steady-state get-path cost); each run is an
-    # independent 100-call timing pass.
     p95, total, mean = best_of_n(_measure, n=3)
 
-    # Perf fence — generous margins so CI noise does not flake.
     assert total <= 500.0, f"N=1k 100x store.get total {total:.1f} ms > 500 ms budget"
     assert mean <= 5.0, f"N=1k store.get mean {mean:.2f} ms > 5 ms/call"
     assert p95 <= 10.0, f"N=1k store.get p95 {p95:.2f} ms > 10 ms/call"
 
 
-# --------------------------------------------------------------------------- #
-# G5: correctness fence vs full-scan baseline                                 #
-# --------------------------------------------------------------------------- #
-
 def test_get_matches_full_scan_baseline(tmp_path):
-    """G5: for 50 random ids at N=1k, store.get output equals _from_row applied
-    to the full-scan row — byte-identical on id, literal_surface, embedding,
-    tags, provenance, language, community_id, centrality, stability,
-    difficulty, last_reviewed, updated_at.
-    """
     store = MemoryStore(path=tmp_path)
     ids = _seed(store, n=1000)
     rnd = random.Random(7)
     picks = [rnd.choice(ids) for _ in range(50)]
 
-    # Build the baseline via the legacy full-scan reconstruction.
     tbl = store.db.open_table("records")
     df = tbl.to_pandas()
 

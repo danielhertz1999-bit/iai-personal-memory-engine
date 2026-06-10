@@ -1,35 +1,3 @@
-"""Quality-floor guard for MCP tool descriptions.
-
-Complements tests/test_tool_description_budget.py — which enforces the
-token CEILING (<=30 cl100k tok per description, <=330 total) — with a
-quality FLOOR + structural completeness check that lifts the Glama Tool
-Definition Quality Score (TDQS) of the iai-mcp server from C 2.42 toward
-B (>=3.0).
-
-The existing budget test stays at 30/330 caps. This file uses the FACT that the budget
-regex captures only the FIRST `description:` after each `name:` — so
-per-param descriptions inside `inputSchema.properties.*` and sibling
-fields (annotations, outputSchema) are INVISIBLE to the budget regex.
-That headroom is what lets us lift Glama's Behavior + Completeness +
-Parameters dimensions without raising the cap.
-
-Five floor tests:
-  1. test_each_description_has_usage_or_behavior_marker
-     — every top-level desc contains >=1 marker from MARKERS.
-  2. test_camouflaging_status_defines_what_is_detected
-     — camouflaging_status desc contains "detect" + one of CAM_KEYWORDS.
-  3. test_every_tool_has_annotations_block
-     — every tool entry has an `annotations: {` block at column 4.
-  4. test_every_tool_has_output_schema_block
-     — every tool entry has an `outputSchema: {` block at column 4.
-  5. test_no_top_level_description_exceeds_30_cl100k_tokens
-     — redundant with the budget test, by design (friendly per-tool
-     failure message lives in THIS file, not the budget test).
-
-This file is self-contained: it re-declares the extractor + brace-balance
-helpers to match the convention seen in test_tool_description_budget.py
-and test_tool_schema_python_parity.py (no cross-test imports).
-"""
 from __future__ import annotations
 
 import re
@@ -38,11 +6,6 @@ from pathlib import Path
 
 TOOLS_TS = Path(__file__).resolve().parent.parent / "mcp-wrapper" / "src" / "tools.ts"
 
-# Permissive Usage-or-Behavior marker set (lowercase substring match).
-# "use" alone is intentionally NOT in the set (would match "useful", "usually").
-# "returns" is included because every description naturally states what it
-# returns — forcing every tool to also say "use when" would burn tokens we
-# cannot spare on memory_capture's 1-tok headroom.
 MARKERS = frozenset({
     "use when",
     "use for",
@@ -54,9 +17,6 @@ MARKERS = frozenset({
     "detect",
 })
 
-# camouflaging_status disambiguation: the term "camouflaging" alone scored
-# 1.7/5 on Glama because it was ambiguous to LLM tool-discovery. The desc
-# must define WHAT is detected — formality/register trajectory.
 CAM_KEYWORDS = frozenset({
     "formality",
     "register",
@@ -66,13 +26,7 @@ CAM_KEYWORDS = frozenset({
 })
 
 
-# -------------------------------------------------------- token counter (tiered)
 def _tok(text: str) -> int:
-    """3-tier fallback counter matching bench/tokens.py shape.
-
-    Mirrors test_tool_description_budget.py:_tok exactly so the redundant
-    30-tok ceiling test in this file reports identical numbers.
-    """
     try:
         import tiktoken
         enc = tiktoken.get_encoding("cl100k_base")
@@ -81,13 +35,7 @@ def _tok(text: str) -> int:
         return max(1, len(text) // 4) if text else 0
 
 
-# ------------------------------------------------------- description extractor
 def _extract_top_level_descriptions() -> list[tuple[str, str]]:
-    """Return list of (tool_name, description) for the 12 tool-level descriptions.
-
-    Copy of test_tool_description_budget.py:_extract_top_level_descriptions
-    (kept inline; no cross-test imports per convention).
-    """
     text = TOOLS_TS.read_text()
     name_re = re.compile(r'name:\s*"([^"]+)"', re.MULTILINE)
     out: list[tuple[str, str]] = []
@@ -115,10 +63,6 @@ def _extract_top_level_descriptions() -> list[tuple[str, str]]:
     return out
 
 
-# ----------------------------------------------------- brace-balance helpers
-# Copied from tests/test_tool_schema_python_parity.py:_balance_braces /
-# _TOOL_NAME_LINE so this file stays self-contained.
-
 _TOOL_NAME_LINE = re.compile(
     r"^  (?P<name>[a-zA-Z_][a-zA-Z0-9_]*):\s*\{",
     re.MULTILINE,
@@ -126,9 +70,6 @@ _TOOL_NAME_LINE = re.compile(
 
 
 def _balance_braces(text: str, start_idx: int) -> int:
-    """Given an index pointing at an opening `{`, return the index of the
-    matching closing `}` (exclusive end + 1 = start of next char).
-    """
     assert text[start_idx] == "{", f"expected '{{' at {start_idx}"
     depth = 0
     i = start_idx
@@ -155,10 +96,6 @@ def _balance_braces(text: str, start_idx: int) -> int:
 
 
 def _enumerate_tool_blocks() -> list[tuple[str, int, int]]:
-    """Return list of (tool_name, open_brace_idx, close_brace_idx_exclusive)
-    for every tool entry inside `toolSchemas`. Uses _balance_braces against
-    the `_TOOL_NAME_LINE` regex (4-space-indent siblings live inside this
-    span)."""
     text = TOOLS_TS.read_text()
     blocks: list[tuple[str, int, int]] = []
     for m in _TOOL_NAME_LINE.finditer(text):
@@ -168,13 +105,7 @@ def _enumerate_tool_blocks() -> list[tuple[str, int, int]]:
     return blocks
 
 
-# ------------------------------------------------------------------- tests
 def test_each_description_has_usage_or_behavior_marker() -> None:
-    """Every top-level description must contain >=1 marker from MARKERS.
-
-    Lifts the Glama Usage Guidelines (2/5 -> 3-4/5) and Behavior
-    dimensions across the 12-tool surface.
-    """
     descs = _extract_top_level_descriptions()
     offenders: list[tuple[str, str]] = []
     for name, desc in descs:
@@ -189,9 +120,6 @@ def test_each_description_has_usage_or_behavior_marker() -> None:
 
 
 def test_camouflaging_status_defines_what_is_detected() -> None:
-    """camouflaging_status was the load-bearing 1.7/5 Glama bottleneck —
-    the term alone is ambiguous to LLM tool-discovery. The desc must say
-    'detect' + one of {formality, register, behavioral, pattern, anomaly}."""
     descs = dict(_extract_top_level_descriptions())
     assert "camouflaging_status" in descs, (
         "camouflaging_status tool not found in toolSchemas"
@@ -209,12 +137,6 @@ def test_camouflaging_status_defines_what_is_detected() -> None:
 
 
 def test_every_tool_has_annotations_block() -> None:
-    """Each of the 13 tool entries must declare a sibling `annotations: {`
-    block at column 4 (4-space indent — same depth as inputSchema).
-
-    Per-tool brace-balance scan: slice each tool's span and check for the
-    `annotations:` substring. Lifts the Glama Behavior dimension out of the 1-2/5 band.
-    """
     text = TOOLS_TS.read_text()
     blocks = _enumerate_tool_blocks()
     assert len(blocks) == 13, (
@@ -235,9 +157,6 @@ def test_every_tool_has_annotations_block() -> None:
 
 
 def test_every_tool_has_output_schema_block() -> None:
-    """Each of the 13 tool entries must declare a sibling `outputSchema: {`
-    block at column 4. Lifts the Glama Completeness dimension out of the 1-3/5 band.
-    """
     text = TOOLS_TS.read_text()
     blocks = _enumerate_tool_blocks()
     assert len(blocks) == 13, (
@@ -258,12 +177,6 @@ def test_every_tool_has_output_schema_block() -> None:
 
 
 def test_no_top_level_description_exceeds_30_cl100k_tokens() -> None:
-    """Redundant with tests/test_tool_description_budget.py:test_each_tool_
-    description_le_30_tokens by design — makes THIS file fail with a clear
-    per-tool message if Task 2 accidentally pushes a description over 30
-    tok, without making the executor scroll to the budget test to figure
-    out which tool broke.
-    """
     descs = _extract_top_level_descriptions()
     offenders: list[tuple[str, int, str]] = []
     for name, desc in descs:

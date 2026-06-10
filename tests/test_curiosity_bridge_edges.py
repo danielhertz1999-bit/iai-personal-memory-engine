@@ -1,11 +1,3 @@
-"""Tests for curiosity_bridge edges (Task 4).
-
-curiosity_bridge edges:
-- Created when fire_curiosity surfaces a mid/high-entropy question.
-- Weight proportional to entropy.
-- Persist in the edges table with edge_type='curiosity_bridge'.
-- adds fading on resolution.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -50,7 +42,6 @@ class _Hit:
 
 
 def test_curiosity_bridge_edge_on_fire(tmp_path):
-    """fire_curiosity creates curiosity_bridge edges from question id -> triggering records."""
     from iai_mcp.curiosity import fire_curiosity
 
     store = MemoryStore(path=tmp_path)
@@ -67,11 +58,10 @@ def test_curiosity_bridge_edge_on_fire(tmp_path):
 
     edges = store.db.open_table(EDGES_TABLE).to_pandas()
     cb = edges[edges["edge_type"] == "curiosity_bridge"]
-    assert len(cb) >= 3  # One per triggering record
+    assert len(cb) >= 3
 
 
 def test_curiosity_bridge_edge_weight_proportional_entropy(tmp_path):
-    """Higher entropy -> larger edge delta."""
     from iai_mcp.curiosity import fire_curiosity
 
     store = MemoryStore(path=tmp_path)
@@ -84,20 +74,15 @@ def test_curiosity_bridge_edge_weight_proportional_entropy(tmp_path):
 
     q1 = fire_curiosity(store, hits_low, "a", 0.75, session_id="s-a", turn=1)
     assert q1 is not None
-    # Different session to bypass cooldown
     q2 = fire_curiosity(store, hits_high, "b", 0.95, session_id="s-b", turn=1)
     assert q2 is not None
 
     edges = store.db.open_table(EDGES_TABLE).to_pandas()
     cb = edges[edges["edge_type"] == "curiosity_bridge"]
-    # Records should have edges with delta reflecting the respective entropies.
-    # Low-entropy-linked edges should have weights below 0.9
-    # High-entropy-linked edges should have weights above 0.9
     assert (cb["weight"] > 0).all()
 
 
 def test_curiosity_bridge_edge_never_decays_in_sweep(tmp_path):
-    """curiosity_bridge edges not decayed by hebbian-only sweep."""
     from datetime import timedelta
 
     from iai_mcp.curiosity import fire_curiosity

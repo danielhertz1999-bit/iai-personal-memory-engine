@@ -1,11 +1,3 @@
-"""Tests for bench/trajectory.py (Task 4).
-
- (benchmark corpus): 30-session synthetic corpus (autism/NT interaction
-pattern models), reproducible from seed=42. Diverse-language fixture:
-corpus includes English + Russian + Japanese + Arabic + German records for
-corpus-shape variance testing — NOT a multilingual product mandate. Brain
-is English-only since (default bge-small-en-v1.5).
-"""
 from __future__ import annotations
 
 import pytest
@@ -28,17 +20,10 @@ def test_synthetic_corpus_deterministic_from_seed():
 
     a = generate_synthetic_corpus(n_sessions=5, seed=42)
     b = generate_synthetic_corpus(n_sessions=5, seed=42)
-    # Session ids are deterministic under fixed seed.
     assert [s["session_id"] for s in a] == [s["session_id"] for s in b]
 
 
 def test_synthetic_corpus_multilingual():
-    """Diverse-language fixture: corpus-shape variance check.
-
-    NOT a product mandate — IAI-MCP brain is English-only since.
-    The presence of non-English samples here exercises corpus-shape
-    variance in trajectory aggregation, nothing more.
-    """
     from bench.trajectory import generate_synthetic_corpus
 
     corpus = generate_synthetic_corpus(n_sessions=30, seed=42)
@@ -46,19 +31,15 @@ def test_synthetic_corpus_multilingual():
     for s in corpus:
         for r in s["records"]:
             languages.add(r.get("language", "en"))
-    # At minimum: en + one non-English (ru/ja/ar/de) must appear.
     assert "en" in languages
     non_english = languages - {"en"}
     assert len(non_english) >= 1, (
         f"diverse-language fixture has only languages={languages}"
     )
-    # Aspirational: at least 4 distinct languages over 30 sessions
-    # (corpus-shape diversity, not a multilingual product claim).
     assert len(languages) >= 4
 
 
 def test_synthetic_corpus_covers_six_metrics():
-    """Each session emits trajectory data for all six metric slots."""
     from bench.trajectory import generate_synthetic_corpus
 
     corpus = generate_synthetic_corpus(n_sessions=30, seed=42)
@@ -89,16 +70,13 @@ def test_trajectory_bench_runs_over_corpus(tmp_path):
 def test_trajectory_bench_main_runs(tmp_path, capsys):
     from bench.trajectory import main
 
-    # Main defaults to synthetic; tiny n_sessions for CI speed.
     code = main(n_sessions=5, store_path=tmp_path)
     assert code in (0, 1)
 
 
 def test_trajectory_bench_accepts_real_logs_flag(tmp_path):
-    """CLI flag accepts --real-logs=path; when absent, falls back to synthetic."""
     from bench.trajectory import main
 
-    # Missing path -> falls back to synthetic.
     code = main(
         n_sessions=3, real_logs_path=None, store_path=tmp_path,
     )

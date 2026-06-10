@@ -1,12 +1,3 @@
-"""RED: TEM bind_structure write-time fill side.
-
-Verifies that store.insert() invokes tem.bind_structure() to populate an
-empty structure_hv, that the result is exactly STRUCTURE_HV_BYTES (1250)
-bytes, and that round-trip insert -> get returns a non-empty hv.
-
-Separate from test_migrate_hd_vector_to_structure_hv.py which covers the
-LanceDB column-rename migration v3 -> v4.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -14,10 +5,8 @@ from uuid import uuid4
 
 import pytest
 
-
 @pytest.fixture(autouse=True)
 def _isolated_keyring(monkeypatch):
-    """In-memory keyring stand-in so encryption-at-rest doesn't hit OS keychain."""
     import keyring as _keyring
 
     fake_store: dict[tuple[str, str], str] = {}
@@ -26,7 +15,6 @@ def _isolated_keyring(monkeypatch):
     monkeypatch.setattr(_keyring, "set_password", lambda s, u, p: fake_store.__setitem__((s, u), p))
     monkeypatch.setattr(_keyring, "delete_password", lambda s, u: fake_store.pop((s, u), None))
     yield fake_store
-
 
 def _make_record(**overrides):
     from iai_mcp.types import EMBED_DIM, MemoryRecord
@@ -55,9 +43,7 @@ def _make_record(**overrides):
     base.update(overrides)
     return MemoryRecord(**base)
 
-
 def test_bind_structure_returns_correct_byte_length(tmp_path, monkeypatch):
-    """tem.bind_structure(record) returns exactly STRUCTURE_HV_BYTES bytes."""
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
     from iai_mcp.tem import bind_structure
     from iai_mcp.types import STRUCTURE_HV_BYTES
@@ -67,28 +53,22 @@ def test_bind_structure_returns_correct_byte_length(tmp_path, monkeypatch):
     assert isinstance(hv, bytes)
     assert len(hv) == STRUCTURE_HV_BYTES
 
-
 def test_insert_fills_empty_structure_hv_via_bind_structure(tmp_path, monkeypatch):
-    """When inserting a record with empty structure_hv, store.insert() lazily
-    computes it via tem.bind_structure (autopoietic write-time fill)."""
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
     from iai_mcp.store import MemoryStore
     from iai_mcp.types import STRUCTURE_HV_BYTES
 
     store = MemoryStore()
     rec = _make_record()
-    assert rec.structure_hv == b""  # pre-insert sentinel
+    assert rec.structure_hv == b""
 
     store.insert(rec)
     fetched = store.get(rec.id)
     assert fetched is not None
-    # After insert, structure_hv must be populated via tem.bind_structure.
     assert fetched.structure_hv != b""
     assert len(fetched.structure_hv) == STRUCTURE_HV_BYTES
 
-
 def test_insert_preserves_explicit_structure_hv(tmp_path, monkeypatch):
-    """If the caller provides a pre-bound structure_hv, store.insert preserves it."""
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
     from iai_mcp.store import MemoryStore
     from iai_mcp.types import STRUCTURE_HV_BYTES
@@ -101,9 +81,7 @@ def test_insert_preserves_explicit_structure_hv(tmp_path, monkeypatch):
     assert fetched is not None
     assert fetched.structure_hv == explicit
 
-
 def test_round_trip_structure_hv_through_lancedb(tmp_path, monkeypatch):
-    """The pa.binary() column round-trips bytes through the store intact."""
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
     from iai_mcp.store import MemoryStore
     from iai_mcp.types import STRUCTURE_HV_BYTES
@@ -115,4 +93,4 @@ def test_round_trip_structure_hv_through_lancedb(tmp_path, monkeypatch):
     assert fetched is not None
     assert isinstance(fetched.structure_hv, bytes)
     assert len(fetched.structure_hv) == STRUCTURE_HV_BYTES
-    assert fetched.literal_surface == "round-trip test"  # byte-for-byte
+    assert fetched.literal_surface == "round-trip test"

@@ -1,48 +1,3 @@
-"""RAM footprint bench. Reports RSS at store size N.
-
-Target: RSS <= 1600 MB at N=1000 on a 16+ GB host.
-
-At N=1000, per-insert self-loop writes to the EDGES table and per-insert
-events to the EVENTS table (`pattern_separation_pass`) dominate RSS.
-Three fixes reduce the peak:
-  - `MemoryStore.insert` no longer re-fires `query_similar` after the
-    pattern-separation gate; the gate's hits are threaded through via
-    `_pattern_separation_gate_with_hits`.
-  - `MemoryStore.boost_edges` uses a predicate-filtered scan on the EDGES
-    table for small batches instead of a full-table `to_pandas()`.
-  - EVENTS, RECORDS and EDGES writes use the buffered
-    `write_event(buffered=True)` path, coalesced into batch flushes on the
-    daemon tick.
-
-Run:
-    PYTHONPATH=src .venv/bin/python -m bench.memory_footprint --n 10000
-
-Expected: JSON output with ``passed: true``, completing within 10 minutes.
-
-JSON output (one line to stdout):
-
-    {
-      "n": int,
-      "rss_mb_peak": float, # platform-adjusted MB
-      "threshold_mb": 1600.0,
-      "passed": bool, # True iff rss_mb_peak <= threshold_mb
-      "platform": "darwin"|"linux"|"win32",
-      "stage_ms": {"seed": float, "graph": float},
-      "seed_n": int, # records that actually made it in
-      "graph_built": bool, # True iff build_runtime_graph finished
-    }
-
-Exit codes:
-    0 if passed, 1 otherwise.
-
-CLI:
-    python -m bench.memory_footprint [--n 1000] [--dim 1024] [--seed 42]
-                                     [--skip-graph]
-
---skip-graph keeps the RSS reading to the seeded-store baseline (no
-NetworkX graph build); useful when the graph build is the timeout cause
-and we want to isolate the store-only overhead.
-"""
 from __future__ import annotations
 
 import argparse
@@ -59,9 +14,6 @@ from uuid import uuid4
 
 import numpy as np
 
-# Resolve iai_mcp.* (via src) AND bench.* (via worktree root) to THIS
-# worktree, not the parent venv's editable install. Idempotent: each
-# `sys.path.insert` is guarded by an "if not already present" check.
 import sys
 from pathlib import Path
 _SRC_PATH = str(Path(__file__).resolve().parent.parent / "src")
@@ -71,10 +23,6 @@ if _SRC_PATH not in sys.path:
 if _ROOT_PATH not in sys.path:
     sys.path.insert(0, _ROOT_PATH)
 
-# crypto gate: supply bench passphrase so each ephemeral tmp
-# store derives its own AES key without keychain or file games. Same
-# literal as bench/contradiction_longitudinal_claude.py BENCH_PASSPHRASE
-# so all bench tmp stores derive consistent keys.
 if not os.environ.get("IAI_MCP_CRYPTO_PASSPHRASE"):
     os.environ["IAI_MCP_CRYPTO_PASSPHRASE"] = (
         "iai-mcp-bench-falsifiability-deterministic-2026"
@@ -83,30 +31,10 @@ if not os.environ.get("IAI_MCP_CRYPTO_PASSPHRASE"):
 from iai_mcp.store import MemoryStore
 from iai_mcp.types import EMBED_DIM, MemoryRecord
 
-# Static threshold baseline kept for back-compat in the bench's JSON
-# output (legacy consumers may still read this key); the actual gate is
-# now N-aware via `_threshold_mb_for_n` below. At N=1000 the original
-# 1600 MB anchor holds; at larger N (10k and up) the threshold scales
-# with log(N) to follow buffered-write RSS growth without false-failing
-# the unhung run that closed -B.
 THRESHOLD_MB = 1600.0
 
 
 def _threshold_mb_for_n(n: int) -> float:
-    """N-aware peak-RSS budget for the bench's self-check.
-
-    Scales with log10(N) above the N=1000 anchor. Bench-side measurement
-    at N=1000 was ~673 MB (post--B buffered writes) and at N=10000
-    was ~1862 MB; the threshold tracks that growth with conservative
-    headroom so the gate stops false-failing at larger N while still
-    flagging genuine regressions.
-
-    Formula: threshold = THRESHOLD_MB * max(1, 1 + 0.25 * log10(N / 1000))
-
-    At N=1000: threshold = 1600 MB (matches the legacy anchor)
-    At N=10000: threshold = 2000 MB (covers the observed 1862 peak)
-    At N=100000: threshold = 2400 MB (linear-in-decades growth)
-    """
     if n <= 1000:
         return THRESHOLD_MB
     import math
@@ -114,26 +42,13 @@ def _threshold_mb_for_n(n: int) -> float:
 
 
 def _rss_mb() -> float:
-    """Peak RSS in MB, platform-adjusted.
-
-    macOS returns ru_maxrss in BYTES.
-    Linux returns ru_maxrss in KB.
-    Windows via resource is not supported; the Windows branch falls back to
-    a best-effort reading and the platform marker in the JSON output lets
-    the report flag it.
-    """
     r = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     if sys.platform == "darwin":
         return float(r) / 1024.0 / 1024.0
-    # Linux reports kilobytes; everything else treated as KB for safety.
     return float(r) / 1024.0
 
 
 def _make_noise_record(i: int, rng: np.random.Generator, dim: int) -> MemoryRecord:
-    """Inline noise-record maker that does not pull in bench/verbatim.
-
-    Keeps this bench self-contained so imports don't drag heavy deps.
-    """
     now = datetime.now(timezone.utc)
     vec = rng.standard_normal(dim)
     norm = float(np.linalg.norm(vec))
@@ -165,14 +80,6 @@ def _make_noise_record(i: int, rng: np.random.Generator, dim: int) -> MemoryReco
 def _seed_store(
     store: MemoryStore, n: int, dim: int, seed: int, *, concurrent: bool = False
 ) -> int:
-    """Seed N synthetic records. Returns the count actually inserted.
-
-    When ``concurrent`` is True, inserts are dispatched from a thread
-    pool so the coalescing AsyncWriteQueue can actually batch records
-    inside its 100 ms window. Sequential blocking inserts (the default
-    sync path) see no coalesce benefit because each insert waits on its
-    own batch flush before the next enqueue even happens.
-    """
     rng = np.random.default_rng(seed)
     records = [_make_noise_record(i, rng, dim=dim) for i in range(n)]
     if not concurrent:
@@ -180,9 +87,6 @@ def _seed_store(
             store.insert(r)
         return len(records)
 
-    # Concurrent path: a thread pool fires enqueues from many threads so
-    # the queue's coalesce window fills. Pool size ~256 is large enough
-    # to always fill a max_batch=128 window on this hardware.
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(max_workers=256) as pool:
         list(pool.map(store.insert, records))
@@ -198,10 +102,6 @@ def run_memory_footprint(
     skip_graph: bool = False,
     async_writes: bool = False,
 ) -> dict:
-    """Seed N records, optionally build the runtime graph, measure RSS.
-
-    Returns a JSON-shaped dict with the keys described in the module docstring.
-    """
     cleanup: tempfile.TemporaryDirectory | None = None
     if store_path is None:
         cleanup = tempfile.TemporaryDirectory(prefix="iai-bench-ops11-")
@@ -210,27 +110,14 @@ def run_memory_footprint(
         path = Path(store_path)
         path.mkdir(parents=True, exist_ok=True)
 
-    # Honour the caller's --dim request by setting IAI_MCP_EMBED_DIM BEFORE
-    # the MemoryStore is constructed. The store reads this env var via
-    # store._resolve_embed_dim() on first table creation (see store.py:115).
-    # Restore the prior value after the run so other benches/tests are not
-    # contaminated.
     prev_embed_dim = os.environ.get("IAI_MCP_EMBED_DIM")
     if dim != EMBED_DIM:
         os.environ["IAI_MCP_EMBED_DIM"] = str(dim)
 
     try:
         store = MemoryStore(path=path)
-        # Match the store's actual embed dim so inserts don't get silently
-        # rejected when the env override was ignored (e.g. existing table
-        # on disk pins a different dim).
         eff_dim = store.embed_dim
 
-        # If --async-writes is set, enable the coalescing
-        # write queue before the seed loop so every store.insert() below
-        # routes through it. The queue is drained + torn down after the
-        # seed completes, keeping the graph build / RSS reading on the
-        # legacy sync path.
         if async_writes:
             import asyncio as _asyncio
 
@@ -256,7 +143,6 @@ def run_memory_footprint(
         graph_built = False
         graph_ms = 0.0
         if not skip_graph:
-            # Lazy import so --skip-graph runs don't pay the NetworkX load.
             from iai_mcp import retrieve
 
             t1 = time.perf_counter()
@@ -264,9 +150,6 @@ def run_memory_footprint(
                 _graph, _assignment, _rc = retrieve.build_runtime_graph(store)
                 graph_built = True
             except Exception:
-                # Graph build can OOM on small hosts; surface that as the
-                # diagnostic rather than crashing the bench. The RSS reading
-                # still reflects peak consumed up to the failure.
                 graph_built = False
             graph_ms = (time.perf_counter() - t1) * 1000.0
 
@@ -290,8 +173,6 @@ def run_memory_footprint(
             "async_writes": bool(async_writes),
         }
     finally:
-        # Restore IAI_MCP_EMBED_DIM so other benches / tests run with the
-        # host default.
         if dim != EMBED_DIM:
             if prev_embed_dim is None:
                 os.environ.pop("IAI_MCP_EMBED_DIM", None)

@@ -1,49 +1,6 @@
 #!/usr/bin/env python3
-"""Personal-fact-drift bench harness (single-user reality).
-
-Measures whether the IAI-MCP retrieval pipeline preserves *one operator's*
-personal facts across N simulated intervening sessions. The ship gate for
- is `Recall@10 >= 0.80` AND `retention_loss_at_10 < 0.10`.
-
- redesign rationale (Round 3 consilium consensus, 4/4 channels):
-the original corpus injected `User-{u}` identifiers and asked
-"what is User-77's favorite color?" — this tests multi-user disambiguation,
-a capability the product never claimed. IAI-MCP is single-user. The
-corrected corpus is first-person phrasing only ("My favorite color is
-Color-7" → "What color do I prefer?") with no user IDs anywhere.
-
-Phase boundary:
-- (token p90 instrument) lives in `src/iai_mcp/`.
-- lives HERE: build the bench, produce a baseline number, decide
-  ship vs iterate at the checkpoint.
-
-Structural pattern mirrors `bench/contradiction_longitudinal_claude.py`
-(isolation gates, multi-seed driver, env metadata) so the two bench
-harnesses share a debugging vocabulary.
-
-Usage:
-    python bench/personal_fact_drift.py \\
-        --scale=smoke \\
-        --store-dir=/tmp/iai-mcp-bench-personal-fact-drift/store \\
-        --seeds 13 42 137 \\
-        --output-dir=bench/results
-
-Exit codes:
-    0 = ship gate passes (recall_at_10 >= 0.80 AND retention_loss_at_10 < 0.10)
-    1 = data-driven miss (gate missed; the JSON tells which threshold)
-    2 = setup error (production-store hit, missing dep, single-seed call, etc.)
-
-Hard isolation guarantees (mirror contradiction_longitudinal_claude.py:22-27):
-- Refuses to run if --store-dir resolves to ~/.iai-mcp (production brain)
-- SleepPipeline gets isolated lifecycle_state_path + event_log dir
-- Never calls memory_capture / memory_contradict / memory_recall MCP tools
-- Daemon coexistence: bench process does not acquire any production lock
-"""
 from __future__ import annotations
 
-# Resolve iai_mcp.* (via src) AND bench.* (via worktree root) to THIS
-# worktree, not the parent venv's editable install. Idempotent: each
-# `sys.path.insert` is guarded by an "if not already present" check.
 import sys
 from pathlib import Path
 _SRC_PATH = str(Path(__file__).resolve().parent.parent / "src")
@@ -67,14 +24,9 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
-# ---------------------------------------------------------------------------
-# Constants (mirror contradiction_longitudinal_claude.py:50-78)
-# ---------------------------------------------------------------------------
 
 PRODUCTION_STORE = Path.home() / ".iai-mcp"
 
-# Bench-only deterministic passphrase. Safe to hardcode — never touches a
-# production store (the setup-gate at _refuse_production_store enforces it).
 BENCH_PASSPHRASE = "iai-mcp-bench-personal-fact-drift-2026"
 
 DEFAULT_STORE_DIR = "/tmp/iai-mcp-bench-personal-fact-drift/store"
@@ -84,46 +36,17 @@ DEFAULT_K = 10
 CANDIDATE_POOL_SIZE = 200
 WARMUP_PASSES = 5
 
-# ship gate (SC #3, redefined by consilium).
-# recall_at_10 >= 0.80 AND retention_loss_at_10 < 0.10.
 SHIP_GATE_RECALL_AT_10 = 0.80
 SHIP_GATE_RETENTION_LOSS_CEILING = 0.10
 
-# SCALE_PRESETS layout: (n_facts, n_probes, n_intervening_sessions, n_chatter_turns)
-# smoke = shape-only, runs in seconds; honest = full-scale run.
-#
-# honest.n_facts is 50 to match the
-# FACT_SPECS list (1:1 fact-to-probe contract). The 19-03 design used
-# 15 templates x ~33 instances = 500 facts, but every instance of a given
-# template shared an identical probe, capping recall@10 at 10/33 ≈ 0.30.
 SCALE_PRESETS = {
-    # name n_facts n_probes n_intervening_sessions n_chatter_turns
     "smoke":    (5,       3,        2,                      10),
     "mvp":      (50,      20,       10,                     100),
     "honest":   (50,      50,       30,                     500),
 }
 
 
-# ---------------------------------------------------------------------------
-# FACT_SPECS — 50 distinct semantic facts
-# ---------------------------------------------------------------------------
-
-# Design constraints:
-# * 50 unique semantic rows, 1:1 with probes.
-# * No `{v}/{u}/{p}` placeholders; every text is hand-written.
-# * First-person phrasing only; no user IDs anywhere.
-# * Each probe starts with a Wh-word and contains `I`, `my`, or `me` as a
-# whitespace-bounded marker (see test_probe_phrasing_is_first_person).
-# * Categories: preference, project, constraint. Roughly 17/17/16 split.
-# * Public-repo-clean: no real branch/repo names, no dev paths, no operator names.
-#
-# Each entry is a dict with keys:
-# text -- the fact as inserted into memory
-# probe -- the unique question that should retrieve THIS fact
-# category -- "preference" | "project" | "constraint"
-
 FACT_SPECS: list[dict[str, str]] = [
-    # --- preference (17) ---
     {"text": "My favorite color is teal.",
      "probe": "What color do I prefer?",
      "category": "preference"},
@@ -176,7 +99,6 @@ FACT_SPECS: list[dict[str, str]] = [
      "probe": "What comfort food do I reach for?",
      "category": "preference"},
 
-    # --- project (17) ---
     {"text": "My current milestone is shipping the alpha release.",
      "probe": "What milestone am I working toward?",
      "category": "project"},
@@ -229,7 +151,6 @@ FACT_SPECS: list[dict[str, str]] = [
      "probe": "How often do I review my documentation?",
      "category": "project"},
 
-    # --- constraint (16) ---
     {"text": "I am allergic to peanuts.",
      "probe": "What am I allergic to?",
      "category": "constraint"},
@@ -280,7 +201,6 @@ FACT_SPECS: list[dict[str, str]] = [
      "category": "constraint"},
 ]
 
-# Generic filler chatter (mirrors contradiction_longitudinal_claude.py:133-154)
 FILLER_SENTENCES: list[str] = [
     "The team meets every Tuesday for sync.",
     "Documentation is hosted internally on the wiki.",
@@ -305,36 +225,19 @@ FILLER_SENTENCES: list[str] = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Data structures
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class PersonalFact:
-    """One synthetic personal fact + its probe (single-user reality).
-
-    `fact_id` is a deterministic diagnostic string; the load-bearing identity
-    is the MemoryRecord.id assigned at insert (see fact_text_to_id mapping).
-    No `user_id` field exists by design — single-user reality forbids it.
-
-    : `expects` carries the full fact text (was `Color-7`-style
-    value token). Ground truth is the full literal_surface, looked up by
-    UUID via fact_text_to_id in run_one_seed. `attribute` mirrors `category`
-    for backward-compatibility with 19-03 tests that grouped by attribute.
-    """
 
     fact_id: str
-    text: str             # the fact as inserted ("My favorite color is teal.")
-    probe: str            # the unique question that should retrieve it
-    expects: str          # the full fact text we expect to see in the hit
-    category: str         # "preference" | "project" | "constraint"
-    attribute: str        # legacy 19-03 grouping key; in 19-04 == category
+    text: str
+    probe: str
+    expects: str
+    category: str
+    attribute: str
 
 
 @dataclass
 class ProbeOutcome:
-    """Per-probe result row written to summary.per_probe."""
 
     probe_id: str
     seed: int
@@ -342,20 +245,14 @@ class ProbeOutcome:
     expects: str
     category: str
     attribute: str
-    recall_at_10_pre: bool             # was expects in top-10 immediately post-ingest?
-    recall_at_10_post: bool            # was expects in top-10 after intervention?
-    top1_pre: str                       # top-1 literal_surface before intervention
-    top1_post: str                      # top-1 literal_surface after intervention
-    top1_changed: bool                  # did the top-1 hit change between snapshot & re-probe?
-
-
-# ---------------------------------------------------------------------------
-# Setup-gate helpers (mirror contradiction_longitudinal_claude.py:219-229)
-# ---------------------------------------------------------------------------
+    recall_at_10_pre: bool
+    recall_at_10_post: bool
+    top1_pre: str
+    top1_post: str
+    top1_changed: bool
 
 
 def _refuse_production_store(store_path: Path) -> None:
-    """Hard rail: bench MUST NOT touch ~/.iai-mcp."""
     resolved_store = store_path.expanduser().resolve()
     resolved_prod = PRODUCTION_STORE.expanduser().resolve()
     if resolved_store == resolved_prod or resolved_prod in resolved_store.parents:
@@ -368,7 +265,6 @@ def _refuse_production_store(store_path: Path) -> None:
 
 
 def _gather_env_metadata(store_dir: Path, seed_list: list[int]) -> dict[str, Any]:
-    """Capture env metadata for the run JSON (mirrors contradiction_longitudinal_claude.py:232-288)."""
     repo_root = Path(__file__).resolve().parent.parent
 
     def _git(cmd: list[str]) -> str:
@@ -416,7 +312,7 @@ def _gather_env_metadata(store_dir: Path, seed_list: list[int]) -> dict[str, Any
         "iai_mcp_git_sha": sha,
         "iai_mcp_git_dirty": dirty,
         "lance_version": _pkg_version("lance"),
-        "lancedb_version": _pkg_version("lancedb"),
+        "hnswlib_version": _pkg_version("hnswlib"),
         "pyarrow_version": _pkg_version("pyarrow"),
         "sentence_transformers_version": _pkg_version("sentence-transformers"),
         "embedder_model": embedder_model,
@@ -426,46 +322,16 @@ def _gather_env_metadata(store_dir: Path, seed_list: list[int]) -> dict[str, Any
     }
 
 
-# ---------------------------------------------------------------------------
-# Corpus generator (single-user reality)
-# ---------------------------------------------------------------------------
-
-
 def generate_fact_corpus(
     seed: int,
     n_facts: int,
     n_probes: int,
 ) -> tuple[list[PersonalFact], list[PersonalFact]]:
-    """Build a single-user fact corpus + probe subset for one seed.
-
-    Returns
-    -------
-    (facts, probes)
-        `facts` is the corpus to ingest (length == min(n_facts, len(FACT_SPECS))).
-        `probes` is a deterministic subset of `facts` to query (length ==
-        min(n_probes, len(facts))). Each probe targets exactly one fact.
-
-    Determinism: identical (facts, probes) for identical seed.
-
-     contract:
-        * No templates. Every fact comes from FACT_SPECS, a hand-written list
-          of 50 semantically distinct rows.
-        * 1:1 probe-to-fact mapping. Each fact's `probe` field is unique.
-        * `expects` carries the full fact text. The retrieval-check in
-          run_one_seed uses fact_text_to_id to look up the expected UUID
-          when the hit comes back.
-    """
     rng = random.Random(seed)
 
-    # Cap n_facts at the size of FACT_SPECS; the bench cannot generate
-    # more distinct facts than the curated list contains.
     if n_facts > len(FACT_SPECS):
         n_facts = len(FACT_SPECS)
 
-    # Deterministic shuffle: pick a permutation of FACT_SPECS, take first
-    # n_facts. Different seeds give different subsets at smoke/mvp; at
-    # honest scale (n_facts == len(FACT_SPECS) == 50) the shuffle just
-    # reorders the same 50 facts.
     indices = list(range(len(FACT_SPECS)))
     rng.shuffle(indices)
     picked = [FACT_SPECS[i] for i in indices[:n_facts]]
@@ -478,12 +344,11 @@ def generate_fact_corpus(
             fact_id=fact_id,
             text=spec["text"],
             probe=spec["probe"],
-            expects=spec["text"],          # full text == ground truth surface
+            expects=spec["text"],
             category=category,
-            attribute=category,            # 19-04: attribute == category
+            attribute=category,
         ))
 
-    # Pick n_probes facts to probe — uniform sample without replacement.
     if n_probes > n_facts:
         n_probes = n_facts
     probe_indices = rng.sample(range(n_facts), n_probes)
@@ -492,19 +357,8 @@ def generate_fact_corpus(
     return facts, probes
 
 
-# ---------------------------------------------------------------------------
-# Filler generation (intervening session chatter)
-# ---------------------------------------------------------------------------
-
-
 def _filler_chatter(rng: random.Random, n_turns: int, session_id: str) -> list[str]:
-    """Generate n_turns of generic filler chatter for an intervening session."""
     return [rng.choice(FILLER_SENTENCES) for _ in range(n_turns)]
-
-
-# ---------------------------------------------------------------------------
-# Per-seed driver
-# ---------------------------------------------------------------------------
 
 
 def run_one_seed(
@@ -517,20 +371,6 @@ def run_one_seed(
     embedder_key: str,
     k_hits: int,
 ) -> tuple[list[ProbeOutcome], dict[str, Any]]:
-    """Drive one (seed) cell of the bench.
-
-    Pipeline (mirrors contradiction_longitudinal_claude.py:484-678):
-      1. INSERT phase — write n_facts synthetic personal-facts to the bench store.
-      2. SNAPSHOT phase — probe each of n_probes cues immediately after ingest;
-         record top-1 + whether the expected value is in top-10.
-      3. INTERVENING phase — for each of n_intervening_sessions:
-            a. insert (n_chatter_turns / n_intervening_sessions) filler records.
-            b. run one SleepPipeline.force_run() cycle to consolidate.
-      4. RE-PROBE phase — re-run the same probes; compare to snapshot.
-
-    Returns (outcomes, gate_dict) where gate_dict tracks per-stage errors.
-    """
-    # Lazy imports — ML stack is ~5s cold-start, keep --help fast.
     from iai_mcp.embed import Embedder
     from iai_mcp.lifecycle_event_log import LifecycleEventLog
     from iai_mcp.pipeline import recall_for_benchmark
@@ -543,11 +383,6 @@ def run_one_seed(
             "reprobe_ok": False, "errors": []}
 
     store_dir_for_seed.mkdir(parents=True, exist_ok=True)
-    # Snapshot env so we restore prior state on every return path. Without
-    # snapshot+restore here, in-process test invocations of main() leak the
-    # bench passphrase + store path into downstream tests' env, which then
-    # derive crypto keys from the leaked passphrase and crash on AES-GCM
-    # decrypt of unrelated rows (cross-test InvalidTag cascade).
     _env_snapshot = {
         "IAI_MCP_STORE": os.environ.get("IAI_MCP_STORE"),
         "IAI_MCP_CRYPTO_PASSPHRASE": os.environ.get("IAI_MCP_CRYPTO_PASSPHRASE"),
@@ -566,13 +401,11 @@ def run_one_seed(
     store = MemoryStore(path=store_dir_for_seed / "hippo")
     embedder = Embedder(model_key=embedder_key)
 
-    # Warm-up to absorb model load cost out of timing.
     _ = embedder.embed_batch(["warm-up " + str(i) for i in range(WARMUP_PASSES)])
 
     facts, probes = generate_fact_corpus(seed, n_facts, n_probes)
-    rng = random.Random(seed * 7919 + 31)  # separate stream for chatter
+    rng = random.Random(seed * 7919 + 31)
 
-    # ----- INSERT phase: ingest the n_facts personal-fact corpus -----
     fact_text_to_id: dict[str, UUID] = {}
     try:
         all_texts = [f.text for f in facts]
@@ -605,13 +438,6 @@ def run_one_seed(
             )
             store.insert(rec)
             fact_text_to_id[fact.text] = rec_id
-        # Post-Hippo: MemoryStore.insert is buffered — rows accumulate
-        # in an in-process buffer that flushes only on size (500) / time (5 s)
-        # thresholds OR on explicit flush_record_buffer(). The fact-ingest loop
-        # finishes in well under a second and stays below the size threshold, so
-        # build_runtime_graph() below would see an empty hippo table. Flush
-        # explicitly here to restore the legacy "all inserts visible to the
-        # next operation" contract.
         flush_record_buffer(store)
         gate["insert_ok"] = True
     except Exception as exc:  # noqa: BLE001 -- record failures, don't crash bench
@@ -619,7 +445,6 @@ def run_one_seed(
         _restore_env()
         return [], gate
 
-    # ----- BUILD GRAPH (needed for recall_for_benchmark) -----
     try:
         graph, assignment, rich_club = build_runtime_graph(store)
     except Exception as exc:  # noqa: BLE001 -- ditto
@@ -627,7 +452,6 @@ def run_one_seed(
         _restore_env()
         return [], gate
 
-    # ----- SNAPSHOT phase: probe each cue immediately after ingest -----
     snapshot_top1: dict[str, str] = {}
     snapshot_r10: dict[str, bool] = {}
     try:
@@ -649,7 +473,6 @@ def run_one_seed(
         _restore_env()
         return [], gate
 
-    # ----- INTERVENING phase: filler chatter + sleep cycles -----
     if n_intervening_sessions > 0:
         try:
             iso_state_path = store_dir_for_seed / "lifecycle_state.json"
@@ -662,15 +485,12 @@ def run_one_seed(
                 event_log=event_log,
                 quarantine_ttl_hours=0.001,
             )
-            # Distribute chatter evenly across sessions; round up so total stays
-            # >= requested even if division is uneven.
             per_session = max(1, (n_chatter_turns + n_intervening_sessions - 1)
                               // max(n_intervening_sessions, 1))
             now2 = datetime.now(timezone.utc)
             for sess_idx in range(n_intervening_sessions):
                 session_id = f"inter-s{seed}-i{sess_idx:03d}"
                 chatter = _filler_chatter(rng, per_session, session_id)
-                # Insert chatter as episodic records (mirror ingest shape).
                 chat_embs = embedder.embed_batch(chatter)
                 for text, emb in zip(chatter, chat_embs):
                     rec = MemoryRecord(
@@ -697,26 +517,14 @@ def run_one_seed(
                         language="en",
                     )
                     store.insert(rec)
-                # One sleep cycle per intervening session.
-                # On failed_step: record + continue. The pipeline resumes from
-                # the next step on the next force_run() call, so partial-failure
-                # sessions still make forward progress and ALL N sessions of
-                # chatter get inserted (the spec demands the post-condition,
-                # not necessarily a clean sleep transcript). Without this, a
-                # session-0 DREAM_DECAY failure would short-circuit the
-                # remaining sessions of chatter ingestion and under-load
-                # the bench by ~97%.
                 result = pipeline.force_run()
                 if result.get("failed_step"):
                     gate["errors"].append(
                         f"sleep_pipeline failed_step={result.get('failed_step')} "
                         f"sess={sess_idx}"
                     )
-            # Post-Hippo flush — same rationale as the ingest-loop flush above.
-            # The chatter-insert loop populates many records that the second
-            # build_runtime_graph() below must see to recompute communities.
             flush_record_buffer(store)
-            gate["intervening_ok"] = True  # all sessions completed (errors accumulated)
+            gate["intervening_ok"] = True
         except Exception as exc:  # noqa: BLE001 -- ditto
             gate["errors"].append(f"intervening: {exc!r}")
             _restore_env()
@@ -724,7 +532,6 @@ def run_one_seed(
     else:
         gate["intervening_ok"] = True
 
-    # ----- Rebuild graph after intervention (new records, new communities) -----
     try:
         graph, assignment, rich_club = build_runtime_graph(store)
     except Exception as exc:  # noqa: BLE001 -- ditto
@@ -732,7 +539,6 @@ def run_one_seed(
         _restore_env()
         return [], gate
 
-    # ----- RE-PROBE phase: re-run each cue against the post-intervention store -----
     outcomes: list[ProbeOutcome] = []
     try:
         for probe in probes:
@@ -769,7 +575,6 @@ def run_one_seed(
 
 
 def _hit_surface(hit: Any) -> str:
-    """Extract the literal_surface from a hit, tolerating dict-shaped hits."""
     if hasattr(hit, "literal_surface"):
         return str(hit.literal_surface)
     if isinstance(hit, dict):
@@ -778,12 +583,6 @@ def _hit_surface(hit: Any) -> str:
 
 
 def _expected_in_top_k(hits: list, expected_text: str, k: int) -> bool:
-    """Return True iff a hit at rank <= k has `literal_surface == expected_text`.
-
-    : full-text equality (was substring match in 19-03). With the
-    1:1 probe-to-fact FACT_SPECS design, each probe targets exactly one
-    distinct sentence, so the correctness check is a strict string equality.
-    """
     for hit in hits[:k]:
         surface = _hit_surface(hit)
         if surface and surface == expected_text:
@@ -792,7 +591,6 @@ def _expected_in_top_k(hits: list, expected_text: str, k: int) -> bool:
 
 
 def _hit_id(hit: Any) -> str:
-    """Extract the record id (UUID) from a hit, tolerating dict-shaped hits."""
     if hasattr(hit, "id"):
         return str(hit.id)
     if isinstance(hit, dict):
@@ -801,29 +599,13 @@ def _hit_id(hit: Any) -> str:
 
 
 def _expected_id_in_top_k(hits: list, expected_id: str, k: int) -> bool:
-    """Return True iff a hit at rank <= k has `id == expected_id` (UUID string match).
-
-     supplementary check: pin ground truth on the inserted record's
-    UUID (set at insert in run_one_seed). The full-text equality check above
-    is the primary, this is a belt-and-braces alternate for diagnostics.
-    """
     for hit in hits[:k]:
         if _hit_id(hit) == expected_id:
             return True
     return False
 
 
-# ---------------------------------------------------------------------------
-# Metric helpers (single-user reality)
-# ---------------------------------------------------------------------------
-
-
 def _compute_recall_at_10(probe_results: list[dict]) -> float:
-    """Fraction of probes where the expected fact appears in top-10 post-intervention.
-
-     rename: `precision_at_10` → `recall_at_10`. Same math
-    (binary top-K hit rate), correct vocabulary.
-    """
     if not probe_results:
         return 0.0
     hit = sum(1 for r in probe_results if r.get("recall_at_10_post"))
@@ -831,13 +613,6 @@ def _compute_recall_at_10(probe_results: list[dict]) -> float:
 
 
 def _compute_retention_loss_at_10(probe_results: list[dict]) -> float:
-    """retention_loss = pre_recall_at_10 - post_recall_at_10.
-
-    GPT-5.5 channel definition (Round 3 consilium): the fraction by which
-    Recall@10 fell after the intervening sessions. Positive ⇒ memory was
-    retained pre but lost post (the bad direction). Negative ⇒ intervention
-    surprisingly helped retrieval (theoretically possible, not expected).
-    """
     if not probe_results:
         return 0.0
     pre_hit = sum(1 for r in probe_results if r.get("recall_at_10_pre"))
@@ -847,7 +622,6 @@ def _compute_retention_loss_at_10(probe_results: list[dict]) -> float:
 
 
 def _outcomes_to_dicts(outcomes: list[ProbeOutcome]) -> list[dict]:
-    """Convert dataclass outcomes to JSON-serializable dicts."""
     out = []
     for o in outcomes:
         out.append({
@@ -866,27 +640,9 @@ def _outcomes_to_dicts(outcomes: list[ProbeOutcome]) -> list[dict]:
     return out
 
 
-# ---------------------------------------------------------------------------
-# Aggregation + output
-# ---------------------------------------------------------------------------
-
-
 def aggregate(
     per_seed_outcomes: dict[int, list[ProbeOutcome]],
 ) -> dict[str, Any]:
-    """Aggregate outcomes across seeds into a summary dict.
-
-    Returns
-    -------
-    {
-      "recall_at_10": <mean across seeds>,
-      "retention_loss_at_10": <mean across seeds>,
-      "per_seed": [{seed, recall_at_10, retention_loss_at_10, n_probes},...],
-      "per_probe": [<flat dicts>,...],
-      "ship_gate": {"recall_at_10_threshold": 0.80,
-                    "retention_loss_ceiling": 0.10, "passed": bool},
-    }
-    """
     per_seed_rows = []
     flat_probes: list[dict] = []
     r10_values: list[float] = []
@@ -934,7 +690,6 @@ def write_outputs(
     env: dict[str, Any],
     duration_seconds: float,
 ) -> Path:
-    """Write the JSON report. Returns the JSON path."""
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / f"personal_fact_drift_{run_id}.json"
     env_with_duration = {**env, "wall_clock_duration_seconds": round(duration_seconds, 2)}
@@ -944,13 +699,7 @@ def write_outputs(
     return json_path
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
-
 def main(argv: list[str] | None = None) -> int:
-    """CLI entry. Returns exit code per docstring (0|1|2)."""
     parser = argparse.ArgumentParser(
         description="Personal-fact-drift bench (VAL-03)",
     )
@@ -962,7 +711,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--k-hits", type=int, default=DEFAULT_K)
     args = parser.parse_args(argv)
 
-    # Setup-gate 1: seeds count
     if len(args.seeds) < 3:
         print(
             f"[setup-gate] REFUSE: need >=3 seeds, got {len(args.seeds)}.",
@@ -970,7 +718,6 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    # Setup-gate 2: production-store refusal
     store_dir = Path(args.store_dir).expanduser().resolve()
     _refuse_production_store(store_dir)
     store_dir.mkdir(parents=True, exist_ok=True)
@@ -1045,11 +792,9 @@ def main(argv: list[str] | None = None) -> int:
           f"gate_passed={summary['ship_gate']['passed']}")
     print(f"[bench] Duration: {duration:.1f}s")
 
-    # Smoke scale is shape-only — return 0 unless there was a hard setup error.
     if args.scale == "smoke":
         return 0
 
-    # Production scales (mvp/honest) honour the ship gate.
     return 0 if summary["ship_gate"]["passed"] else 1
 
 

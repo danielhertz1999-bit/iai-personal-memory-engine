@@ -1,36 +1,3 @@
-"""Camouflaging detector + double_empathy passive invariant.
-
-Canonical location: iai_mcp.lilli.profile.invariants
-Back-compat shim: iai_mcp.camouflaging (re-exports from here)
-
-AUTIST-13 camouflaging_relaxation knob (ecological detector):
-- Observes the user's SURFACE formality over a weekly sliding 5-point window.
-- On a sustained over-formal trajectory, adjusts OUR register (the
-  camouflaging_relaxation profile knob). NEVER pushes the user to change.
-  NEVER models user internal-state (Cook 2021 / Raymaker 2020 — masking
-  is out-of-scope).
-- Chapman 2021 ecological self-regulation framing: the system relaxes ITS OWN
-  response register so the user does not have to match ours.
-
-Detection: sliding 5-point weekly window. Trigger condition:
-linear-regression slope > 0.05/week AND current mean > 0.6. Both must hold.
-
-Event kinds emitted:
-- ``formality_score_weekly`` — weekly aggregate of the user's formality scores.
-- ``camouflaging_detected`` — the detector fired (over-formal trajectory confirmed).
-- ``register_relaxed`` — OUR ``camouflaging_relaxation`` knob was bumped UP (toward
-  informal register in OUR responses).
-
-Knob semantics: ``camouflaging_relaxation`` in [0, 1]. Higher = more relaxed OUR
-register. relax_register INCREMENTS the knob (pushing OUR output toward informal)
-when the user is observed to be over-formal. The user is never modified or nudged.
-
-double_empathy — PASSIVE invariant:
-NEVER translate user phrasing toward NT (neurotypical) style. No translation
-code lives in this module. The invariant is enforced by the absence of such
-code, not by an active runtime check. If such a function ever gets proposed,
-it violates the invariant.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -38,62 +5,27 @@ from datetime import datetime, timezone
 import numpy as np
 
 from iai_mcp.events import query_events, write_event
-# Soft dependency on iai_mcp.formality — pending hard-extraction to
-# lilli/profile/formality.py. Not on the forbidden imports list; allowed to remain.
 from iai_mcp.formality import formality_score
-# Soft dependency on iai_mcp.profile — resolves to the back-compat shim (re-exports from
-# iai_mcp.lilli.profile.knobs). Functionally a no-op boundary violation.
-from iai_mcp.profile import profile_get, profile_set  # noqa: F401 (profile_get retained for callers)
+from iai_mcp.profile import profile_get, profile_set  # noqa: F401  (profile_get retained for callers)
 
 
-# ----------------------------------------------------------------------------
-# double_empathy — PASSIVE invariant.
-#
-# The system NEVER translates user phrasing toward NT (neurotypical) style.
-# This is enforced by the ABSENCE of translation code, not by any active
-# runtime check. There is no function in this module (or in the wider
-# iai_mcp.lilli.profile package) that paraphrases, smooths, or rephrases
-# stored memories toward a more formal register. If such a function ever
-# gets proposed, it violates the invariant.
-#
-# The constant below is a grep-able marker for future tooling that wants
-# to verify the invariant via static analysis.
-# ----------------------------------------------------------------------------
 DOUBLE_EMPATHY_PASSIVE_INVARIANT: bool = True
 
 
-# ------------------------------------------------------------------- constants
-DEFAULT_WINDOW_SIZE: int = 5        # sliding 5-point window
-DEFAULT_CADENCE_DAYS: int = 7       # weekly
-TRIGGER_SLOPE: float = 0.05         # formality delta per week floor
-TRIGGER_MEAN: float = 0.6           # absolute formality floor
-DEFAULT_DELTA: float = 0.1          # knob step per relaxation
+DEFAULT_WINDOW_SIZE: int = 5
+DEFAULT_CADENCE_DAYS: int = 7
+TRIGGER_SLOPE: float = 0.05
+TRIGGER_MEAN: float = 0.6
+DEFAULT_DELTA: float = 0.1
 
 
-# ------------------------------------------------------------------- detector
 def detect_camouflaging(
     store,
     *,
     window_size: int = DEFAULT_WINDOW_SIZE,
     cadence_days: int = DEFAULT_CADENCE_DAYS,
 ) -> dict:
-    """Sliding 5-point weekly window detector.
-
-    Reads the last ``window_size`` ``formality_score_weekly`` events, computes the
-    linear-regression slope (numpy.polyfit deg=1), and the current mean. Detected
-    iff slope > TRIGGER_SLOPE AND mean > TRIGGER_MEAN (both required).
-
-    Args:
-        store: open MemoryStore.
-        window_size: number of weekly points to consider (default 5).
-        cadence_days: cadence label (default 7 = weekly); not used arithmetically
-            but stored in event metadata by callers.
-
-    Returns:
-        {detected: bool, trajectory_slope: float, current_mean: float, sample_count: int}.
-    """
     events = query_events(store, kind="formality_score_weekly", limit=window_size)
-    # Events are newest-first; we want chronological order for slope.
     events = list(reversed(events))
     sample_count = len(events)
 
@@ -122,22 +54,12 @@ def detect_camouflaging(
     }
 
 
-# ------------------------------------------------------------------- relaxer
 def relax_register(store, *, delta: float = DEFAULT_DELTA) -> None:
-    """Bump profile.camouflaging_relaxation by delta (capped at 1.0).
-
-    Writes go through ``profile.profile_set(..., store=store)`` so the existing
-    ``profile_updated`` event also fires alongside ``register_relaxed``. This is the
-    ONE pathway the system uses to relax its own register in response to a
-    detected over-formal user trajectory.
-    """
     import iai_mcp.core as core
 
     current = core._profile_state.get("camouflaging_relaxation", 0.0)
     new_value = min(1.0, max(0.0, current + delta))
 
-    # Only call profile_set if the value actually changes; otherwise profile_set
-    # will silently no-op and NOT emit profile_updated (correct behaviour).
     if new_value != current:
         profile_set(
             "camouflaging_relaxation",
@@ -159,17 +81,9 @@ def relax_register(store, *, delta: float = DEFAULT_DELTA) -> None:
     )
 
 
-# ------------------------------------------------------------------- recorder
 def record_user_formality(store, text: str, lang: str) -> None:
-    """Compute formality on USER surface text and emit a formality_score_weekly event.
-
-    Called on every user turn. Guard: the scorer sees ONLY the
-    user's surface output; no inferred state is computed or persisted.
-    """
     score = formality_score(text, lang)
     now = datetime.now(timezone.utc)
-    # Simple per-turn emit; aggregation is done at query time in detect_camouflaging
-    # (taking last window_size). Per-week aggregation via week_iso tag for audit.
     week_iso = f"{now.year}-W{now.isocalendar()[1]:02d}"
     write_event(
         store,
@@ -185,13 +99,7 @@ def record_user_formality(store, text: str, lang: str) -> None:
     )
 
 
-# ------------------------------------------------------------------- weekly pass
 def run_weekly_pass(store) -> dict:
-    """Convenience entry: detect_camouflaging; if detected, emit
-    ``camouflaging_detected`` event AND call relax_register.
-
-    Returns the detection result dict (same shape as detect_camouflaging).
-    """
     result = detect_camouflaging(store)
     if result["detected"]:
         write_event(

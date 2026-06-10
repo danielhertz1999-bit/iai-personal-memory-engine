@@ -1,9 +1,3 @@
-"""Surface-feature formality scorer.
-
-Validates the formality scorer against a RU+EN fixture of ~50 formal/informal pairs.
-Privacy guard: the scorer observes ONLY the user's surface text. There is no
-user-internal-state signal anywhere in this test or in the module it tests.
-"""
 from __future__ import annotations
 
 import json
@@ -21,7 +15,6 @@ def _load_fixture():
         return json.load(f)
 
 
-# ------------------------------------------------------------- fixture integrity
 def test_fixture_loads_and_has_enough_pairs():
     pairs = _load_fixture()
     assert len(pairs) >= 45, f"expected ~50 pairs, got {len(pairs)}"
@@ -37,9 +30,7 @@ def test_fixture_shape():
         assert isinstance(p["informal"], str) and p["informal"].strip()
 
 
-# ------------------------------------------------------------- scorer contract
 def test_formality_score_fixture_accuracy_at_least_85_percent():
-    """Formal text must score > informal text on >= 85% of pairs."""
     from iai_mcp.formality import formality_score
 
     pairs = _load_fixture()
@@ -67,21 +58,18 @@ def test_formality_score_en_informal_anchor():
 
 
 def test_formality_score_unknown_lang_returns_neutral_with_warning():
-    """global-product mandate: unknown lang degrades gracefully."""
     from iai_mcp.formality import formality_score
 
     with warnings.catch_warnings(record=True) as w_list:
         warnings.simplefilter("always")
         score = formality_score("some test text", "zz")
     assert score == 0.5
-    # A warning must have been issued.
     assert any("formality_score" in str(w.message).lower() or "zz" in str(w.message) for w in w_list)
 
 
 def test_formality_score_unknown_lang_never_raises():
     from iai_mcp.formality import formality_score
 
-    # Must never raise, regardless of the lang string.
     for bad_lang in ("", "zz", "xx", "de", "fr"):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")

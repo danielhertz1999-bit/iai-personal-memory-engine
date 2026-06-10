@@ -1,10 +1,3 @@
-"""Contract:
-- capture-hooks install: adds SessionStart entry with matcher
-  'startup|resume|clear|compact' wired to iai-mcp-session-recall.sh.
-- Idempotent on re-run (no duplicates).
-- capture-hooks uninstall: removes the SessionStart entry and the script file.
-- capture-hooks status: reports iai-mcp-session-recall.sh alongside Stop hook.
-"""
 from __future__ import annotations
 
 import argparse
@@ -50,14 +43,12 @@ def test_install_adds_sessionstart_entry_idempotent(fake_home):
     cmd = entry["hooks"][0]["command"]
     assert re.search(r"bash .*iai-mcp-session-recall\.sh", cmd), cmd
 
-    # Stop hook also present (existing behavior).
     stop_entries = data.get("hooks", {}).get("Stop", [])
     assert any(
         "iai-mcp-session-capture.sh" in (h.get("command") or "")
         for e in stop_entries for h in (e.get("hooks") or [])
     ), stop_entries
 
-    # Script file copied.
     assert (fake_home / ".claude" / "hooks" / "iai-mcp-session-recall.sh").exists()
 
 
@@ -66,8 +57,6 @@ def test_uninstall_removes_sessionstart_entry_and_script(fake_home):
 
     cli_mod.cmd_capture_hooks_install(argparse.Namespace())
 
-    # Pre-condition (install actually wired SessionStart): otherwise uninstall
-    # cannot prove removal.
     recall_dst = fake_home / ".claude" / "hooks" / "iai-mcp-session-recall.sh"
     assert recall_dst.exists(), "install did not copy recall hook"
     data = json.loads(_settings_path(fake_home).read_text())

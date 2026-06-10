@@ -1,41 +1,7 @@
 #!/usr/bin/env python3
-"""ship-gate analyzer for arousal_budget A/B.
-
-Reads the per-probe CSV emitted by `bench/contradiction_longitudinal_claude.py`
-(with the `arousal_route` + `arousal_cue_hash` columns added in),
-groups by route in {arousal_real, arousal_shadow}, computes per-seed
-Rescue@10, and emits AROUSAL-AB-SUMMARY.{json,md} next to the CSV.
-
-Cloned from `bench/analyze_efe_ab.py` with 6 substitutions:
-  - `efe_real` -> `arousal_real`
-  - `efe_shadow` -> `arousal_shadow`
-  - `efe_skip` -> `arousal_skip`
-  - SHIP_GATE_THRESHOLD: 0.10 -> 0.05 (smaller-effect-size hypothesis)
-  - EFE-AB-SUMMARY -> AROUSAL-AB-SUMMARY (json + md filenames)
-  - REQUIRED_COLS: `route` -> `arousal_route`
-  - ->
-
-Beyond the EFE template, adds a `verdict` field to the summary
-(keep / remove / consilium-resolve) so the executor can drive the 3-branch
-verdict commit logic without recomputing the comparison.
-
-Usage:
-    python bench/analyze_arousal_ab.py <results-dir>
-    python -m bench.analyze_arousal_ab <results-dir>
-
-Exit codes:
-    0 = cross_seed_mean_delta >= +0.05 (ship gate hit; KEEP)
-    1 = cross_seed_mean_delta in (-0.05, +0.05) (CONSILIUM-RESOLVE)
-        OR <= -0.05 (REMOVE)
-    2 = setup error (no CSV / missing column / missing arm)
-"""
 
 from __future__ import annotations
 
-# No `iai_mcp.*` import in this analyzer (pure CSV+JSON; mirrors
-# bench/analyze_efe_ab.py). sys.path shim block intentionally
-# OMITTED — see tests/test_bench_worktree_resolution.py:191 contract:
-# BENCH_SCRIPTS_NO_SHIM scripts MUST NOT carry the shim.
 
 import argparse
 import csv
@@ -53,18 +19,7 @@ REQUIRED_COLS: frozenset[str] = frozenset({
 })
 
 
-# ---------------------------------------------------------------------------
-# Pure-Python core (importable; covered directly by tests)
-# ---------------------------------------------------------------------------
-
-
 def _is_hit_at_k(rank_str: str, k: int = K_RESCUE) -> bool:
-    """Robust hit-at-k decision from a CSV cell value.
-
-    Empty / non-numeric / non-positive / >k -> miss. 1..k -> hit. Matches the
-    bench's own `pipeline_hit_at_k` flag for default K=10 but stays robust if
-    K ever changes downstream.
-    """
     try:
         r = int(rank_str)
     except (TypeError, ValueError):
@@ -76,12 +31,6 @@ def compute_per_route_rescue_at_k(
     rows: Iterable[dict[str, str]],
     k: int = K_RESCUE,
 ) -> dict[str, dict[str, float]]:
-    """Return `{seed_str: {route: rescue_at_k}}` for attributable rows.
-
-    Filters out rows where `arousal_route not in {arousal_real, arousal_shadow}`.
-    Empty arousal_route (legacy CSV) and `arousal_skip` (pipeline.py exception
-    fallback) are both unattributable to a specific arm.
-    """
     attributable = [
         r for r in rows
         if r.get("arousal_route") in ("arousal_real", "arousal_shadow")
@@ -104,22 +53,6 @@ def aggregate_across_seeds(
     per_seed: dict[str, dict[str, float]],
     threshold: float = SHIP_GATE_THRESHOLD,
 ) -> dict:
-    """Reduce per-seed Rescue@10 to a ship-gate verdict.
-
-    Returns:
-        {
-            "per_seed": {seed: {arousal_real_rescue, arousal_shadow_rescue, delta}},
-            "cross_seed_mean_delta": float,
-            "ship_gate_hit": bool,
-            "threshold": float,
-            "verdict": "keep" | "remove" | "consilium-resolve",
-        }
-
-    verdict mapping (three-branch):
-        delta >= +threshold -> "keep" (real wins, ship as default)
-        delta <= -threshold -> "remove" (real loses, mirror EFE ae49662 pattern)
-        else -> "consilium-resolve" (in-band, 4-channel review)
-    """
     per_seed_delta: dict[str, dict[str, float]] = {}
     deltas: list[float] = []
     for seed, by_route in per_seed.items():
@@ -146,11 +79,6 @@ def aggregate_across_seeds(
         "threshold": threshold,
         "verdict": verdict,
     }
-
-
-# ---------------------------------------------------------------------------
-# CLI plumbing
-# ---------------------------------------------------------------------------
 
 
 def _find_newest_csv(results_dir: Path) -> Path:
@@ -264,7 +192,6 @@ def main(argv: list[str] | None = None) -> int:
 
     per_seed = compute_per_route_rescue_at_k(rows)
 
-    # Both-arms gate: at least one seed on each of arousal_real and arousal_shadow.
     all_routes_seen = {
         route for by_route in per_seed.values() for route in by_route
     }

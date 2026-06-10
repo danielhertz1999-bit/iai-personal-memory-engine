@@ -1,9 +1,3 @@
-"""Tests for MCP-05 events_query dispatch (Task 1).
-
-events_query exposes the events table to users with a STRICT whitelist of
-user-visible event kinds. Non-whitelisted kinds (e.g. s5_invariant_update)
-are rejected with an error to prevent identity-kernel leakage.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -16,7 +10,6 @@ from iai_mcp.store import MemoryStore
 
 
 def test_events_query_rejects_non_whitelisted_kind(tmp_path):
-    """Identity-kernel kinds MUST be rejected (threat model)."""
     store = MemoryStore(path=tmp_path)
     write_event(
         store,
@@ -43,7 +36,6 @@ def test_events_query_filters_kind(tmp_path):
 def test_events_query_filters_since(tmp_path):
     store = MemoryStore(path=tmp_path)
     write_event(store, kind="llm_health", data={"component": "test"}, severity="info")
-    # future since -> zero
     future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
     out = dispatch(store, "events_query", {"kind": "llm_health", "since": future})
     assert out["events"] == []
@@ -71,7 +63,6 @@ def test_events_query_default_limit(tmp_path):
     for i in range(150):
         write_event(store, kind="llm_health", data={"i": i}, severity="info")
     out = dispatch(store, "events_query", {"kind": "llm_health"})
-    # default limit = 100
     assert len(out["events"]) == 100
 
 
@@ -89,7 +80,6 @@ def test_events_query_crypto_key_rotated_whitelisted(tmp_path):
 
 
 def test_events_query_ts_serialised_as_iso(tmp_path):
-    """Timestamps are returned as ISO-8601 strings, not pandas Timestamps."""
     store = MemoryStore(path=tmp_path)
     write_event(store, kind="llm_health", data={}, severity="info")
     out = dispatch(store, "events_query", {"kind": "llm_health"})
@@ -102,6 +92,5 @@ def test_events_query_ordered_newest_first(tmp_path):
     for i in range(5):
         write_event(store, kind="llm_health", data={"i": i}, severity="info")
     out = dispatch(store, "events_query", {"kind": "llm_health"})
-    # Newest written last -> should appear first.
     indices = [e["data"].get("i") for e in out["events"]]
     assert indices == sorted(indices, reverse=True)

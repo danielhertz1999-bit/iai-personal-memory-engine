@@ -1,13 +1,3 @@
-"""RED scaffolds for real Python CLI surfaces (cmd_capture / cmd_last / cmd_recall)
-with the daemon DOWN — function-level tests using monkeypatch.
-
-These are the FUNCTION-LEVEL scaffolds: the daemon socket call is forced to fail
-via monkeypatch on `iai_mcp.cli._send_jsonrpc_request`, so the direct store path
-(not yet wired) is exercised. The GENUINE subprocess versions live in
-test_cli_subprocess_daemon_down.py.
-
-All tests are xfail(strict=True) until the corresponding CLI surface wiring lands.
-"""
 from __future__ import annotations
 
 import argparse
@@ -18,17 +8,7 @@ from pathlib import Path
 import pytest
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 def _seed_store_with_drained_turn(store_root: Path, text: str) -> None:
-    """Insert a turn directly into the tmp store (simulating a drained turn).
-
-    A drained turn is in the SQLite store but NOT in.live.jsonl and NOT in
-    the bank — the live-layer fallback in cmd_last cannot see it.
-    """
     import numpy as np
     from iai_mcp.types import EMBED_DIM, MemoryRecord
     from iai_mcp.store import MemoryStore, flush_record_buffer
@@ -65,28 +45,14 @@ def _seed_store_with_drained_turn(store_root: Path, text: str) -> None:
 
 
 def _make_args(**kwargs) -> argparse.Namespace:
-    """Build a minimal argparse.Namespace for cmd_* invocations."""
     return argparse.Namespace(**kwargs)
-
-
-# ---------------------------------------------------------------------------
-# Test 1: cmd_capture — daemon down → writes DIRECT to store
-# ---------------------------------------------------------------------------
 
 
 def test_cmd_capture_daemon_down_writes_direct_to_store(
     hermetic_store: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """cmd_capture with daemon down writes directly to the Hippo store.
-
-    Forces the daemon socket call to return None (dead socket), then invokes
-    cmd_capture and asserts:
-    (1) the command returns 0 (success), not the current hard-fail code 1;
-    (2) the captured turn is present in the tmp Hippo store.
-    """
     import iai_mcp.cli as _cli_mod
 
-    # Force daemon socket call to return None (daemon down).
     monkeypatch.setattr(_cli_mod, "_send_jsonrpc_request", lambda *a, **k: None)
 
     from iai_mcp.iai_cli import cmd_capture
@@ -102,7 +68,6 @@ def test_cmd_capture_daemon_down_writes_direct_to_store(
         "the direct-write fallback is not yet wired"
     )
 
-    # Verify the turn landed in the tmp store.
     from iai_mcp.store import MemoryStore
 
     store = MemoryStore(hermetic_store)
@@ -116,21 +81,9 @@ def test_cmd_capture_daemon_down_writes_direct_to_store(
         store.close()
 
 
-# ---------------------------------------------------------------------------
-# Test 2: cmd_last — daemon down → returns STORE-backed drained turns
-# ---------------------------------------------------------------------------
-
-
 def test_cmd_last_daemon_down_returns_store_backed(
     hermetic_store: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    """cmd_last with daemon down returns store-backed drained turns.
-
-    Seeds a drained turn in the tmp store (NOT in.live.jsonl), forces the
-    daemon socket to fail, then invokes cmd_last and asserts:
-    (1) returns 0;
-    (2) stdout contains the drained turn's text (store-backed, not live-only).
-    """
     import iai_mcp.cli as _cli_mod
 
     drained_text = "h2 last drained store turn text"
@@ -155,22 +108,9 @@ def test_cmd_last_daemon_down_returns_store_backed(
     )
 
 
-# ---------------------------------------------------------------------------
-# Test 3: cmd_recall — daemon down → STORE-backed degraded result (not bank)
-# ---------------------------------------------------------------------------
-
-
 def test_cmd_recall_daemon_down_returns_store_backed_degraded(
     hermetic_store: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    """cmd_recall with daemon down returns STORE-backed degraded result (not bank).
-
-    Seeds a drained turn in the tmp store (NOT in the bank), forces the daemon
-    socket to fail AND prevents the bank-recall subprocess from running, then
-    invokes cmd_recall and asserts:
-    (1) returns 0;
-    (2) stdout contains the distinctive turn text (store-backed degraded, not bank).
-    """
     import iai_mcp.cli as _cli_mod
     import iai_mcp.embed as _embed_mod
 
@@ -179,16 +119,11 @@ def test_cmd_recall_daemon_down_returns_store_backed_degraded(
 
     monkeypatch.setattr(_cli_mod, "_send_jsonrpc_request", lambda *a, **k: None)
 
-    # The daemon-independent recall path constructs its own embedder via the
-    # funnel. In this hermetic tmp-HOME env a real construct would miss the
-    # model cache (network/slow). Stub the funnel to RAISE so the path routes
-    # to the bypass-safe store-backed recency degrade — the path this test asserts.
     def _no_construct_funnel(_store):
         raise RuntimeError("hermetic: no embedder construct in this degrade test")
 
     monkeypatch.setattr(_embed_mod, "embedder_for_store", _no_construct_funnel)
 
-    # Prevent bank-recall subprocess from running (it cannot find the drained turn).
     import subprocess as _subprocess_mod
     import iai_mcp.iai_cli as _iai_cli_mod
 

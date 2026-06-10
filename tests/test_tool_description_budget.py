@@ -1,12 +1,3 @@
-"""MCP tool description budget audit.
-
-- Each of the 11 tools in mcp-wrapper/src/tools.ts has description ≤30 raw tok.
-- Total description budget ≤330 raw tok.
-- Exactly 11 tools present.
-
-Reads mcp-wrapper/src/tools.ts as text and regex-extracts the `description:`
-string literals (TypeScript source, not a compiled artefact).
-"""
 from __future__ import annotations
 
 import re
@@ -16,12 +7,7 @@ from pathlib import Path
 TOOLS_TS = Path(__file__).resolve().parent.parent / "mcp-wrapper" / "src" / "tools.ts"
 
 
-# -------------------------------------------------------- token counter (tiered)
 def _tok(text: str) -> int:
-    """3-tier fallback counter matching bench/tokens.py shape.
-
-    Tests are self-contained so they do not import bench.* at collect time.
-    """
     try:
         import tiktoken
         enc = tiktoken.get_encoding("cl100k_base")
@@ -30,7 +16,6 @@ def _tok(text: str) -> int:
         return max(1, len(text) // 4) if text else 0
 
 
-# ------------------------------------------------------- description extractor
 _DESC_BLOCK_RE = re.compile(
     r"description:\s*"
     r'"((?:[^"\\]|\\.)*)"',
@@ -39,32 +24,15 @@ _DESC_BLOCK_RE = re.compile(
 
 
 def _extract_top_level_descriptions() -> list[tuple[str, str]]:
-    """Return list of (tool_name, description) for the 11 tool-level descriptions.
-
-    Strategy: walk the file, find each block starting at `name: "..."` and look
-    ahead for the NEXT `description: "..."` inside the same tool schema block.
-    Ignores description fields nested under inputSchema.properties.* by keying
-    off the tool name that immediately precedes the description.
-    """
     text = TOOLS_TS.read_text()
-    # Find every (name, description) pair where description immediately follows name.
-    # Pattern: name: "<tool>",... description: "<desc>" (description may span
-    # adjacent lines as string concatenation with `+`). Keep conservative.
     name_re = re.compile(r'name:\s*"([^"]+)"', re.MULTILINE)
     out: list[tuple[str, str]] = []
     positions = [(m.group(1), m.end()) for m in name_re.finditer(text)]
     for tool_name, pos in positions:
-        # Only accept the FIRST description after this name up until the next
-        # name-property or end-of-block marker "inputSchema:".
         region = text[pos:]
-        # Cut at next occurrence of `name:` to avoid leaking into next tool.
         next_name = name_re.search(region)
         end = next_name.start() if next_name else len(region)
         region = region[:end]
-        # Look for top-level description (the first description in this region
-        # is the tool's own; subsequent ones under inputSchema.properties are
-        # nested and we skip them). Handle multi-line TS concatenation:
-        # description:\n "part1" +\n "part2",
         concat_re = re.compile(
             r'description:\s*('
             r'"(?:[^"\\]|\\.)*"'
@@ -76,18 +44,14 @@ def _extract_top_level_descriptions() -> list[tuple[str, str]]:
         if not m:
             continue
         literal = m.group(1)
-        # Concatenate parts — extract each quoted string.
         parts = re.findall(r'"((?:[^"\\]|\\.)*)"', literal)
         desc = "".join(parts)
-        # Unescape common TS escapes for accurate token count.
         desc = desc.replace('\\"', '"').replace("\\n", "\n").replace("\\\\", "\\")
         out.append((tool_name, desc))
     return out
 
 
-# ------------------------------------------------------------------- tests
 def test_tool_count_unchanged_at_12():
-    """The hot-surface grew from 11 to 12; episodes_recent raises it to 13."""
     descs = _extract_top_level_descriptions()
     assert len(descs) == 13, (
         f"expected 13 tool descriptions, found {len(descs)}: {[n for n, _ in descs]}"

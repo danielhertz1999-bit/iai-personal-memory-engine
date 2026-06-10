@@ -1,37 +1,4 @@
-"""latency gate: Rust ≤ PyTorch / 2 on single-embed p50 AND p95.
-
-Methodology:
-  - Fixed 50 baseline texts (deterministic — texts.json prefix).
-  - Cold-load timing captured separately (model construction + 1st encode).
-    Cold is informational only — NOT a gate input.
-  - Warm-up phase: discard the first ``n_warmup`` encodes (BLAS/cache settling).
-  - Measurement: run ``n_rounds`` rounds of ``n_samples`` encodes each.
-    Per-round percentiles are computed independently, then the cross-round
-    MEDIAN is the reported number — robust to OS jitter / spurious spikes.
-  - When ``n_rounds == 1``, the per-round percentile IS the reported value
-    (no median over a single value needed; the script supports this so a
-    spawn-context "200-sample sustained" run is equivalent to 4 × 50 rounds
-    statistically while keeping the schema constant).
-
-JSON contract (consumed by 49-VERIFICATION-49b.md + gate() in this script):
-  - p50_ms, p95_ms, p99_ms # the gate inputs
-  - samples_ms # flat list, all rounds, for audit
-  - n_warmup, n_samples_per_round,
-    n_rounds # methodology metadata
-  - cold_ms # informational: 1st-encode incl. cache warm
-  - platform, daemon_running_at_start,
-    generated_at_utc # environment metadata
-
-Subprocess isolation: outer process orchestrates; per-backend inner subprocess
-loads ``iai_mcp.embed.Embedder`` exactly once with the backend env set. This
-prevents ``_MODEL_CACHE`` cross-contamination.
-
-Usage:
-  python bench/embedder_latency.py # both, defaults
-  python bench/embedder_latency.py --backend rust
-  python bench/embedder_latency.py --backend pytorch
-  python bench/embedder_latency.py --n-warmup 20 --n-samples 200 --n-rounds 1
-"""
+"""Latency gate: Rust ≤ PyTorch / 2 on single-embed p50 AND p95."""
 
 from __future__ import annotations
 
@@ -46,8 +13,6 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Worktree-resolution shim: lazy iai_mcp.embed import needs src/ on sys.path
-# when the script is invoked directly from a fresh worktree.
 _SRC_PATH = str(Path(__file__).resolve().parent.parent / "src")
 if _SRC_PATH not in sys.path:
     sys.path.insert(0, _SRC_PATH)
@@ -55,22 +20,15 @@ if _SRC_PATH not in sys.path:
 REPO = Path(__file__).resolve().parent.parent
 BASELINE_TEXTS = REPO / "bench" / "embedder_baseline" / "texts.json"
 
-# Default output paths (overridable via --out-dir for ad-hoc runs).
 PYTORCH_OUT = REPO / "bench" / "embedder_latency.pytorch.json"
 RUST_OUT = REPO / "bench" / "embedder_latency.rust.json"
 
-# Default methodology. CLI overrides supported.
 DEFAULT_N_WARMUP = 5
 DEFAULT_N_SAMPLES = 50
 DEFAULT_N_ROUNDS = 3
 
 
 def daemon_running() -> bool:
-    """Cheap probe: socket file exists AND pid file claims a live process.
-
-    Returns False on any uncertainty — the bench refuses to run when this
-    returns True, so a False-negative is a safety-on default, not silent skip.
-    """
     sock = Path.home() / ".iai-mcp" / ".daemon.sock"
     state = Path.home() / ".iai-mcp" / ".daemon-state.json"
     if not sock.exists() or not state.exists():
@@ -80,7 +38,6 @@ def daemon_running() -> bool:
         pid = doc.get("daemon_pid")
         if pid is None:
             return False
-        # crude pid liveness check (signal 0 = "does the process exist?")
         try:
             os.kill(pid, 0)
             return True
@@ -96,10 +53,8 @@ def measure_in_subprocess(
     n_samples: int,
     n_rounds: int,
 ) -> dict:
-    """Run measurement loop in a fresh subprocess with the backend env set."""
     env = os.environ.copy()
     env["IAI_MCP_EMBED_BACKEND"] = backend
-    # Inner-subprocess sentinel; same script, different entry point.
     env["IAI_MCP_LATENCY_INNER"] = "1"
     env["IAI_MCP_LATENCY_BACKEND"] = backend
     env["IAI_MCP_LATENCY_N_WARMUP"] = str(n_warmup)
@@ -112,9 +67,6 @@ def measure_in_subprocess(
         raise SystemExit(
             f"latency subprocess for backend={backend} exited {result.returncode}"
         )
-    # The inner subprocess prints exactly one JSON blob as the LAST stdout line.
-    # (sentence-transformers prints loader progress on stderr, not stdout,
-    # but we still defensively pick `splitlines()[-1]` rather than parse all.)
     try:
         blob_line = result.stdout.strip().splitlines()[-1]
         return json.loads(blob_line)
@@ -127,7 +79,6 @@ def measure_in_subprocess(
 
 
 def _percentile(sorted_samples: list[float], p: float) -> float:
-    """p in [0, 1]. Nearest-rank percentile on a sorted list."""
     if not sorted_samples:
         raise ValueError("empty samples")
     idx = max(0, min(len(sorted_samples) - 1, int(round(p * len(sorted_samples))) - 1))
@@ -140,43 +91,28 @@ def measure_latency_inner(
     n_samples: int,
     n_rounds: int,
 ) -> dict:
-    """Inner-subprocess entrypoint — actually load the Embedder and time encodes.
-
-    Returns the dict the outer process writes to its JSON output file. The last
-    line of stdout is `json.dumps(...)` of this dict (IPC contract).
-    """
     all_texts = json.loads(BASELINE_TEXTS.read_text())
-    # Deterministic prefix per PLAN. If n_samples > len(all_texts), cycle the
-    # prefix (still deterministic — first 100 baseline texts repeated). The
-    # latency distribution shape is unchanged by repetition since each encode
-    # is independent w.r.t. internal state (no KV-cache in BERT inference).
     if n_samples <= len(all_texts):
         texts = all_texts[:n_samples]
     else:
         texts = [all_texts[i % len(all_texts)] for i in range(n_samples)]
 
-    # Cold-load timing: import + Embedder() construction. Informational only.
     t_cold0 = time.perf_counter_ns()
     from iai_mcp.embed import Embedder
 
     e = Embedder()
-    # Fail-loud if the env routing didn't take.
     if e._backend != backend:
         raise SystemExit(
             f"backend env mismatch: IAI_MCP_EMBED_BACKEND={backend} but "
             f"Embedder._backend={e._backend} — check env propagation"
         )
-    # First encode — captures first-call code-path overhead (BLAS init, allocator
-    # warmup, model lazy materialization on some paths).
     _ = e.embed(texts[0])
     t_cold1 = time.perf_counter_ns()
     cold_ms = (t_cold1 - t_cold0) / 1_000_000.0
 
-    # Warmup — discard.
     for t in texts[: max(0, min(n_warmup, len(texts)))]:
         e.embed(t)
 
-    # Measurement.
     all_samples_ms: list[float] = []
     per_round_p50: list[float] = []
     per_round_p95: list[float] = []
@@ -194,7 +130,6 @@ def measure_latency_inner(
         per_round_p95.append(_percentile(rs, 0.95))
         per_round_p99.append(_percentile(rs, 0.99))
 
-    # Cross-round median = jitter-robust point estimate.
     p50 = statistics.median(per_round_p50)
     p95 = statistics.median(per_round_p95)
     p99 = statistics.median(per_round_p99)
@@ -219,7 +154,6 @@ def measure_latency_inner(
 
 
 def gate(rust: dict, pytorch: dict) -> tuple[bool, list[str], dict]:
-    """Returns (passed, violations, ratios)."""
     violations: list[str] = []
     ratio_p50 = pytorch["p50_ms"] / rust["p50_ms"] if rust["p50_ms"] > 0 else float("inf")
     ratio_p95 = pytorch["p95_ms"] / rust["p95_ms"] if rust["p95_ms"] > 0 else float("inf")
@@ -346,7 +280,6 @@ def main_inner() -> int:
     n_samples = int(os.environ.get("IAI_MCP_LATENCY_N_SAMPLES", DEFAULT_N_SAMPLES))
     n_rounds = int(os.environ.get("IAI_MCP_LATENCY_N_ROUNDS", DEFAULT_N_ROUNDS))
     result = measure_latency_inner(backend, n_warmup, n_samples, n_rounds)
-    # Last stdout line MUST be the JSON blob for IPC parse in main_outer.
     print(json.dumps(result))
     return 0
 

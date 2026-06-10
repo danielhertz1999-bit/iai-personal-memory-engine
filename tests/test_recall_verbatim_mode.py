@@ -1,20 +1,3 @@
-"""Verbatim mode end-to-end tests.
-
-Acceptance:
-- Test seeds 5 verbatim episodic records (one matching the cue) + 10 schema hubs.
-- Verbatim cue: hits[0..2] contains the matching verbatim record.
-- All hits[] are tier='episodic'. No schemas.
-- hints[] empty.
-- patterns_observed[] empty.
-- cue_mode == 'verbatim'.
-- Variance window: across 5 distinct verbatim cues + matching content,
-  matching record at position 0..2 in 100% of runs.
-
-Plus contract tests for the mode kwarg and RecallResponse defaults.
-
-When the cue signals exact recall, return one hit (the bullseye), not many;
-verbatim mode is position-1 strict.
-"""
 from __future__ import annotations
 
 import math
@@ -25,11 +8,6 @@ import numpy as np
 import pytest
 
 from iai_mcp.types import EMBED_DIM, MemoryRecord
-
-
-# --------------------------------------------------------- Fixture machinery
-# Reuses the _ControlledEmbedder + _unit_vector_with_cosine pattern
-# so the rank stage's hand-crafted cosine geometry is deterministic.
 
 
 class _ControlledEmbedder:
@@ -149,9 +127,6 @@ HUB_DEGREE = 8
 HUB_COUNT = 10
 VERBATIM_COUNT = 5
 
-# 5 distinct verbatim cues for the variance gate. Each cue triggers
-# _classify_cue's verbatim branch via the EN word-marker "verbatim",
-# "exact", or "quote" — keeping the dispatch end-to-end honest.
 VERBATIM_CUES = [
     "verbatim recall the migration snapshot text",
     "exact phrase about pre-cleanup snapshot",
@@ -159,8 +134,6 @@ VERBATIM_CUES = [
     "what did the user say on day 17 about literal_preservation",
     'recall the "schema_reinforced event payload" exact wording',
 ]
-# Matching record content per cue (cos≈0.85 to cue under _ControlledEmbedder
-# when we pin both ends to known unit vectors).
 VERBATIM_TEXTS = [
     "verbatim record migration snapshot text content payload one",
     "verbatim record pre-cleanup snapshot phrase content payload two",
@@ -171,39 +144,25 @@ VERBATIM_TEXTS = [
 
 
 def _seed_5_verbatim_plus_10_hubs(tmp_path):
-    """Acceptance fixture: 5 distinct verbatim records (each matching one
-    of VERBATIM_CUES at cos≈0.85) + 10 schema hubs (low cos, high degree).
-
-    Returns:
-        (store, embedder, graph, assignment, rich_club,
-         verbatim_ids_per_cue dict, hub_ids list, cues list)
-    """
     from iai_mcp.retrieve import build_runtime_graph
     from iai_mcp.store import MemoryStore
 
     store = MemoryStore(path=tmp_path / "hippo")
     embedder = _ControlledEmbedder()
 
-    # Pin each cue to a distinct base vector.
     verbatim_ids_per_cue: dict[str, "uuid.UUID"] = {}
     for cue, text in zip(VERBATIM_CUES, VERBATIM_TEXTS):
         cue_vec = embedder.embed(cue)
         embedder.set_fixed(cue, cue_vec)
-        # Verbatim record: cos=0.85 to its cue (high but achievable in test).
         verbatim_vec = _unit_vector_with_cosine(cue_vec, 0.85)
         verbatim_rec = _make_episodic(verbatim_vec, text)
         store.insert(verbatim_rec)
         verbatim_ids_per_cue[cue] = verbatim_rec.id
 
-    # 10 schema hubs. cos to ANY cue is around the orthogonal-noise level
-    # (~0.05 under _ControlledEmbedder), but each hub gets HUB_DEGREE
-    # incoming edges so deg_norm(hub) = 1.0 in a graph where max_deg = 8.
     hub_ids: list = []
     edge_pairs: list = []
     distractor_idx = 0
     for h in range(HUB_COUNT):
-        # Hub vec is just the sha256-derived embedding for its label —
-        # roughly orthogonal to all 5 cues at cos≈0.05.
         hub_vec = embedder.embed(f"schema-hub-{h}-distinct-content")
         hub_rec = _make_schema_hub(
             hub_vec, f"schema hub record {h}", pattern=f"hub:r5:{h}"
@@ -226,14 +185,7 @@ def _seed_5_verbatim_plus_10_hubs(tmp_path):
     )
 
 
-# ============================================================================
-# Contract tests — RecallResponse defaults + signatures
-# ============================================================================
-
-
 def test_recall_response_back_compat_defaults():
-    """RecallResponse constructed without cue_mode/patterns_observed succeeds.
-    Defaults: cue_mode='concept', patterns_observed=[]."""
     from iai_mcp.types import RecallResponse
 
     r = RecallResponse(
@@ -249,12 +201,6 @@ def test_recall_response_back_compat_defaults():
 
 
 def test_recall_for_response_signature_has_mode_kwarg_default_concept():
-    """recall_for_response must accept mode kwarg, default 'concept'.
-
-      entry-point split: the production answer-packing entry
-    point inherits the pre- mode contract (default 'concept') so
-    cue-classifier-driven dispatch keeps working unchanged.
-    """
     import inspect
     from iai_mcp.pipeline import recall_for_response
 
@@ -267,7 +213,6 @@ def test_recall_for_response_signature_has_mode_kwarg_default_concept():
 
 
 def test_retrieve_recall_signature_has_mode_kwarg_default_verbatim():
-    """retrieve.recall must accept mode kwarg, default 'verbatim' per."""
     import inspect
     from iai_mcp.retrieve import recall
 
@@ -279,14 +224,7 @@ def test_retrieve_recall_signature_has_mode_kwarg_default_verbatim():
     )
 
 
-# ============================================================================
-# Acceptance tests — end-to-end verbatim mode
-# ============================================================================
-
-
 def test_verbatim_mode_response_carries_cue_mode_and_empty_patterns(tmp_path):
-    """recall_for_response(mode='verbatim') returns cue_mode='verbatim',
-    patterns_observed=[], hints=[]."""
     from iai_mcp.pipeline import recall_for_response
 
     (store, embedder, graph, assignment, rich_club,
@@ -309,7 +247,6 @@ def test_verbatim_mode_response_carries_cue_mode_and_empty_patterns(tmp_path):
 
 
 def test_verbatim_mode_hits_are_episodic_only(tmp_path):
-    """In verbatim mode, every hit is tier='episodic'. No schemas."""
     from iai_mcp.pipeline import recall_for_response
 
     (store, embedder, graph, assignment, rich_club,
@@ -335,12 +272,6 @@ def test_verbatim_mode_hits_are_episodic_only(tmp_path):
 
 
 def test_verbatim_mode_five_cue_variance_window_position_1_to_3(tmp_path):
-    """Variance gate: across 5 distinct verbatim cues + matching content,
-    the matching record lands at position 0..2 in 100% of runs.
-
-    Position 0..2 = top-3 variance window (EPF + TSH).
-    Acceptance: ALL 5 cues must satisfy.
-    """
     from iai_mcp.pipeline import recall_for_response
 
     (store, embedder, graph, assignment, rich_club,
@@ -366,13 +297,11 @@ def test_verbatim_mode_five_cue_variance_window_position_1_to_3(tmp_path):
             f"All hits: {[(str(h.record_id)[:8], h.score) for h in resp.hits]}"
         )
 
-    # All 5 cues passed the gate.
     assert len(positions) == 5
     print(f"R5 variance positions across 5 cues: {positions}")
 
 
 def test_verbatim_mode_position_1_strict_on_diagnostic_cue(tmp_path):
-    """Strict gate (single cue): the matching verbatim is at hits[0]."""
     from iai_mcp.pipeline import recall_for_response
 
     (store, embedder, graph, assignment, rich_club,
@@ -395,19 +324,12 @@ def test_verbatim_mode_position_1_strict_on_diagnostic_cue(tmp_path):
 
 
 def test_verbatim_mode_overrides_loose_knob_setting(tmp_path):
-    """Verbatim mode zeroes effective_w_degree REGARDLESS of literal_preservation
-    knob value. With profile_state['literal_preservation']='loose', concept-mode
-    would let hubs win — but verbatim mode forces W_DEGREE=0, so the verbatim
-    record still wins position 0..2.
-    """
     from iai_mcp.pipeline import recall_for_response
 
     (store, embedder, graph, assignment, rich_club,
      verbatim_ids_per_cue, hub_ids, cues) = _seed_5_verbatim_plus_10_hubs(tmp_path)
 
     cue = cues[0]
-    # 'loose' (scale 1.5) would let hubs lead under concept mode. Verbatim
-    # mode must override.
     resp = recall_for_response(
         store=store, graph=graph, assignment=assignment,
         rich_club=rich_club, embedder=embedder, cue=cue,
@@ -422,7 +344,6 @@ def test_verbatim_mode_overrides_loose_knob_setting(tmp_path):
         f"verbatim mode must beat loose knob setting; got pos {pos} (must be 0..2). "
         f"hits: {[(str(h.record_id)[:8], h.score) for h in resp.hits]}"
     )
-    # All hits must be episodic — no hubs leaked through despite loose knob.
     hub_id_set = set(hub_ids)
     for h in resp.hits:
         assert h.record_id not in hub_id_set, (
@@ -431,15 +352,11 @@ def test_verbatim_mode_overrides_loose_knob_setting(tmp_path):
 
 
 def test_concept_mode_default_preserves_phase_5_baseline(tmp_path):
-    """recall_for_response WITHOUT mode kwarg defaults to 'concept' —
-    behaviour preserved (no tier filter, full graph path, knob-modulated W_DEGREE).
-    """
     from iai_mcp.pipeline import recall_for_response
 
     (store, embedder, graph, assignment, rich_club,
      verbatim_ids_per_cue, hub_ids, cues) = _seed_5_verbatim_plus_10_hubs(tmp_path)
 
-    # No mode kwarg -> concept default.
     resp_default = recall_for_response(
         store=store, graph=graph, assignment=assignment,
         rich_club=rich_club, embedder=embedder, cue=cues[0],
@@ -450,17 +367,7 @@ def test_concept_mode_default_preserves_phase_5_baseline(tmp_path):
     )
 
 
-# ============================================================================
-# Dispatch end-to-end tests (5-cue variance window via dispatch)
-# ============================================================================
-
-
 def test_dispatch_verbatim_5_cue_variance_window(tmp_path, monkeypatch):
-    """Dispatch end-to-end: for each of 5 distinct verbatim-style cues that
-    match a unique verbatim record, dispatch (verbatim cue -> classifier ->
-    recall_for_response(mode='verbatim')) returns the matching record at position
-    0..2. ALL 5 cues must satisfy the variance gate.
-    """
     from iai_mcp import core
     from iai_mcp import embed as _embed_mod
 
@@ -490,13 +397,11 @@ def test_dispatch_verbatim_5_cue_variance_window(tmp_path, monkeypatch):
             f"cue {cue!r}: dispatch verbatim landed at pos {pos}, must be in 0..2 window"
         )
 
-    # All 5 cues passed the gate via dispatch.
     assert len(positions) == 5
     print(f"R5 dispatch variance positions across 5 cues: {positions}")
 
 
 def test_dispatch_verbatim_position_1_strict_diagnostic_cue(tmp_path, monkeypatch):
-    """Strict gate via dispatch: matching verbatim is at hits[0]."""
     from iai_mcp import core
     from iai_mcp import embed as _embed_mod
 
@@ -520,9 +425,6 @@ def test_dispatch_verbatim_position_1_strict_diagnostic_cue(tmp_path, monkeypatc
 
 
 def test_dispatch_verbatim_overrides_loose_knob_setting(tmp_path, monkeypatch):
-    """Verbatim mode via dispatch overrides loose literal_preservation knob.
-    Mutates iai_mcp.core._profile_state directly between the dispatch call.
-    """
     from iai_mcp import core
     from iai_mcp import embed as _embed_mod
 
@@ -530,7 +432,6 @@ def test_dispatch_verbatim_overrides_loose_knob_setting(tmp_path, monkeypatch):
      verbatim_ids_per_cue, hub_ids, cues) = _seed_5_verbatim_plus_10_hubs(tmp_path)
     monkeypatch.setattr(_embed_mod, "embedder_for_store", lambda _store: embedder)
 
-    # Set the knob to 'loose' (would let hubs lead under concept mode).
     original_lp = core._profile_state.get("literal_preservation", "strong")
     core._profile_state["literal_preservation"] = "loose"
     try:
@@ -548,12 +449,10 @@ def test_dispatch_verbatim_overrides_loose_knob_setting(tmp_path, monkeypatch):
         assert pos <= 2, (
             f"verbatim mode via dispatch must override loose knob; got pos {pos}"
         )
-        # No hubs leaked through.
         hub_id_strs = {str(h) for h in hub_ids}
         for h in response["hits"]:
             assert h["record_id"] not in hub_id_strs, (
                 f"hub {h['record_id']} leaked despite verbatim mode + loose knob"
             )
     finally:
-        # Restore knob (test isolation across the worktree-shared _profile_state).
         core._profile_state["literal_preservation"] = original_lp

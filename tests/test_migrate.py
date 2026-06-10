@@ -1,19 +1,3 @@
-"""Tests for v1 -> v2 legacy schema migration.
-
-Strategy: the new records table already accepts schema_version=1 rows via
-the back-compat read path. We seed a store with v1 records (schema_version=1,
-blank language, current-dim embedding) and assert migrate_v1_to_v2:
-- Backfills language="en" on rows whose tag is empty (English-Only Brain)
-- Re-embeds with the configured embedder
-- Sets s5_trust_score=0.5 and profile_modulation_gain={}
-- Bumps schema_version=2
-- Emits a migration_v1_to_v2 event
-- Is idempotent
-- Preserves literal_surface byte-for-byte (verbatim invariant)
-
-The store in these tests is 384d (bge-small-en-v1.5) by default; tests that
-care about dim delta call out IAI_MCP_EMBED_MODEL explicitly.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -31,13 +15,6 @@ def _v1_record(
     tags: list[str] | None = None,
     dim: int = EMBED_DIM,
 ) -> MemoryRecord:
-    """Construct a legacy-looking v1 record.
-
-    language="" + schema_version=1 simulates a row; __post_init__
-    requires non-empty language for, so we set it to a placeholder
-    during construction and then clear it via attribute assignment for the
-    simulated-v1 state.
-    """
     r = MemoryRecord(
         id=uuid4(),
         tier="episodic",
@@ -57,18 +34,14 @@ def _v1_record(
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc),
         tags=list(tags) if tags else [],
-        language="en",                 # pass __post_init__ first
+        language="en",
         schema_version=SCHEMA_VERSION_LEGACY,
     )
-    # Post-construction: simulate "legacy empty language" state.
     if language:
         r.language = language
     else:
-        r.language = ""  # legacy-looking
+        r.language = ""
     return r
-
-
-# --------------------------------------------------------- core migration
 
 
 def test_migrate_v1_to_v2_sets_defaults(tmp_path):
@@ -85,23 +58,17 @@ def test_migrate_v1_to_v2_sets_defaults(tmp_path):
     assert migrated is not None
     assert migrated.s5_trust_score == 0.5
     assert migrated.profile_modulation_gain == {}
-    #: SCHEMA_VERSION_CURRENT bumped from 2 -> 4 (TEM factorization).
-    # migrate_v1_to_v2 still writes the current default; what matters is "no longer v1".
     from iai_mcp.types import SCHEMA_VERSION_CURRENT
     assert migrated.schema_version == SCHEMA_VERSION_CURRENT
     assert migrated.schema_version >= 2
 
 
 def test_migrate_v1_to_v2_defaults_language_to_en(tmp_path):
-    """Empty-language v1 rows get language='en' on migration (English-Only Brain)."""
     from iai_mcp.migrate import migrate_v1_to_v2
     from iai_mcp.store import MemoryStore
 
     store = MemoryStore(path=tmp_path)
     en = _v1_record("This is a reasonable English sentence with enough words.")
-    # Non-English literal still gets 'en' because the English-Only Brain
-    # invariant says the surface (Claude) translates inbound on the way in;
-    # the brain never guesses language from stored bytes.
     ru = _v1_record("Это осмысленное предложение с достаточным количеством слов.")
     store.insert(en)
     store.insert(ru)
@@ -115,7 +82,6 @@ def test_migrate_v1_to_v2_defaults_language_to_en(tmp_path):
 
 
 def test_migrate_v1_to_v2_preserves_existing_language_tag(tmp_path):
-    """A v1 row that already carries language='ru' keeps it through migration."""
     from iai_mcp.migrate import migrate_v1_to_v2
     from iai_mcp.store import MemoryStore
 
@@ -140,7 +106,6 @@ def test_migrate_v1_to_v2_idempotent(tmp_path):
     first = migrate_v1_to_v2(store)
     assert first["records_migrated"] >= 5
 
-    # Second run: everyone is already v2 -> zero migrated.
     second = migrate_v1_to_v2(store)
     assert second["records_migrated"] == 0
 
@@ -158,9 +123,8 @@ def test_migrate_dry_run_no_writes(tmp_path):
     result = migrate_v1_to_v2(store, dry_run=True)
     assert result["records_migrated"] >= 1
 
-    # Store was not mutated in dry-run.
     after = store.get(r.id)
-    assert after.schema_version == 1  # unchanged
+    assert after.schema_version == 1
 
 
 def test_migrate_writes_event(tmp_path):
@@ -179,7 +143,6 @@ def test_migrate_writes_event(tmp_path):
 
 
 def test_migrate_preserves_literal_surface_verbatim(tmp_path):
-    """constitutional: migration MUST NOT rewrite literal_surface."""
     from iai_mcp.migrate import migrate_v1_to_v2
     from iai_mcp.store import MemoryStore
 
@@ -211,26 +174,21 @@ def test_migrate_preserves_provenance(tmp_path):
 
 
 def test_migrate_skips_existing_v2_records(tmp_path):
-    """Mixed store: v1 records migrate, v2 records are skipped."""
     from iai_mcp.migrate import migrate_v1_to_v2
     from iai_mcp.store import MemoryStore
 
     store = MemoryStore(path=tmp_path)
 
-    # A v2 record (default construction gives schema_version=2).
     v2 = _v1_record("Already migrated record with language tag.", language="en")
     v2.schema_version = 2
     store.insert(v2)
 
-    # A v1 record.
     v1 = _v1_record("Legacy v1 record with enough content for detection.")
     store.insert(v1)
 
     result = migrate_v1_to_v2(store)
-    # Only the v1 record should be migrated.
     assert result["records_migrated"] == 1
 
-    # v2 record is unchanged.
     v2_got = store.get(v2.id)
     assert v2_got.schema_version == 2
 

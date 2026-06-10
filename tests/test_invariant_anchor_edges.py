@@ -1,11 +1,3 @@
-"""Tests for the invariant_anchor edge type.
-
-invariant_anchor edges are the structural marker of S5 identity commitments:
-- created when propose_invariant_update reaches 3-of-5 consensus
-- src = original anchor record; dst = new consensus record
-- NEVER decayed by the FSRS sweep (sleep._decay_edges filters hebbian only)
-- At most 1 edge per 48h cooldown window (prevents rapid poisoning)
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -61,7 +53,6 @@ def _patch_embedder(monkeypatch):
 
 
 def _reach_consensus(store, anchor_id):
-    """Helper: run 3 proposals so we land on a commit."""
     from iai_mcp.s5 import propose_invariant_update
 
     propose_invariant_update(store, anchor_id, "fact", "s1")
@@ -70,8 +61,6 @@ def _reach_consensus(store, anchor_id):
 
 
 def test_invariant_anchor_edge_on_s5_promotion(tmp_path):
-    """After consensus commit, an invariant_anchor edge exists from anchor to
-    the new consensus record."""
     from iai_mcp.store import EDGES_TABLE, MemoryStore
 
     store = MemoryStore(path=tmp_path)
@@ -86,7 +75,6 @@ def test_invariant_anchor_edge_on_s5_promotion(tmp_path):
     assert len(ia) >= 1
 
     ids = {str(anchor.id), str(new_id)}
-    # boost_edges canonicalises (src,dst) as sorted, so src/dst may be either.
     found = any(
         {str(row["src"]), str(row["dst"])} == ids
         for _, row in ia.iterrows()
@@ -95,7 +83,6 @@ def test_invariant_anchor_edge_on_s5_promotion(tmp_path):
 
 
 def test_invariant_anchor_edge_never_decays(tmp_path):
-    """invariant_anchor edges survive FSRS decay sweep indefinitely."""
     from iai_mcp.sleep import _decay_edges
     from iai_mcp.store import EDGES_TABLE, MemoryStore
 
@@ -104,7 +91,6 @@ def test_invariant_anchor_edge_never_decays(tmp_path):
     store.insert(anchor)
     _reach_consensus(store, anchor.id)
 
-    # Artificially age the invariant_anchor edge to 500 days old with tiny weight.
     edges_tbl = store.db.open_table(EDGES_TABLE)
     df = edges_tbl.to_pandas()
     ia_rows = df[df["edge_type"] == "invariant_anchor"]
@@ -120,17 +106,14 @@ def test_invariant_anchor_edge_never_decays(tmp_path):
         values={"weight": 0.001, "updated_at": old_ts},
     )
 
-    # Run decay sweep
     _decay_edges(store)
 
-    # invariant_anchor row still present
     df2 = store.db.open_table(EDGES_TABLE).to_pandas()
     survivors = df2[df2["edge_type"] == "invariant_anchor"]
     assert not survivors.empty
 
 
 def test_invariant_anchor_edge_no_duplicate_within_cooldown(tmp_path):
-    """Second consensus attempt within 48h returns cooldown -> no new edge."""
     from iai_mcp.store import EDGES_TABLE, MemoryStore
 
     store = MemoryStore(path=tmp_path)
@@ -142,7 +125,6 @@ def test_invariant_anchor_edge_no_duplicate_within_cooldown(tmp_path):
     ia_first = df_after_first[df_after_first["edge_type"] == "invariant_anchor"]
     count_first = len(ia_first)
 
-    # Try for a second consensus -- all should be blocked by cooldown
     from iai_mcp.s5 import propose_invariant_update
 
     verdict, _ = propose_invariant_update(store, anchor.id, "another", "s4")

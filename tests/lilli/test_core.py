@@ -1,6 +1,5 @@
-"""Wave-1 verification of lilli.core primitives: deterministic seeding,
-hypervector generation, constitutional projection matrix (SHA256-locked),
-and tier-agnostic similarity functions."""
+"""Wave-1 verification of lilli.core primitives: deterministic seeding, hypervector generation, constitutional projection matrix (SHA256-locked), and tier-agnostic similarity functions.
+"""
 from __future__ import annotations
 
 import hashlib
@@ -15,9 +14,7 @@ from iai_mcp.lilli.core.seed import hv_from_seed, seed_from_str
 from iai_mcp.lilli.core.projection import P, P_SHA256_HASH, project
 from iai_mcp.lilli.core.similarity import cosine_packed, hamming, jaccard
 
-# ---------------------------------------------------------------------------
 # seed.py tests
-# ---------------------------------------------------------------------------
 
 
 def test_seed_from_str_deterministic() -> None:
@@ -68,9 +65,7 @@ def test_hv_from_seed_rejects_zero_D() -> None:
         hv_from_seed(0, 0)
 
 
-# ---------------------------------------------------------------------------
 # projection.py tests
-# ---------------------------------------------------------------------------
 
 
 def test_projection_matrix_is_locked() -> None:
@@ -99,11 +94,7 @@ def test_projection_matrix_cross_process_stable() -> None:
 
 
 def test_projection_matrix_full_sha256_locked() -> None:
-    """Gate: the full P.tobytes() SHA256 digest matches the locked constant.
-
-    This is the tightest possible check: any regeneration that changes a single bit
-    in P will change the 64-hex digest and fail here, immediately flagging a
-    violation that would invalidate all stored hypervectors.
+    """The full P.tobytes() SHA256 digest matches the locked constant.
     """
     actual = hashlib.sha256(P.tobytes()).hexdigest()
     assert P_SHA256_HASH != "BOOTSTRAP_PENDING", (
@@ -113,13 +104,13 @@ def test_projection_matrix_full_sha256_locked() -> None:
         f"P_SHA256_HASH must be a 64-hex-char string, got len={len(P_SHA256_HASH)}"
     )
     assert actual == P_SHA256_HASH, (
-        f"P matrix has drifted (constitutional violation): "
+        f"P matrix has drifted: "
         f"expected {P_SHA256_HASH}, got {actual}"
     )
 
 
 def test_projection_dot_product() -> None:
-    """project(zeros(384)) returns shape (10000) of zeros."""
+    """project(zeros(384)) returns shape (10000,) of zeros."""
     emb = np.zeros(384, dtype=np.float32)
     result = project(emb)
     assert result.shape == (10000,)
@@ -133,9 +124,7 @@ def test_projection_rejects_wrong_shape() -> None:
         project(np.zeros(383, dtype=np.float32))
 
 
-# ---------------------------------------------------------------------------
 # similarity.py tests
-# ---------------------------------------------------------------------------
 
 
 def test_similarity_hamming_identical() -> None:
@@ -165,16 +154,13 @@ def test_similarity_jaccard_empty() -> None:
     assert jaccard(set(), set()) == 0.0
 
 
-# ---------------------------------------------------------------------------
 # Public-repo-clean token guard
-# ---------------------------------------------------------------------------
 
 
 def test_lilli_package_no_forbidden_tokens() -> None:
     """No file under src/iai_mcp/lilli/ contains forbidden internal markers.
 
-    Forbidden tokens (must not appear in lilli/ source):
-    - 'Plan 46', '', '', 'LILLIHD-', 'D-TEM', 'CONN-', ''
+        Forbidden tokens (must not appear in lilli/ source):
     """
     forbidden = [
         "Plan 46",

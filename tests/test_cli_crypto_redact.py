@@ -1,4 +1,3 @@
-"""CLI + migrate_redact_undecryptable_records tests."""
 
 from __future__ import annotations
 

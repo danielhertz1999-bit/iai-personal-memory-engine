@@ -1,12 +1,3 @@
-"""Export/backup/restore CLI module.
-
-Provides:
-- export_jsonl(): Dump all records as JSONL (plaintext, decrypted)
-- backup(): Create tar.gz archive of entire brain (Hippo store + crypto key + config)
-- restore(): Restore from tar.gz archive
-
-Breaking the "Data Hotel" pattern — data can leave.
-"""
 from __future__ import annotations
 
 import json
@@ -29,11 +20,6 @@ def _store_path() -> Path:
 
 
 def export_jsonl(output: Path | None = None) -> Path:
-    """Export all records as newline-delimited JSON.
-
-    Each line is a complete record with all fields decrypted.
-    Output defaults to ~/.iai-mcp/export-<timestamp>.jsonl
-    """
     from iai_mcp.store import MemoryStore
 
     store_dir = _store_path()
@@ -70,11 +56,6 @@ def export_jsonl(output: Path | None = None) -> Path:
 
 
 def backup(output: Path | None = None) -> Path:
-    """Create a tar.gz backup of the entire brain.
-
-    Includes: the Hippo store, crypto key, config.json, bank/ layers.
-    The archive is self-contained — restore on any machine recreates the brain.
-    """
     store_dir = _store_path()
 
     if output is None:
@@ -110,11 +91,6 @@ def backup(output: Path | None = None) -> Path:
 
 
 def restore(archive: Path, target: Path | None = None) -> Path:
-    """Restore brain from a tar.gz backup.
-
-    Extracts to target directory (default: ~/.iai-mcp).
-    Existing data is moved to a.pre-restore-<ts> backup first.
-    """
     if target is None:
         target = _store_path()
 

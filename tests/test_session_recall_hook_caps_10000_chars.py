@@ -1,15 +1,8 @@
-"""Contract:
-- _truncate_for_claude_code_hook caps stdout at 10000 chars.
-- Oversized input ends with the fixed trailer line.
-- Input shorter than or equal to cap passes through unchanged.
-"""
 from __future__ import annotations
 
 import pytest
 
-
 TRAILER = "[... payload truncated to fit Claude Code 10000-char limit ...]"
-
 
 def test_input_above_cap_truncated_with_trailer():
     from iai_mcp.cli import _truncate_for_claude_code_hook
@@ -18,19 +11,16 @@ def test_input_above_cap_truncated_with_trailer():
     assert len(out) <= 10000
     assert out.endswith(TRAILER)
 
-
 def test_input_below_cap_unchanged():
     from iai_mcp.cli import _truncate_for_claude_code_hook
 
     body = "A" * 100
     assert _truncate_for_claude_code_hook(body, cap=10000) == body
 
-
 def test_empty_input_unchanged():
     from iai_mcp.cli import _truncate_for_claude_code_hook
 
     assert _truncate_for_claude_code_hook("", cap=10000) == ""
-
 
 def test_input_exactly_at_cap_unchanged():
     from iai_mcp.cli import _truncate_for_claude_code_hook

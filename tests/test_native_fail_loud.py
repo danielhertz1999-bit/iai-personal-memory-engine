@@ -1,39 +1,13 @@
-"""Regression guard: native compute failures emit diagnostic events then raise.
-
-Tests in this file:
-
-1. topology dispatch (core.py): a native failure in graph build or sigma
-   compute emits a ``topology_native_failed`` store event and re-raises.
-
-2. topology empty-graph (core.py): the legitimate N=0 path returns the
-   ``insufficient_data`` stub WITHOUT raising.
-
-3. recall cue-encode (pipeline.py via core dispatch): a native encode failure
-   emits an ``embed_native_failure`` store event and propagates as
-   ``NativeError`` (not swallowed by the soft availability fallback).
-
-4. capture encode (capture.py): a native encode failure emits an
-   ``embed_native_failure`` store event and propagates.
-"""
 from __future__ import annotations
 
 import pytest
 
 from iai_mcp.store import MemoryStore
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 def _make_store(tmp_path) -> MemoryStore:
-    """Return an empty MemoryStore using the test temp directory."""
     return MemoryStore(path=tmp_path)
 
-
 def _seed_one_record(store: MemoryStore, text: str = "seed record") -> None:
-    """Insert a minimal record so records_count > 0."""
     from datetime import datetime, timezone
     from uuid import uuid4
 
@@ -63,25 +37,12 @@ def _seed_one_record(store: MemoryStore, text: str = "seed record") -> None:
     )
     store.insert(rec)
 
-
-# ---------------------------------------------------------------------------
-# Topology tests
-# ---------------------------------------------------------------------------
-
-
 def test_topology_native_failure_emits_and_raises(tmp_path, monkeypatch):
-    """topology dispatch: a native failure emits topology_native_failed then raises.
-
-    Monkeypatches ``retrieve.build_runtime_graph`` to raise ``RuntimeError``
-    so the test does not require a live native extension. Asserts:
-    - the exception propagates (pytest.raises)
-    - a ``topology_native_failed`` event was written to the store
-    """
     from iai_mcp import core, retrieve
     from iai_mcp.events import flush_event_buffer, query_events
 
     store = _make_store(tmp_path)
-    _seed_one_record(store)  # ensure records_count > 0
+    _seed_one_record(store)
 
     def _fail(*args, **kwargs):
         raise RuntimeError("simulated native build failure")
@@ -91,7 +52,6 @@ def test_topology_native_failure_emits_and_raises(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="simulated native build failure"):
         core.dispatch(store, "topology", {})
 
-    # Flush buffered events before querying.
     flush_event_buffer(store)
 
     rows = query_events(store, kind="topology_native_failed", limit=10)
@@ -103,19 +63,11 @@ def test_topology_native_failure_emits_and_raises(tmp_path, monkeypatch):
     assert "error_type" in data, f"event data missing error_type: {data}"
     assert "error" in data, f"event data missing error field: {data}"
 
-
 def test_topology_empty_graph_returns_stub_without_raising(tmp_path):
-    """topology dispatch: empty store returns insufficient_data stub, does not raise.
-
-    The N=0 early-return path is a legitimate empty-graph case, NOT a native
-    error. It must return the stub dict with ``regime == 'insufficient_data'``
-    and ``sigma is None``, without emitting a failure event or raising.
-    """
     from iai_mcp import core
     from iai_mcp.events import flush_event_buffer, query_events
 
     store = _make_store(tmp_path)
-    # No records inserted -- count_rows() == 0.
 
     result = core.dispatch(store, "topology", {})
 
@@ -129,7 +81,6 @@ def test_topology_empty_graph_returns_stub_without_raising(tmp_path):
         f"expected N=0 on empty store, got: {result.get('N')}"
     )
 
-    # No topology_native_failed event should have been written.
     flush_event_buffer(store)
     rows = query_events(store, kind="topology_native_failed", limit=5)
     assert not rows, (
@@ -137,24 +88,9 @@ def test_topology_empty_graph_returns_stub_without_raising(tmp_path):
         f"legitimate path; got {rows}"
     )
 
-
-# ---------------------------------------------------------------------------
-# Recall cue-encode Layer-2 test
-# ---------------------------------------------------------------------------
-
-
 def test_recall_cue_encode_failure_emits_store_event_and_raises(
     tmp_path, monkeypatch
 ):
-    """recall dispatch: a native encode failure emits embed_native_failure and propagates.
-
-    Monkeypatches the embedder's ``embed`` method to raise. Asserts:
-    - the exception propagates past the dispatch recall path (not swallowed)
-    - a store-backed ``embed_native_failure`` event was written (Layer 2)
-
-    Drives via ``core.dispatch`` with ``memory_recall`` so the full dispatch
-    path is exercised including the availability-fallback narrowing.
-    """
     from iai_mcp import core
     from iai_mcp.embed import Embedder
     from iai_mcp.events import flush_event_buffer, query_events
@@ -164,14 +100,12 @@ def test_recall_cue_encode_failure_emits_store_event_and_raises(
     store = _make_store(tmp_path)
     _seed_one_record(store, "test content for recall")
 
-    # Patch Embedder.embed to raise on every call.
     def _broken_embed(self, text: str) -> list[float]:
         raise RuntimeError("boom native encode")
 
     monkeypatch.setattr(Embedder, "_encode_one", lambda self, t: (_ for _ in ()).throw(RuntimeError("boom native encode")))
     monkeypatch.setattr(Embedder, "embed", _broken_embed)
 
-    # Patch daemon_state so recall goes through the full pipeline branch.
     monkeypatch.setattr(
         "iai_mcp.daemon_state.load_state",
         lambda: {"current_state": "WAKE"},
@@ -187,7 +121,6 @@ def test_recall_cue_encode_failure_emits_store_event_and_raises(
             "session_id": "test-session",
         })
 
-    # Check the store-backed embed_native_failure event was written (Layer 2).
     flush_event_buffer(store)
     rows = query_events(store, kind="embed_native_failure", limit=10)
     assert rows, (
@@ -200,21 +133,9 @@ def test_recall_cue_encode_failure_emits_store_event_and_raises(
         f"expected op_type='recall_cue', got: {data}"
     )
 
-
-# ---------------------------------------------------------------------------
-# Capture encode Layer-2 test
-# ---------------------------------------------------------------------------
-
-
 def test_capture_encode_failure_emits_store_event_and_raises(
     tmp_path, monkeypatch
 ):
-    """capture path: a native encode failure emits embed_native_failure and propagates.
-
-    Monkeypatches the embedder's ``embed`` method to raise. Asserts:
-    - the exception propagates from ``capture_turn`` (not swallowed)
-    - a store-backed ``embed_native_failure`` event was written (Layer 2)
-    """
     from iai_mcp.capture import capture_turn
     from iai_mcp.embed import Embedder
     from iai_mcp.events import flush_event_buffer, query_events
@@ -236,7 +157,6 @@ def test_capture_encode_failure_emits_store_event_and_raises(
             session_id="test-session",
         )
 
-    # Check the store-backed embed_native_failure event was written (Layer 2).
     flush_event_buffer(store)
     rows = query_events(store, kind="embed_native_failure", limit=10)
     assert rows, (

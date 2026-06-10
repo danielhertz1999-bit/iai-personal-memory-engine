@@ -1,9 +1,3 @@
-// / D-
-// RED-witness suite for the wrapper-side sick-notification probe.
-// Spawns `iai-mcp doctor` (top-level, NOT `iai-mcp daemon doctor`) and
-// writes one stderr line if exit code is 1 or 2. Silent on 0 / spawn
-// error / timeout. Mirrors bankFallback.test.ts EventEmitter mock-spawn
-// pattern verbatim.
 
 import { strict as assert } from "node:assert";
 import { afterEach, describe, it } from "node:test";
@@ -21,9 +15,6 @@ type ProcLike = EventEmitter & {
   kill: () => void;
 };
 
-// Build a mock subprocess. exitCode === undefined means the proc never
-// closes (used by the timeout test). emitErrorBeforeClose === true means
-// `error` fires instead of `close`, simulating a spawn failure (ENOENT).
 function makeMockProc(opts: {
   exitCode?: number | null;
   emitErrorBeforeClose?: boolean;
@@ -44,9 +35,6 @@ function makeMockProc(opts: {
   return proc;
 }
 
-// Stderr-capture harness: replace process.stderr.write with a recorder
-// during a test, restore in afterEach. Must keep the original function's
-// shape (returns boolean) so the system stays happy.
 const originalStderrWrite = process.stderr.write.bind(process.stderr);
 const stderrLines: string[] = [];
 
@@ -126,7 +114,6 @@ describe("probeDaemonDoctor", () => {
       makeMockProc({}) as unknown as ReturnType<
         typeof import("node:child_process").spawn
       >;
-    // Short timeout so the test itself is fast.
     const code = await probeDaemonDoctor(mockSpawn as any, 50);
     emitSickWarningIfNeeded(code);
     assert.equal(code, null, "expected null on timeout");

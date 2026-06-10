@@ -1,23 +1,6 @@
-"""Subagent delegation context.
-
-Parent session exposes a JSON blob containing the 4-segment session-start
-payload (L0, L1, L2, rich-club) plus per-component hashes (for delta
-encoding) and a proxy-tools schema listing the 5 memory tools the
-subagent may invoke via the parent.
-
-The subagent inherits the parent's session cache; it does NOT re-load the
-graph from scratch.
-
-Note: the 3 MCP surface tools (curiosity_pending, schema_list, events_query)
-are user-introspection surfaces and are NOT included in SUBAGENT_HOT_TOOLS.
-Subagents receive the 5 memory tools; user introspection stays with the
-parent session.
-"""
 from __future__ import annotations
 
 
-# The 5 memory tools exposed to subagents.
-# User-introspection tools are intentionally excluded.
 SUBAGENT_HOT_TOOLS: tuple[str, ...] = (
     "memory_recall",
     "memory_reinforce",
@@ -28,12 +11,6 @@ SUBAGENT_HOT_TOOLS: tuple[str, ...] = (
 
 
 def subagent_proxy_tools() -> list[dict]:
-    """Return a list of tool stubs advertised to the subagent.
-
-    Each stub carries `name` + `proxied_via`; the subagent invokes its
-    parent's MCP bridge with the tool name, and the parent forwards the call
-    to the Python core.
-    """
     return [
         {"name": name, "proxied_via": "parent_session"}
         for name in SUBAGENT_HOT_TOOLS
@@ -45,18 +22,6 @@ def serialize_session_for_subagent(
     assignment,
     rich_club,
 ) -> dict:
-    """Build a JSON-safe dict for subagent spawn.
-
-    Returns:
-        {
-          "l0": str,
-          "l1": str,
-          "l2": list[str],
-          "rich_club": str,
-          "hashes": {"l0": str, "l1": str, "l2": str, "rich_club": str},
-          "proxy_tools": [{"name":..., "proxied_via": "parent_session"},...],
-        }
-    """
     from iai_mcp.delta import build_delta
     from iai_mcp.session import assemble_session_start
 

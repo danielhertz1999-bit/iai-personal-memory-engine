@@ -1,21 +1,3 @@
-"""Benchmark top-K entry-point contract.
-
-Tests the public function `recall_for_benchmark(...)`. Contract:
-
-- Signature: store, graph, assignment, rich_club, embedder, cue,
-  session_id, k_hits=10, profile_state=None, turn=0, mode='concept'.
-- NO `budget_tokens` parameter — calling with `budget_tokens=1500`
-  MUST raise TypeError.
-- Returns RecallResponse with `len(hits) <= k_hits` (cap honoured).
-- Hits are sorted by score descending (deterministic tie-break by
-  UUID-asc preserved from `_recall_core`).
-- mode plumbing: bench callers pass `mode="concept"`; the parameter
-  threads through to `_recall_core` unchanged.
-
-Cross-file: see `tests/test_recall_for_response.py` for the production
-budget-pack contract, and `tests/test_recall_core_unit.py` for the
-underlying `_recall_core` shape.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -29,11 +11,7 @@ from iai_mcp.store import MemoryStore
 from iai_mcp.types import EMBED_DIM, MemoryRecord, RecallResponse
 
 
-# ------------------------------------------------------------ test fixtures
-
-
 class _FakeEmbedder:
-    """Stand-in embedder. The cue's embedding is configurable per-test."""
 
     DIM = EMBED_DIM
 
@@ -115,16 +93,7 @@ def _flat_assignment(recs: list[MemoryRecord]) -> CommunityAssignment:
     )
 
 
-# -------------------------------------------------- contract / signature tests
-
-
 def test_recall_for_benchmark_no_budget_tokens_param(tmp_path) -> None:
-    """Test 6: calling with `budget_tokens=1500` raises TypeError.
-
-    The contract split is the whole point: top-K benchmark cannot accept
-    a token-budget parameter, otherwise an optional argument would let
-    the two contracts silently swap semantics.
-    """
     from iai_mcp.pipeline import recall_for_benchmark
 
     store, graph, recs = _build_store_and_graph(tmp_path, n=5)
@@ -135,15 +104,11 @@ def test_recall_for_benchmark_no_budget_tokens_param(tmp_path) -> None:
             store=store, graph=graph, assignment=assignment,
             rich_club=[], embedder=_FakeEmbedder(),
             cue="test", session_id="s6",
-            budget_tokens=1500,    # this kwarg does not exist
+            budget_tokens=1500,
         )
 
 
 def test_recall_for_benchmark_returns_at_most_k_hits(tmp_path) -> None:
-    """Test 7: `len(hits) <= k_hits` — the cap is honoured.
-
-    Build 12 records; ask for k_hits=5; assert len(hits) == 5.
-    """
     from iai_mcp.pipeline import recall_for_benchmark
 
     store, graph, recs = _build_store_and_graph(tmp_path, n=12)
@@ -160,10 +125,8 @@ def test_recall_for_benchmark_returns_at_most_k_hits(tmp_path) -> None:
 
 
 def test_recall_for_benchmark_hits_sorted_by_score_desc(tmp_path) -> None:
-    """Test 8: hits are sorted by `score` descending (deterministic order)."""
     from iai_mcp.pipeline import recall_for_benchmark
 
-    # 8 records on distinct axes; cue at axis 0 -> rank ordered by axis index.
     store, graph, recs = _build_store_and_graph(tmp_path, n=8)
     assignment = _flat_assignment(recs)
 
@@ -180,10 +143,6 @@ def test_recall_for_benchmark_hits_sorted_by_score_desc(tmp_path) -> None:
 
 
 def test_recall_for_benchmark_returns_fewer_when_pool_is_small(tmp_path) -> None:
-    """Test 9: with k_hits=20 and only 8 ranked records, returns 8 hits.
-
-    The cap is the natural exhaustion of `_recall_core.scored_hits`, not k_hits.
-    """
     from iai_mcp.pipeline import recall_for_benchmark
 
     store, graph, recs = _build_store_and_graph(tmp_path, n=8)
@@ -195,16 +154,12 @@ def test_recall_for_benchmark_returns_fewer_when_pool_is_small(tmp_path) -> None
         cue="test", session_id="s9", k_hits=20,
     )
 
-    # Pool is 8; k_hits=20 caps at 8.
     assert len(resp.hits) == 8
 
 
 def test_recall_for_benchmark_budget_used_is_informational(tmp_path) -> None:
-    """Test 10: `budget_used` reflects the per-hit token estimate sum (not a cap)."""
     from iai_mcp.pipeline import recall_for_benchmark
 
-    # surface_len=200 -> 50 tokens per hit. With k_hits=3 and 5 records,
-    # budget_used = 3 * 50 = 150 (informational; no cap).
     store, graph, recs = _build_store_and_graph(tmp_path, n=5, surface_len=200)
     assignment = _flat_assignment(recs)
 
@@ -219,7 +174,6 @@ def test_recall_for_benchmark_budget_used_is_informational(tmp_path) -> None:
 
 
 def test_recall_for_benchmark_threads_mode_to_core(tmp_path) -> None:
-    """mode plumbing: `mode='concept'` (bench default) flows through."""
     from iai_mcp.pipeline import recall_for_benchmark
 
     store, graph, recs = _build_store_and_graph(tmp_path, n=5)
@@ -234,7 +188,6 @@ def test_recall_for_benchmark_threads_mode_to_core(tmp_path) -> None:
 
 
 def test_recall_for_benchmark_signature_has_no_budget_tokens_param() -> None:
-    """The function signature exposes `k_hits` and `mode` but NOT `budget_tokens`."""
     import inspect
     from iai_mcp.pipeline import recall_for_benchmark
 
@@ -249,7 +202,6 @@ def test_recall_for_benchmark_signature_has_no_budget_tokens_param() -> None:
 
 
 def test_recall_for_benchmark_default_k_hits_10() -> None:
-    """The default k_hits is 10 (matches LongMemEval-S protocol convention)."""
     import inspect
     from iai_mcp.pipeline import recall_for_benchmark
 

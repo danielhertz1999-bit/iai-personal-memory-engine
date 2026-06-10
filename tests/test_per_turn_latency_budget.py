@@ -1,9 +1,3 @@
-"""Per-turn capture latency budget: in-process + end-to-end shell hook.
-
-Two distinct p95 budgets:
-- write_deferred_event p95 <= 10 ms (in-process, no shell overhead)
-- end-to-end shell hook invocation p95 <= 100 ms (bash + CLI startup + write)
-"""
 from __future__ import annotations
 
 import json
@@ -17,21 +11,17 @@ from pathlib import Path
 
 import pytest
 
-
 pytestmark = pytest.mark.skipif(
     platform.system() == "Windows",
     reason="POSIX bash + paths",
 )
 
-
 REPO = Path(__file__).resolve().parent.parent
 HOOK = REPO / "src" / "iai_mcp" / "_deploy" / "hooks" / "iai-mcp-turn-capture.sh"
 VENV_CLI = REPO / ".venv" / "bin" / "iai-mcp"
 
-
 @pytest.mark.perf
 def test_write_deferred_event_p95_under_10ms(tmp_path, monkeypatch):
-    """In-process write_deferred_event p95 <= 10 ms over 200 calls."""
     monkeypatch.setenv("HOME", str(tmp_path))
     from iai_mcp.capture import write_deferred_event
 
@@ -48,10 +38,8 @@ def test_write_deferred_event_p95_under_10ms(tmp_path, monkeypatch):
     print(f"\nwrite_deferred_event p95: {p95:.3f} ms (n=200)")
     assert p95 <= 10.0, f"p95={p95:.3f}ms exceeds 10 ms budget"
 
-
 @pytest.mark.perf
 def test_end_to_end_shell_hook_p95_under_100ms(tmp_path):
-    """End-to-end shell hook invocation p95 <= 100 ms over 200 sequential runs."""
     if not VENV_CLI.exists():
         pytest.skip(f"iai-mcp not installed at {VENV_CLI}")
     if not HOOK.exists():
@@ -78,8 +66,6 @@ def test_end_to_end_shell_hook_p95_under_100ms(tmp_path):
     env = os.environ.copy()
     env["HOME"] = str(home)
 
-    # Warm-up: first invocation pays page-cache + cold-import costs and is
-    # not part of the steady-state p95 we care about.
     subprocess.run(
         ["bash", str(HOOK)],
         input=stdin,
@@ -107,10 +93,7 @@ def test_end_to_end_shell_hook_p95_under_100ms(tmp_path):
     print(f"\nshell hook end-to-end p95: {p95:.3f} ms (n=200, warmup excluded)")
     assert p95 <= 100.0, f"p95={p95:.3f}ms exceeds 100 ms budget"
 
-
 def test_shell_hook_and_cli_produce_equivalent_structure(tmp_path, monkeypatch):
-    """The inline shell-hook writer and cmd_capture_turn_deferred MUST agree
-    on header keys, event keys, file path, and offset semantics."""
     import json as _json
     import subprocess as _sp
 
@@ -125,7 +108,6 @@ def test_shell_hook_and_cli_produce_equivalent_structure(tmp_path, monkeypatch):
         + _json.dumps({"type": "assistant", "message": {"role": "assistant", "content": "reply B"}}) + "\n"
     )
 
-    # 1. CLI path -> writes to HOME/A/.iai-mcp/.deferred-captures/{sid}.live.jsonl
     home_a = tmp_path / "HOME_A"
     home_a.mkdir()
     monkeypatch.setenv("HOME", str(home_a))
@@ -137,7 +119,6 @@ def test_shell_hook_and_cli_produce_equivalent_structure(tmp_path, monkeypatch):
     a_live = home_a / ".iai-mcp" / ".deferred-captures" / "P.live.jsonl"
     a_lines = a_live.read_text().splitlines()
 
-    # 2. Shell-hook path -> writes to HOME/B/.iai-mcp/.deferred-captures/{sid}.live.jsonl
     home_b = tmp_path / "HOME_B"
     home_b.mkdir()
     env = os.environ.copy()

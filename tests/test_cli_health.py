@@ -1,4 +1,3 @@
-"""Tests for the iai-mcp CLI -- health + migrate commands."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -7,11 +6,7 @@ from uuid import uuid4
 import pytest
 
 
-# ----------------------------------------------------------- iai-mcp health
-
-
 def test_cli_health_no_events(tmp_path, monkeypatch, capsys):
-    """Fresh store -> 'llm_health: no events recorded'."""
     import argparse
 
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
@@ -25,7 +20,6 @@ def test_cli_health_no_events(tmp_path, monkeypatch, capsys):
 
 
 def test_cli_health_reports_last_event(tmp_path, monkeypatch, capsys):
-    """Seeded llm_health event -> output includes severity + ts rendered in TZ."""
     import argparse
 
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
@@ -45,15 +39,10 @@ def test_cli_health_reports_last_event(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert exit_code == 0
     assert "llm_health" in out
-    # Severity reported.
     assert "info" in out
 
 
-# ---------------------------------------------------------- iai-mcp migrate
-
-
 def test_cli_migrate_dry_run(tmp_path, monkeypatch, capsys):
-    """Seeded v1 records -> dry-run prints 'would migrate N records'."""
     import argparse
 
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
@@ -85,7 +74,6 @@ def test_cli_migrate_dry_run(tmp_path, monkeypatch, capsys):
             language="en",
             schema_version=SCHEMA_VERSION_LEGACY,
         )
-        # simulate un-tagged legacy by clearing language after construction
         r.language = ""
         store.insert(r)
 
@@ -95,17 +83,14 @@ def test_cli_migrate_dry_run(tmp_path, monkeypatch, capsys):
     assert exit_code == 0
     assert "would migrate" in out.lower()
 
-    # Dry run must not mutate the store: all records still v1.
     for r in store.all_records():
-        if not r.pinned or r.id == uuid4():  # skip potential L0
+        if not r.pinned or r.id == uuid4():
             continue
     v1_count = sum(1 for r in store.all_records() if r.schema_version == 1)
-    # At least the 3 we inserted must still be v1.
     assert v1_count >= 3
 
 
 def test_cli_entrypoint_exists():
-    """`iai-mcp` entrypoint is registered via pyproject.toml scripts."""
     from iai_mcp.cli import main
 
     assert callable(main)

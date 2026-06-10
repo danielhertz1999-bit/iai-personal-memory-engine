@@ -1,5 +1,3 @@
-"""Tests for `iai capture` -- daemon write path + clear error on
-daemon-down (no offline fallback because bank layers are read-only)."""
 from __future__ import annotations
 
 import io
@@ -18,8 +16,6 @@ def _make_args(text: str = "hello world", session_id: str | None = None):
 
 
 def test_capture_success_prints_record_id(monkeypatch):
-    """When the daemon acks the capture, print the new record id and
-    exit zero."""
     from iai_mcp import iai_cli
 
     fake_resp = {
@@ -41,8 +37,6 @@ def test_capture_success_prints_record_id(monkeypatch):
 
 
 def test_capture_daemon_down_returns_nonzero_with_message(monkeypatch):
-    """No offline fallback for capture -- daemon down means error out
-    with an actionable message pointing at `iai-mcp daemon start`."""
     from iai_mcp import iai_cli
 
     monkeypatch.setattr("iai_mcp.cli._send_jsonrpc_request", lambda *a, **k: None)
@@ -59,7 +53,6 @@ def test_capture_daemon_down_returns_nonzero_with_message(monkeypatch):
 
 
 def test_capture_daemon_error_response_surfaced(monkeypatch):
-    """JSON-RPC error reply -> print the error message and return 1."""
     from iai_mcp import iai_cli
 
     fake_resp = {
@@ -79,7 +72,6 @@ def test_capture_daemon_error_response_surfaced(monkeypatch):
 
 
 def test_capture_passes_session_id_through(monkeypatch):
-    """The --session-id flag is forwarded into the JSON-RPC params."""
     from iai_mcp import iai_cli
 
     captured_params: dict = {}
@@ -104,8 +96,6 @@ def test_capture_passes_session_id_through(monkeypatch):
 
 
 def test_capture_default_session_id_is_dash(monkeypatch):
-    """If --session-id is omitted (None on the namespace), forward '-'
-    (the project-canonical no-session marker)."""
     from iai_mcp import iai_cli
 
     captured_params: dict = {}

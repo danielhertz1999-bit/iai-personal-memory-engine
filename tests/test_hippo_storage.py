@@ -1,8 +1,3 @@
-"""Integration tests for the SQLite+hnswlib storage layer via MemoryStore.
-
-All tests operate through the MemoryStore public API — no direct HippoDB pokes.
-Every test isolates to pytest's tmp_path; no ~/.iai-mcp state is touched.
-"""
 from __future__ import annotations
 
 import concurrent.futures
@@ -25,13 +20,7 @@ from iai_mcp.store import (
 from iai_mcp.types import EMBED_DIM, MemoryRecord
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 def _make_record(seed: int, text: str = "") -> MemoryRecord:
-    """Return a MemoryRecord with a deterministic, well-separated embedding."""
     rng = np.random.RandomState(seed)
     vec = rng.randn(EMBED_DIM).tolist()
     return MemoryRecord(
@@ -63,7 +52,6 @@ def _wait_for_count(
     timeout_sec: float = 5.0,
     poll: float = 0.05,
 ) -> None:
-    """Poll table.count_rows() until it reaches *target* or *timeout_sec* elapses."""
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline:
         if table.count_rows() >= target:
@@ -75,13 +63,7 @@ def _wait_for_count(
     )
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
-
-
 def test_e2e_capture_recall_via_memory_store(tmp_path: Path) -> None:
-    """Insert via MemoryStore.insert and verify the record is retrievable via get."""
     store = MemoryStore(tmp_path, user_id="test")
     try:
         rec = _make_record(42, "hello world")
@@ -98,7 +80,6 @@ def test_e2e_capture_recall_via_memory_store(tmp_path: Path) -> None:
 
 
 def test_e2e_boost_edges_round_trip(tmp_path: Path) -> None:
-    """boost_edges writes an edge; it should be readable back from the edges table."""
     store = MemoryStore(tmp_path, user_id="test")
     try:
         rec_a = _make_record(10)
@@ -113,7 +94,6 @@ def test_e2e_boost_edges_round_trip(tmp_path: Path) -> None:
         df = edges_tbl.to_pandas()
         assert len(df) > 0, "edges table should be non-empty after boost_edges"
 
-        # boost_edges stores edges with canonically-sorted (src, dst) pairs.
         canonical_src, canonical_dst = sorted([str(rec_a.id), str(rec_b.id)])
         row = df[
             (df["src"] == canonical_src)
@@ -127,11 +107,6 @@ def test_e2e_boost_edges_round_trip(tmp_path: Path) -> None:
 
 
 def test_e2e_pattern_separation_compatible(tmp_path: Path) -> None:
-    """Pattern separation gate should not error on a fresh store with distinct records.
-
-    Inserts records with maximally distinct random embeddings (different RNG seeds).
-    The gate should return INSERT for each (no merging), so all records land in the DB.
-    """
     n = 10
     store = MemoryStore(tmp_path, user_id="test")
     try:
@@ -148,7 +123,6 @@ def test_e2e_pattern_separation_compatible(tmp_path: Path) -> None:
 
 
 def test_e2e_async_write_queue_drains(tmp_path: Path) -> None:
-    """enable_async_writes() + 50 inserts + disable_async_writes() should leave all rows visible."""
     import asyncio
 
     n = 50
@@ -159,7 +133,6 @@ def test_e2e_async_write_queue_drains(tmp_path: Path) -> None:
         for i in range(n):
             store.insert(_make_record(seed=2000 + i))
 
-        # Drain by disabling — disable_async_writes waits for queue to stop.
         asyncio.run(store.disable_async_writes())
 
         records_tbl = store.db.open_table(RECORDS_TABLE)
@@ -172,12 +145,6 @@ def test_e2e_async_write_queue_drains(tmp_path: Path) -> None:
 
 
 def test_concurrent_sync_and_async_writes(tmp_path: Path) -> None:
-    """Four threads each adding rows directly to HippoTable must all land without exceptions.
-
-    Tests thread-safety of HippoDB._hnsw_lock + SQLite check_same_thread=False
-    via the HippoTable.add() path (bypassing MemoryStore to avoid conftest
-    autoflush races with the pattern-separation gate).
-    """
     from iai_mcp.hippo import HippoDB
 
     threads_n = 4
@@ -220,7 +187,6 @@ def test_concurrent_sync_and_async_writes(tmp_path: Path) -> None:
                         "profile_modulation_gain_json": "{}",
                         "schema_version": 4,
                     })
-                # One batch per worker — fewer write transactions, still concurrent.
                 tbl.add(rows)
             except Exception as exc:
                 with lock:
@@ -240,15 +206,6 @@ def test_concurrent_sync_and_async_writes(tmp_path: Path) -> None:
 
 
 def test_no_lancedb_concept_leaks_through_api(tmp_path: Path) -> None:
-    """MemoryStore must not cause lancedb to be imported — it was replaced by HippoDB.
-
-    We rely on the fact that lancedb is an optional/removed dependency: if
-    HippoDB accidentally imports it, the module would appear in sys.modules.
-    This test creates a fresh store in a subprocess-like isolation (checking
-    sys.modules directly) to confirm the lancedb namespace is absent.
-    """
-    # Remove lancedb from sys.modules if it somehow got loaded by a prior test
-    # in this session (would be a false negative otherwise).
     for key in list(sys.modules):
         if key == "lancedb" or key.startswith("lancedb."):
             del sys.modules[key]

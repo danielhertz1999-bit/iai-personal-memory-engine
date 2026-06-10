@@ -1,14 +1,3 @@
-"""Harness smoke for the bench --embedder flag.
-
-Asserts:
-1. --embedder bge-small-en-v1.5 reproduces v3 output on 1 pinned qid
-   (default-embedder baseline; ensures the flag does not break the v3 path).
-2. Output JSON top-level metadata pins the embedder identity for reproducibility.
-
-Each test runs bench/longmemeval_blind.py as a subprocess on n=1 question
-(--qid-include e47becba -- first qid in v3 per_row, single-session-user
-type, deterministic baseline R@5_X = R@5_Y = 1.0 with bge-small).
-"""
 from __future__ import annotations
 
 import json
@@ -18,21 +7,12 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 
-# First qid in v3 per_row (single-session-user; deterministic;
-# both R@5_X = R@5_Y = 1.0 in v3 baseline). Verified via:
-# python3 -c "import json; d=json.load(open('bench/lme500/output/lme500-v3.json'));
-# print(d['per_row'][0]['question_id'])"
 PINNED_QID_FOR_SMOKE = "e47becba"
 
 FIXTURES = REPO / "tests" / "fixtures"
 
 
 def _run_harness(embedder: str, qid_filter: str = PINNED_QID_FOR_SMOKE) -> dict:
-    """Run bench/longmemeval_blind.py and return parsed JSON output.
-
-    Note: harness CLI uses --limit (not --num-questions), --out (not --output),
-    --checkpoint (not --jsonl-output). JSON output stores rows under 'per_row' key.
-    """
     out_path = FIXTURES / f"smoke-v3.1-{embedder}.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
@@ -67,14 +47,12 @@ def _run_harness(embedder: str, qid_filter: str = PINNED_QID_FOR_SMOKE) -> dict:
 
 
 def test_bge_small_baseline_reproduces_v3() -> None:
-    """Default embedder reproduces v3 output verbatim on the pinned qid."""
     out = _run_harness(embedder="bge-small-en-v1.5")
     per_row = out["per_row"]
     assert len(per_row) == 1, f"expected 1 row, got {len(per_row)}"
     row = per_row[0]
     assert row["question_id"] == PINNED_QID_FOR_SMOKE
 
-    # Pull v3 baseline for this qid.
     v3 = json.loads((REPO / "bench" / "lme500" / "output" / "lme500-v3.json").read_text())
     v3_per_row = v3["per_row"]
     v3_row = next(r for r in v3_per_row if r["question_id"] == PINNED_QID_FOR_SMOKE)
@@ -88,11 +66,8 @@ def test_bge_small_baseline_reproduces_v3() -> None:
 
 
 def test_embedder_metadata_recorded_in_output() -> None:
-    """Output JSON top-level metadata pins the English embedder identity for reproducibility."""
-    # Re-load the fixture written by test_bge_small_baseline_reproduces_v3.
     bge_path = FIXTURES / "smoke-v3.1-bge-small-en-v1.5.json"
     if not bge_path.exists():
-        # Run the harness if the fixture is not yet on disk.
         _run_harness(embedder="bge-small-en-v1.5")
     bge_out = json.loads(bge_path.read_text())
     assert bge_out.get("embedder_model_key") == "bge-small-en-v1.5"

@@ -1,33 +1,6 @@
 #!/usr/bin/env python3
-"""ship-gate harness — runs contradiction_longitudinal_claude.py
-with arousal_route attribution captured, then invokes
-bench/analyze_arousal_ab.py for the ship-gate verdict.
-
-Mirrors EFE A/B harness pattern. Threshold +0.05 (vs EFE's
-+0.10) reflects smaller-effect-size hypothesis for budget-tokens variation.
-
-A/B route lives inside `_recall_core`, observable from both
-`recall_for_response` (production) and `recall_for_benchmark` (bench). All
-three RetrievalParams fields (max_hops, rank_threshold, mode) are plumbed;
-under default ArousalState (level=0.5 -> balanced regime) only rank_threshold
-has measurable effect on the bench (~0.45 cosine floor on cosine_top_indices).
-
-Usage:
-    python bench/arousal_budget_ab.py \\
-        --output-dir bench/results//iteration-25-arousal-ab \\
-        --seeds 13 42 137 \\
-        --scale honest
-"""
 from __future__ import annotations
 
-# No `iai_mcp.*` import in this harness (pure subprocess wrapper; mirrors
-# bench/contradiction_longitudinal.py wrapper-only pattern).
-# sys.path shim block intentionally OMITTED — see
-# tests/test_bench_worktree_resolution.py:191 contract: BENCH_SCRIPTS_NO_SHIM
-# scripts MUST NOT carry the shim. The harness only invokes contradiction_
-# longitudinal_claude.py + analyze_arousal_ab.py via subprocess; both child
-# scripts handle their own iai_mcp resolution (the child bench script has
-# the shim per BENCH_SCRIPTS_NEEDING_SHIM contract).
 
 import argparse
 import os
@@ -63,8 +36,6 @@ def main(argv: list[str] | None = None) -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     worktree_root = Path(__file__).resolve().parent.parent
 
-    # Single run produces CSV with arousal_route attribution
-    # (env var unset = MD5-routed inside _recall_core).
     env = os.environ.copy()
     env.pop("IAI_MCP_AROUSAL_USE_SHADOW", None)
     cmd = [
@@ -80,7 +51,6 @@ def main(argv: list[str] | None = None) -> int:
     if rc != 0:
         return rc
 
-    # Analyze the produced CSV.
     return subprocess.run(
         [
             sys.executable,

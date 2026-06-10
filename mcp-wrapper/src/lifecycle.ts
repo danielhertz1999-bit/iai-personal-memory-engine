@@ -1,57 +1,3 @@
-// L5 + L4 — wrapper-side proactive wake + heartbeat refresh.
-//
-// Two responsibilities, both lazy and idle-CPU-near-zero:
-//
-// L5 ensureDaemonAlive:
-// Probe the daemon UNIX socket (~/.iai-mcp/.daemon.sock) at boot.
-// If reachable, return immediately — no kickstart cost, no signal.
-// If unreachable AND platform is darwin, spawn `launchctl kickstart
-// -k gui/<uid>/com.iai-mcp.daemon` via Node's `execFile` API
-// (array args, hard-coded binary path, NEVER `shell: true`).
-// If the kickstart command fails or the platform is not darwin,
-// atomic-write ~/.iai-mcp/wake.signal so the next daemon cold-
-// start consumes it via `iai_mcp.wake_handler.WakeHandler`. The
-// wrapper itself NEVER spawns the daemon Python process — that
-// remains a launchd / external-init concern (invariant).
-//
-// L4 registerHeartbeat:
-// Atomically write ~/.iai-mcp/wrappers/heartbeat-<pid>-<uuid>.json
-// (temp + rename) and start a 30-second interval timer that
-// refreshes the `last_refresh` field. The timer is `unref()`d so
-// it does NOT block Node.js shutdown — the wrapper exits cleanly
-// even if `cleanupHeartbeat` is not called (the daemon's
-// HeartbeatScanner will eventually classify the
-// file as STALE / ORPHAN and reap it).
-//
-// Hard rules:
-//
-// - All `child_process` calls go through `execFile` (array args).
-// NEVER the shell-interpreting `exec` variant. NEVER `shell: true`.
-// Hard-coded binary path (bin/launchctl); only the GUI uid is
-// process-derived (`process.getuid()`).
-// - The 30-sec refresh is a single `setInterval` with `unref()`, not
-// a busy loop or per-tick spawn.
-// - macOS-first; Linux / unknown platforms write `wake.signal`
-// directly without attempting kickstart.
-// - Decoupling preserved — this module is independent of the
-// bridge / tools/list path. `ensureDaemonAlive` is a probe + spawn,
-// not a connect; tools/list MUST keep responding from the static
-// wrapper registry whether the daemon is up or not.
-// - `src/utils/execFileNoThrow.ts` is a pattern reference but does
-// NOT exist in this repo. We inline the
-// pattern here: `promisify(execFile)` + try/catch. Keeps the LOC
-// budget tight and makes the security guarantee local.
-//
-// File schema (matches `iai_mcp.heartbeat_scanner._parse_heartbeat_file`):
-//
-// {
-// "pid": 12345,
-// "uuid": "01HZQ...", // crypto.randomUUID()
-// "started_at": "2026-05-02T15:00:00Z",
-// "last_refresh": "2026-05-02T15:14:30Z",
-// "wrapper_version": "1.0.0",
-// "schema_version": 1
-// }
 
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -62,38 +8,19 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-// ---------------------------------------------------------------- constants
 
-/** Refresh cadence (ms). 30 s is the LOCKED contract
- * three missed refreshes (~90 s) trip the heartbeat scanner's STALE
- * threshold (`DEFAULT_STALE_THRESHOLD_SEC` in `heartbeat_scanner.py`). */
 export const HEARTBEAT_REFRESH_INTERVAL_MS = 30_000;
 
-/** Wrapper schema version. Bump only on a breaking change to the heartbeat
- * file shape. The reader currently treats `schema_version` as
- * informational; future versions may gate field-presence checks on it. */
 export const HEARTBEAT_SCHEMA_VERSION = 1;
 
-/** Wrapper version string written into each heartbeat file. Tracks the
- * `mcp-wrapper/package.json` version semantically; not auto-derived to
- * keep this module dependency-free at runtime. */
 export const WRAPPER_VERSION = "1.0.0";
 
-/** Hard-coded launchctl binary path. Argv-only invocation — no shell
- * interpretation, no PATH lookup, no user-input interpolation. */
 const LAUNCHCTL_BIN = "/bin/launchctl";
 
-/** Hard-coded launchd label for the IAI-MCP daemon. Matches the
- * `com.iai-mcp.daemon` LaunchAgent shipped by the project. */
 const LAUNCHD_LABEL = "com.iai-mcp.daemon";
 
-/** Subprocess timeout (ms) for the kickstart call. Covers the worst-case
- * `launchctl kickstart` round-trip on a heavily loaded box; well under
- * the wrapper's MCP `tools/list` budget (server.connect already happens
- * before this in the boot flow). */
 const KICKSTART_TIMEOUT_MS = 5_000;
 
-// ---------------------------------------------------------------- types
 
 interface HeartbeatPayload {
   pid: number;
@@ -104,47 +31,29 @@ interface HeartbeatPayload {
   schema_version: number;
 }
 
-// ---------------------------------------------------------------- paths
 
-/** Compute `~/.iai-mcp/.daemon.sock`. Mirrors the daemon-side socket
- * path constant in `iai_mcp.concurrency`. */
 export function defaultSocketPath(): string {
   return join(homedir(), ".iai-mcp", ".daemon.sock");
 }
 
-/** Compute `~/.iai-mcp/wake.signal`. Mirrors the path the daemon-side
- * `WakeHandler` consumes on cold-start. */
 export function defaultWakeSignalPath(): string {
   return join(homedir(), ".iai-mcp", "wake.signal");
 }
 
-/** Compute `~/.iai-mcp/wrappers/heartbeat-<pid>-<uuid>.json`. Matches
- * the filename glob in `iai_mcp.heartbeat_scanner`. */
 export function defaultHeartbeatPath(pid: number, uuid: string): string {
   return join(homedir(), ".iai-mcp", "wrappers", `heartbeat-${pid}-${uuid}.json`);
 }
 
-// ---------------------------------------------------------------- lifecycle
 
-/** Constructor options. All fields optional; defaults derive from
- * `process` and `os.homedir()`. Dependency injection is here so tests
- * can supply a tmp dir without monkey-patching `homedir`. */
 export interface WrapperLifecycleOptions {
   pid?: number;
   uuid?: string;
   socketPath?: string;
   wakeSignalPath?: string;
   heartbeatPath?: string;
-  /** Override the platform string. Defaults to `process.platform`. */
   platform?: NodeJS.Platform;
-  /** Probe the daemon socket. Defaults to a real `net.createConnection`
-   * attempt with a short timeout. Tests inject a mock. */
   socketReachable?: () => Promise<boolean>;
-  /** Spawn `launchctl kickstart`. Defaults to the real `execFile` call.
-   * Tests inject a mock that resolves or rejects deterministically. */
   spawnKickstart?: () => Promise<void>;
-  /** Heartbeat refresh interval (ms). Defaults to
-   * `HEARTBEAT_REFRESH_INTERVAL_MS`. Tests pass a smaller value. */
   refreshIntervalMs?: number;
 }
 
@@ -176,10 +85,6 @@ export class WrapperLifecycle {
     this.startedAt = isoNow();
   }
 
-  /** L5: probe daemon socket; if unreachable, kickstart on darwin or
-   * write `wake.signal` elsewhere. Never throws — the worst case is a
-   * silent fallback to the signal file, which the daemon will pick up
-   * on its next cold start. */
   async ensureDaemonAlive(): Promise<void> {
     let alive = false;
     try {
@@ -195,25 +100,14 @@ export class WrapperLifecycle {
         await this.spawnKickstart();
         return;
       } catch {
-        // Kickstart failed (launchd label missing, permission error,
-        // timeout). Fall through to the wake.signal fallback so the
-        // daemon's next cold-start path still consumes the request.
       }
     }
-    // Non-darwin OR darwin-with-failed-kickstart: write the cross-
-    // platform marker so a future daemon boot picks it up.
     try {
       await this.writeWakeSignal();
     } catch {
-      // Even the wake.signal write failed (FS full, permission). Nothing
-      // we can do safely here; do NOT escalate — the wrapper still has
-      // useful work to do (tools/list responds from the static registry).
     }
   }
 
-  /** L4: write the heartbeat file and start the 30-sec refresh timer.
-   * Called once at wrapper boot. Idempotent on the timer side: a second
-   * call clears any prior timer before installing a new one. */
   async registerHeartbeat(): Promise<void> {
     await this.writeHeartbeat();
     if (this.timer !== null) {
@@ -221,18 +115,12 @@ export class WrapperLifecycle {
     }
     const timer = setInterval(() => {
       void this.writeHeartbeat().catch(() => {
-        // Refresh failure is non-fatal: the daemon will classify the
-        // stale file as STALE on the next scan and recover. We do NOT
-        // log here to keep the idle-CPU profile near zero.
       });
     }, this.refreshIntervalMs);
     timer.unref();
     this.timer = timer;
   }
 
-  /** Graceful exit: stop the refresh timer and delete the heartbeat
-   * file. Safe to call multiple times. Safe to call without prior
-   * `registerHeartbeat` (no-ops). */
   async cleanupHeartbeat(): Promise<void> {
     if (this.timer !== null) {
       clearInterval(this.timer);
@@ -241,17 +129,10 @@ export class WrapperLifecycle {
     try {
       await unlink(this.heartbeatPath);
     } catch {
-      // Already gone (concurrent daemon-side cleanup of a STALE entry,
-      // or never written). Idempotent — swallow.
     }
   }
 
-  // ---------------------------------------------- internals (visible-for-test)
 
-  /** Atomically write the heartbeat file: tmp + rename. The tmp
-   * filename includes the wrapper's UUID so concurrent wrappers do
-   * NOT collide on the staging path even if they share a working
-   * directory. */
   private async writeHeartbeat(): Promise<void> {
     const payload: HeartbeatPayload = {
       pid: this.pid,
@@ -268,8 +149,6 @@ export class WrapperLifecycle {
     await rename(tmp, this.heartbeatPath);
   }
 
-  /** Atomically write `wake.signal`: tmp + rename. Per-uuid tmp suffix
-   * avoids cross-wrapper staging collisions on the same machine. */
   private async writeWakeSignal(): Promise<void> {
     const dir = dirname(this.wakeSignalPath);
     await mkdir(dir, { recursive: true });
@@ -284,18 +163,11 @@ export class WrapperLifecycle {
   }
 }
 
-// ---------------------------------------------------------------- defaults
 
 function isoNow(): string {
-  // ISO-8601 with trailing Z — matches the wire format the daemon-side
-  // `_parse_heartbeat_file` accepts (replaces "Z" with "+00:00" before
-  // `datetime.fromisoformat`).
   return new Date().toISOString();
 }
 
-/** Default socket-probe: open a UNIX-domain socket connection to the
- * daemon path with a short timeout. Resolves true on `connect`,
- * false on `error` or timeout. */
 function defaultSocketReachable(socketPath: string): () => Promise<boolean> {
   return async () => {
     const { createConnection } = await import("node:net");
@@ -307,8 +179,6 @@ function defaultSocketReachable(socketPath: string): () => Promise<boolean> {
         try {
           socket.destroy();
         } catch {
-          // socket already destroyed by the loser of the connect/timeout
-          // race — ignore.
         }
         resolve(v);
       };
@@ -321,19 +191,12 @@ function defaultSocketReachable(socketPath: string): () => Promise<boolean> {
   };
 }
 
-/** Default kickstart spawn: `execFile` with array args, hard-coded
- * binary path, no shell. The GUI uid is process-derived (`getuid()`)
- * so the same wrapper works for any signed-in user. */
 function defaultSpawnKickstart(): () => Promise<void> {
   return async () => {
-    // `process.getuid()` is undefined on Windows builds; ! asserts
-    // non-null because we only ever call this on darwin (the
-    // ensureDaemonAlive caller gates on platform === "darwin").
     const uid = typeof process.getuid === "function" ? process.getuid() : 0;
     const args = ["kickstart", "-k", `gui/${uid}/${LAUNCHD_LABEL}`];
     await execFileAsync(LAUNCHCTL_BIN, args, {
       timeout: KICKSTART_TIMEOUT_MS,
-      // No `shell` option — argv-only invocation, no shell interpretation.
     });
   };
 }

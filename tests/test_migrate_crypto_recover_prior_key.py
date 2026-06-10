@@ -1,4 +1,3 @@
-"""Tests for migrate_crypto_recover_prior_key (prior AES key re-encrypt + swap)."""
 
 from __future__ import annotations
 

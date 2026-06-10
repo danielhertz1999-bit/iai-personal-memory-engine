@@ -1,9 +1,3 @@
-"""Cross-runtime numeric parity: Python delegate -> PyO3 -> BertEmbedder.
-
-Acceptance criteria for the Rust embed path. Proves the full pipeline
-including the PyO3 wrapper and Python delegate routing preserves cosine
-parity end-to-end against the frozen baseline.
-"""
 from __future__ import annotations
 
 import json
@@ -45,9 +39,6 @@ def _rust_available() -> bool:
 
 @pytest.mark.skipif(not _rust_available(), reason="iai_mcp_native wheel not installed")
 def test_rust_cosine_parity(baseline_texts, baseline_vectors):
-    """All 100 baseline texts must hit cosine >= 0.9999 via the full Python
-    delegate -> PyO3 -> BertEmbedder chain.
-    """
     from iai_mcp.embed import Embedder
     e = Embedder()
     assert e._backend == "rust"
@@ -66,7 +57,6 @@ def test_rust_cosine_parity(baseline_texts, baseline_vectors):
 
 @pytest.mark.skipif(not _rust_available(), reason="iai_mcp_native wheel not installed")
 def test_default_backend_is_rust():
-    """Default Embedder() (no env vars) uses the Rust backend and returns 384-dim vectors."""
     from iai_mcp.embed import Embedder
     e = Embedder()
     assert e._backend == "rust"
@@ -76,7 +66,6 @@ def test_default_backend_is_rust():
 
 @pytest.mark.skipif(not _rust_available(), reason="iai_mcp_native wheel not installed")
 def test_backend_routing_rust():
-    """Bare Embedder() yields rust path, returns 384-dim list."""
     from iai_mcp.embed import Embedder
     e = Embedder()
     assert e._backend == "rust"
@@ -86,21 +75,14 @@ def test_backend_routing_rust():
 
 @pytest.mark.skipif(not _rust_available(), reason="iai_mcp_native wheel not installed")
 def test_tokenizer_handles_oversized_text():
-    """Truncation safety -- 1000-word input must not panic."""
     from iai_mcp.embed import Embedder
     e = Embedder()
-    long_text = "word " * 1000  # ~1000 tokens, > 512 max position
+    long_text = "word " * 1000
     v = e.embed(long_text)
     assert len(v) == 384
 
 
 def test_tokenizer_id_byte_parity(baseline_texts):
-    """Direct byte-for-byte tokenizer ID parity via the tokenizers package.
-
-    Loads tokenizer.json via the Python `tokenizers` package (same HF Rust
-    crate the native crate uses internally). Gives a clean Python-only
-    equality check against PyTorch's AutoTokenizer.
-    """
     try:
         from tokenizers import Tokenizer as RustTok
         from transformers import AutoTokenizer
@@ -118,7 +100,6 @@ def test_tokenizer_id_byte_parity(baseline_texts):
         pytest.skip(f"HF cache missing at {tok_json}")
 
     rs = RustTok.from_file(str(tok_json))
-    # Match the Rust BertEmbedder configuration
     rs.enable_truncation(max_length=512)
 
     pt = AutoTokenizer.from_pretrained(

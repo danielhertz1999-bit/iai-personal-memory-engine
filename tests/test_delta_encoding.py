@@ -1,9 +1,3 @@
-"""Tests for delta encoding.
-
-Hash each session-start component (L0, L1, L2, rich_club). Subsequent turns
-send only changed components; unchanged ones are represented by their hash.
-On hash miss, fall back to full payload.
-"""
 from __future__ import annotations
 
 import pytest
@@ -24,9 +18,7 @@ def test_hash_component_returns_hex_string():
 
     h = hash_component("test")
     assert isinstance(h, str)
-    # sha256 truncated to 16 chars per plan
     assert len(h) == 16
-    # Must be valid hex.
     int(h, 16)
 
 
@@ -40,12 +32,10 @@ def test_build_delta_first_session_returns_full_payload():
         "rich_club": "hubs",
     }
     delta, new_hashes = build_delta({}, payload)
-    # First session: delta must contain every component.
     assert "l0" in delta
     assert "l1" in delta
     assert "l2" in delta
     assert "rich_club" in delta
-    # And hashes for every component.
     for k in ("l0", "l1", "l2", "rich_club"):
         assert k in new_hashes
 
@@ -60,7 +50,6 @@ def test_build_delta_unchanged_is_empty():
         "rich_club": "hubs",
     }
     _first, hashes = build_delta({}, payload)
-    # Second call with same payload: delta should be empty.
     delta2, _hashes2 = build_delta(hashes, payload)
     assert delta2 == {}
 
@@ -89,7 +78,6 @@ def test_apply_delta_reconstructs():
 
     base = {"l0": "a", "l1": "b", "l2": ["x"], "rich_club": "c"}
     _first, hashes = build_delta({}, base)
-    # A second payload where only l0 changed
     new = {"l0": "z", "l1": "b", "l2": ["x"], "rich_club": "c"}
     delta, _ = build_delta(hashes, new)
     reconstructed = apply_delta(base, delta)
@@ -97,7 +85,6 @@ def test_apply_delta_reconstructs():
 
 
 def test_delta_on_hash_miss_returns_full_component():
-    """Caller's stale hash -> delta contains the full component."""
     from iai_mcp.delta import build_delta
 
     stale = {"l0": "deadbeef00000000", "l1": "cafebabe00000000"}

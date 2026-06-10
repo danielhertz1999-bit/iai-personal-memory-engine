@@ -1,15 +1,3 @@
-"""v2 -> v3 encryption migration.
-
-Scope:
-- Migration re-encrypts plaintext sensitive columns in place
-- Dry-run leaves disk untouched
-- Idempotent: running the migration a second time is a no-op
-- Migration event written to events table
-- schema_version stays at 2 (encryption migration is a data upgrade, not a schema bump in this plan;
-  but we track the state via an events row so the dry-run reports zero on a fully-encrypted store)
-- helper is `migrate_encryption_v2_to_v3`
-- events.data column is also encrypted during migration
-"""
 from __future__ import annotations
 
 import json
@@ -21,7 +9,6 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _isolated_keyring(monkeypatch):
-    """In-memory keyring for deterministic tests."""
     import keyring as _keyring
 
     store_for_test: dict[tuple[str, str], str] = {}
@@ -68,13 +55,6 @@ def _make(text: str = "hello", language: str = "en"):
 
 
 def _write_plaintext_row(store, rec):
-    """Bypass the store's encryption wrapper and write a fully-plaintext row.
-
-    Writes directly via the SQLite connection to avoid HippoTable._encrypt_rows,
-    so the row lands on disk with unencrypted literal_surface / provenance_json /
-    profile_modulation_gain_json — the pre-migration state that migrate_encryption_v2_to_v3
-    is designed to fix.
-    """
     import sqlite3
     import numpy as np
 
@@ -112,13 +92,11 @@ def _write_plaintext_row(store, rec):
 
 
 def test_migrate_encryption_helper_exists() -> None:
-    """exposes migrate_encryption_v2_to_v3."""
     from iai_mcp import migrate
     assert hasattr(migrate, "migrate_encryption_v2_to_v3")
 
 
 def test_migration_encrypts_plaintext_literal_surface(tmp_path):
-    """A plaintext row becomes encrypted after migration."""
     from iai_mcp.migrate import migrate_encryption_v2_to_v3
     from iai_mcp.store import MemoryStore, RECORDS_TABLE
 
@@ -126,7 +104,6 @@ def test_migration_encrypts_plaintext_literal_surface(tmp_path):
     rec = _make(text="unencrypted secret")
     _write_plaintext_row(store, rec)
 
-    # Sanity: before migration the row is plaintext.
     tbl = store.db.open_table(RECORDS_TABLE)
     df = tbl.to_pandas()
     pre = df[df["id"] == str(rec.id)].iloc[0]
@@ -141,7 +118,6 @@ def test_migration_encrypts_plaintext_literal_surface(tmp_path):
 
 
 def test_migration_encrypts_provenance_and_profile_gain(tmp_path):
-    """provenance_json AND profile_modulation_gain_json become encrypted."""
     from iai_mcp.migrate import migrate_encryption_v2_to_v3
     from iai_mcp.store import MemoryStore, RECORDS_TABLE
 
@@ -158,7 +134,6 @@ def test_migration_encrypts_provenance_and_profile_gain(tmp_path):
 
 
 def test_migration_preserves_content_byte_for_byte(tmp_path):
-    """decrypting the migrated row returns the original bytes."""
     from iai_mcp.migrate import migrate_encryption_v2_to_v3
     from iai_mcp.store import MemoryStore
 
@@ -177,7 +152,6 @@ def test_migration_preserves_content_byte_for_byte(tmp_path):
 
 
 def test_migration_dry_run_does_not_mutate(tmp_path):
-    """dry_run=True returns a count but leaves disk rows untouched."""
     from iai_mcp.migrate import migrate_encryption_v2_to_v3
     from iai_mcp.store import MemoryStore, RECORDS_TABLE
 
@@ -186,7 +160,7 @@ def test_migration_dry_run_does_not_mutate(tmp_path):
     _write_plaintext_row(store, rec)
 
     out = migrate_encryption_v2_to_v3(store, dry_run=True)
-    assert out["records_migrated"] >= 1  # Count is predictive
+    assert out["records_migrated"] >= 1
 
     df = store.db.open_table(RECORDS_TABLE).to_pandas()
     post = df[df["id"] == str(rec.id)].iloc[0]
@@ -194,7 +168,6 @@ def test_migration_dry_run_does_not_mutate(tmp_path):
 
 
 def test_migration_idempotent(tmp_path):
-    """Second run returns records_migrated=0 on a fully-encrypted store."""
     from iai_mcp.migrate import migrate_encryption_v2_to_v3
     from iai_mcp.store import MemoryStore
 
@@ -209,20 +182,18 @@ def test_migration_idempotent(tmp_path):
 
 
 def test_migration_skips_already_encrypted_rows(tmp_path):
-    """Records inserted via store.insert() are already encrypted; migration skips them."""
     from iai_mcp.migrate import migrate_encryption_v2_to_v3
     from iai_mcp.store import MemoryStore
 
     store = MemoryStore(path=tmp_path)
     rec = _make(text="already encrypted via insert")
-    store.insert(rec)  # Normal encrypted path
+    store.insert(rec)
 
     out = migrate_encryption_v2_to_v3(store)
     assert out["records_migrated"] == 0
 
 
 def test_migration_writes_event(tmp_path):
-    """A migration_v2_to_v3 event is recorded in the events table."""
     from iai_mcp.events import query_events
     from iai_mcp.migrate import migrate_encryption_v2_to_v3
     from iai_mcp.store import MemoryStore
@@ -240,14 +211,11 @@ def test_migration_writes_event(tmp_path):
 
 
 def test_migration_encrypts_events_data_column(tmp_path):
-    """events.data_json for pre-existing events becomes encrypted post-migration."""
     from iai_mcp.events import write_event
     from iai_mcp.migrate import migrate_encryption_v2_to_v3
     from iai_mcp.store import MemoryStore, EVENTS_TABLE
 
     store = MemoryStore(path=tmp_path)
-    # Write a plaintext event manually (bypass write_event's encryption wrap).
-    # We simulate a pre-02-08 event by writing directly via the underlying table.
     tbl = store.db.open_table(EVENTS_TABLE)
     event_row = {
         "id": str(uuid4()),
@@ -264,13 +232,11 @@ def test_migration_encrypts_events_data_column(tmp_path):
     migrate_encryption_v2_to_v3(store)
 
     df = store.db.open_table(EVENTS_TABLE).to_pandas()
-    # Find our row
     row = df[df["kind"] == "test_plain_event"].iloc[0]
     assert row["data_json"].startswith("iai:enc:v1:")
 
 
 def test_migration_reports_duration(tmp_path):
-    """Result dict carries a duration_sec field."""
     from iai_mcp.migrate import migrate_encryption_v2_to_v3
     from iai_mcp.store import MemoryStore
 
@@ -284,7 +250,6 @@ def test_migration_reports_duration(tmp_path):
 
 
 def test_migration_preserves_plaintext_columns(tmp_path):
-    """language / tags / detail_level / embedding stay plaintext after migration."""
     from iai_mcp.migrate import migrate_encryption_v2_to_v3
     from iai_mcp.store import MemoryStore, RECORDS_TABLE
     from iai_mcp.types import EMBED_DIM

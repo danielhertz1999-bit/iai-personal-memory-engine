@@ -1,14 +1,3 @@
-"""Daemon-startup archiver for stuck lifecycle-state backup files.
-
-A historical recovery path left ``lifecycle_state.json.HIBERNATION-stuck.bak``
-artifacts in ``~/.iai-mcp/``. No current code generates them, but operator
-hygiene calls for moving any leftover ``.bak`` files into an ``archive/``
-subdirectory so the state directory stays clean.
-
-``archive_stuck_backups`` runs once per daemon boot. It is idempotent
-(collisions are skipped, never overwritten) and fail-safe (per-file
-exceptions are swallowed after a warning log line).
-"""
 from __future__ import annotations
 
 import logging
@@ -26,16 +15,6 @@ def archive_stuck_backups(
     state_dir: Path | None = None,
     archive_dir: Path | None = None,
 ) -> dict[str, int]:
-    """Move HIBERNATION-stuck backup files into a dated archive directory.
-
-    Each matching file's mtime is rendered as ``YYYYMMDDTHHMMSSZ`` and
-    appended to the original basename:
-    ``<name>-<mtime_iso_date>.bak``. The archive directory is created at
-    mode ``0o700`` when absent. Files whose archive destination already
-    exists are left in place and counted under ``skipped_existing``.
-
-    Returns ``{"moved": <int>, "skipped_existing": <int>}``.
-    """
     if state_dir is None:
         state_dir = Path.home() / ".iai-mcp"
     if archive_dir is None:

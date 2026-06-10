@@ -1,14 +1,3 @@
-"""Tests for iai_mcp.s5 -- identity kernel.
-
- constitutional:
-- ρ_identity = 0.99 (stricter than write-path ρ=0.95 and S4 ρ=0.97).
-- M-of-N = 3-of-5: a proposal becomes an invariant update only after 3
-  vigilance-passing proposals within the consensus window.
-- 48h cooldown on recently-updated invariants.
-- trust threshold = 0.9: any record with s5_trust_score >= 0.9 is an
-  "invariant-tier" record that cannot be written directly.
-- Every commit writes `s5_invariant_update` event with full provenance.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -18,8 +7,6 @@ import pytest
 
 from iai_mcp.types import EMBED_DIM, MemoryRecord
 
-
-# ---------------------------------------------------------------- helpers
 
 def _anchor(
     *,
@@ -31,8 +18,6 @@ def _anchor(
     language: str = "en",
 ) -> MemoryRecord:
     if vec is None:
-        # Normalised primary-axis vector so cosine against a near-identical
-        # proposal is close to 1.
         vec = [1.0] + [0.0] * (EMBED_DIM - 1)
     now = datetime.now(timezone.utc)
     return MemoryRecord(
@@ -60,8 +45,6 @@ def _anchor(
 
 
 class _FakeEmbedder:
-    """Deterministic embedder that returns a vector aligned with the anchor's
-    primary axis. Used to guarantee high cosine without hitting bge-m3."""
 
     DIM = EMBED_DIM
 
@@ -74,17 +57,11 @@ class _FakeEmbedder:
 
 @pytest.fixture(autouse=True)
 def _patch_embedder(monkeypatch):
-    """Monkeypatch Embedder inside s5.py so propose_invariant_update doesn't
-    try to load bge-m3 when encoding the proposed fact."""
-    # We patch at the Embedder class level so any `from iai_mcp.embed import Embedder`
-    # import inside s5 gets our fake.
     from iai_mcp import embed as embed_mod
 
     monkeypatch.setattr(embed_mod, "Embedder", _FakeEmbedder)
     yield
 
-
-# ---------------------------------------------------------------- constants
 
 def test_s5_constants():
     from iai_mcp import s5
@@ -108,11 +85,7 @@ def test_s5_exports_check_identity_anchor_on_write():
     assert callable(getattr(s5, "check_identity_anchor_on_write", None))
 
 
-# ---------------------------------------------------------------- propose_invariant_update
-
-
 def test_propose_invariant_update_first_proposal_stages(tmp_path):
-    """First call on an anchor returns ("staged", proposal_id)."""
     from iai_mcp.s5 import propose_invariant_update
     from iai_mcp.store import MemoryStore
 
@@ -128,7 +101,6 @@ def test_propose_invariant_update_first_proposal_stages(tmp_path):
 
 
 def test_propose_invariant_update_consensus_commits(tmp_path):
-    """3 distinct-session proposals agreeing -> 3rd returns ("committed",...)."""
     from iai_mcp.s5 import propose_invariant_update
     from iai_mcp.store import MemoryStore
 
@@ -145,14 +117,10 @@ def test_propose_invariant_update_consensus_commits(tmp_path):
 
 
 def test_propose_invariant_update_insufficient_consensus_rejected(tmp_path, monkeypatch):
-    """5 proposals with only 2 vigilance-passing -> ("rejected", None) at N=5."""
-    # For this test we need proposals that DON'T align with the anchor.
-    # Patch the embedder to return orthogonal vectors for every 2nd proposal.
     from iai_mcp import embed as embed_mod
     from iai_mcp.s5 import propose_invariant_update
     from iai_mcp.store import MemoryStore
 
-    # Cycle: pass, fail, fail, fail, fail -> 1 vigilance pass total (NOT 3).
     call_count = {"n": 0}
 
     class _AlternatingEmbedder:
@@ -161,9 +129,7 @@ def test_propose_invariant_update_insufficient_consensus_rejected(tmp_path, monk
         def embed(self, text):
             call_count["n"] += 1
             if call_count["n"] == 1:
-                # First proposal matches anchor exactly (cosine=1.0 passes ρ=0.99).
                 return [1.0] + [0.0] * (EMBED_DIM - 1)
-            # All subsequent proposals are orthogonal (cosine=0 < 0.99).
             vec = [0.0] * EMBED_DIM
             vec[call_count["n"] % EMBED_DIM] = 1.0
             return vec
@@ -181,12 +147,10 @@ def test_propose_invariant_update_insufficient_consensus_rejected(tmp_path, monk
     for i in range(5):
         v, _ = propose_invariant_update(store, anchor.id, f"fact {i}", f"s{i}")
         verdicts.append(v)
-    # 1 pass + 4 fails != 3-of-5 consensus -> final Nth should be "rejected"
     assert verdicts[-1] == "rejected"
 
 
 def test_propose_invariant_update_cooldown(tmp_path):
-    """After a successful update, subsequent proposals return ("cooldown", None)."""
     from iai_mcp.s5 import propose_invariant_update
     from iai_mcp.store import MemoryStore
 
@@ -194,13 +158,11 @@ def test_propose_invariant_update_cooldown(tmp_path):
     anchor = _anchor()
     store.insert(anchor)
 
-    # Push through consensus
     propose_invariant_update(store, anchor.id, "fact", "s1")
     propose_invariant_update(store, anchor.id, "fact", "s2")
     verdict_commit, _ = propose_invariant_update(store, anchor.id, "fact", "s3")
     assert verdict_commit == "committed"
 
-    # Next proposal hits cooldown
     verdict_next, pid = propose_invariant_update(
         store, anchor.id, "another fact", "s4"
     )
@@ -209,7 +171,6 @@ def test_propose_invariant_update_cooldown(tmp_path):
 
 
 def test_propose_invariant_update_writes_event(tmp_path):
-    """On commit, events table has kind=s5_invariant_update with provenance."""
     from iai_mcp.events import query_events
     from iai_mcp.s5 import propose_invariant_update
     from iai_mcp.store import MemoryStore
@@ -232,19 +193,15 @@ def test_propose_invariant_update_writes_event(tmp_path):
 
 
 def test_propose_invariant_update_vigilance_099(tmp_path, monkeypatch):
-    """Proposals with cosine < 0.99 (even if textually similar) don't count as consensus votes."""
     from iai_mcp import embed as embed_mod
     from iai_mcp.s5 import propose_invariant_update
     from iai_mcp.store import MemoryStore
 
-    # Every proposal is orthogonal to the anchor -> none pass vigilance.
     class _LowCosineEmbedder:
         DIM = EMBED_DIM
         _n = 0
 
         def embed(self, text):
-            # Return a mostly-orthogonal vector; cosine with anchor [1,0,...,0]
-            # will be near zero.
             vec = [0.0] * EMBED_DIM
             vec[1] = 1.0
             return vec
@@ -258,14 +215,11 @@ def test_propose_invariant_update_vigilance_099(tmp_path, monkeypatch):
     anchor = _anchor()
     store.insert(anchor)
 
-    # 5 proposals, none passing vigilance -> reject at Nth
     verdicts = []
     for i in range(5):
         v, _ = propose_invariant_update(store, anchor.id, f"fact {i}", f"s{i}")
         verdicts.append(v)
-    # None committed
     assert "committed" not in verdicts
-    # Final verdict is "rejected" once total=N=5
     assert verdicts[-1] == "rejected"
 
 
@@ -280,24 +234,18 @@ def test_propose_invariant_update_unknown_anchor_rejected(tmp_path):
     assert pid is None
 
 
-# ---------------------------------------------------------------- check_identity_anchor_on_write
-
-
 def test_check_identity_anchor_on_write_blocks_direct(tmp_path):
-    """Identity-tier record (s5_trust_score>=0.9) without s5_consensus tag: blocked."""
     from iai_mcp.s5 import check_identity_anchor_on_write
     from iai_mcp.store import MemoryStore
 
     store = MemoryStore(path=tmp_path)
     identity_rec = _anchor(s5_trust_score=0.95, tags=["identity"])
-    # No "s5_consensus" marker
     ok, reason = check_identity_anchor_on_write(store, identity_rec, {})
     assert ok is False
     assert "identity-tier" in reason.lower() or "propose" in reason.lower()
 
 
 def test_check_identity_anchor_on_write_allows_low_trust(tmp_path):
-    """s5_trust_score < 0.9 -> always allowed."""
     from iai_mcp.s5 import check_identity_anchor_on_write
     from iai_mcp.store import MemoryStore
 
@@ -308,7 +256,6 @@ def test_check_identity_anchor_on_write_allows_low_trust(tmp_path):
 
 
 def test_check_identity_anchor_on_write_allows_with_consensus_marker(tmp_path):
-    """Identity-tier record carrying s5_consensus tag -> allowed (coming from propose)."""
     from iai_mcp.s5 import check_identity_anchor_on_write
     from iai_mcp.store import MemoryStore
 
@@ -318,11 +265,7 @@ def test_check_identity_anchor_on_write_allows_with_consensus_marker(tmp_path):
     assert ok is True
 
 
-# ---------------------------------------------------------------- guarded_insert
-
 def test_guarded_insert_blocks_direct_identity_write(tmp_path):
-    """write.guarded_insert rejects direct identity-tier writes; caller
-    should route via propose_invariant_update."""
     from iai_mcp.store import MemoryStore
     from iai_mcp.write import guarded_insert
 
@@ -333,7 +276,6 @@ def test_guarded_insert_blocks_direct_identity_write(tmp_path):
 
 
 def test_guarded_insert_allows_low_trust_write(tmp_path):
-    """Non-identity write passes guarded_insert cleanly."""
     from iai_mcp.store import MemoryStore
     from iai_mcp.write import guarded_insert
 

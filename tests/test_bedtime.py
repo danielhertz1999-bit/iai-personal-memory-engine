@@ -1,21 +1,3 @@
-"""Tests for iai_mcp.bedtime -- Task 1.
-
-Covers 14 behaviours from the plan:
-1. English positive -- "good night" / "heading to bed" / "tired"
-2. English negative (phrase alone, no dual-gate)
-3. Russian positive
-4. Japanese positive
-5. Arabic positive
-6. de/fr/es/zh positive (one phrase per language at minimum)
-7. Cross-lingual fallback -- EN always tried; RU NOT tried under language="en"
-8. Dual-gate: phrase alone NOT enough (no quiet window -> None)
-9. Dual-gate: inside quiet window -> dict
-10. Dual-gate: within 30min of start -> dict
-11. Dual-gate: 1h before start -> None
-12. Fixture-driven corpus: 5 positive + 5 negative per language
-13. False positive rate < 10% on phrase-only check across all 8 fixtures
-14. ReDoS protection: 10KB input under 100ms total across all patterns
-"""
 from __future__ import annotations
 
 import time
@@ -39,9 +21,6 @@ UTC = timezone.utc
 FIXTURES = Path(__file__).parent / "fixtures" / "bedtime"
 
 
-# ---------------------------------------------------------------- phrase gate
-
-
 def test_english_positive() -> None:
     for cue in [
         "good night",
@@ -57,9 +36,6 @@ def test_english_positive() -> None:
 
 
 def test_english_phrase_matches_even_rhetorical() -> None:
-    """Phrase alone IS enough for the phrase gate -- the dual gate adds
-    the quiet-window filter. This test locks the phrase behaviour in
-    isolation so dual-gate tests can differentiate."""
     cue = "the villain said good night and laughed"
     matched, pattern = detect_wind_down_phrase(cue, "en")
     assert matched, "phrase gate alone is intentionally permissive"
@@ -114,11 +90,9 @@ def test_de_fr_es_zh_positive() -> None:
 
 
 def test_cross_lingual_en_is_fallback_but_ru_is_not() -> None:
-    # EN fallback always tried: "good night" under language="ru" still matches.
     matched_en_under_ru, _ = detect_wind_down_phrase("good night", "ru")
     assert matched_en_under_ru, "EN fallback must trigger regardless of language"
 
-    # RU is NOT tried under language="en": a purely Russian cue must NOT match.
     matched_ru_under_en, _ = detect_wind_down_phrase("я пойду спать", "en")
     assert not matched_ru_under_en, (
         "RU phrases must not fall back under language=en"
@@ -131,12 +105,8 @@ def test_phrase_empty_cue_no_match() -> None:
 
 
 def test_phrase_unknown_language_still_tries_english() -> None:
-    """Language we don't support (e.g. 'ko') must still try EN fallback."""
     matched, _ = detect_wind_down_phrase("good night", "ko")
     assert matched, "EN fallback required for unsupported languages too"
-
-
-# ---------------------------------------------------------------- quiet-window gate
 
 
 def _utc(y: int, m: int, d: int, hh: int, mm: int = 0) -> datetime:
@@ -148,54 +118,42 @@ def test_is_late_no_window() -> None:
 
 
 def test_is_late_inside_window() -> None:
-    # window = (44, 16) means start at bucket 44 = 22:00, duration 8h.
-    # 23:30 local should be inside.
     assert is_late_in_quiet_window(
         (44, 16), _utc(2026, 4, 18, 23, 30), UTC,
     ) is True
 
 
 def test_is_late_within_30min_of_start() -> None:
-    # start 22:00, now 21:45 -> within 30min -> True.
     assert is_late_in_quiet_window(
         (44, 16), _utc(2026, 4, 18, 21, 45), UTC,
     ) is True
 
 
 def test_is_late_exactly_30min_before_start() -> None:
-    # Boundary: 21:30 should still count (within 30min threshold, inclusive).
     assert is_late_in_quiet_window(
         (44, 16), _utc(2026, 4, 18, 21, 30), UTC,
     ) is True
 
 
 def test_is_late_one_hour_before_start() -> None:
-    # start 22:00, now 21:00 -> 60min before -> False.
     assert is_late_in_quiet_window(
         (44, 16), _utc(2026, 4, 18, 21, 0), UTC,
     ) is False
 
 
 def test_is_late_window_wraps_midnight() -> None:
-    # window = (44, 16): 22:00 start + 8h = 06:00 next morning.
-    # 02:30 local should be inside (post-midnight part of the window).
     assert is_late_in_quiet_window(
         (44, 16), _utc(2026, 4, 19, 2, 30), UTC,
     ) is True
 
 
 def test_is_late_outside_window_afternoon() -> None:
-    # window = (44, 16): 22:00-06:00. 15:00 afternoon -> outside + not within 30min.
     assert is_late_in_quiet_window(
         (44, 16), _utc(2026, 4, 18, 15, 0), UTC,
     ) is False
 
 
-# ---------------------------------------------------------------- dual-gate
-
-
 def test_dual_gate_phrase_alone_not_enough() -> None:
-    # Phrase matches but no quiet window set -> None.
     result = detect_wind_down(
         "good night", "en", state={}, now=_utc(2026, 4, 18, 12, 0), tz=UTC,
     )
@@ -203,7 +161,6 @@ def test_dual_gate_phrase_alone_not_enough() -> None:
 
 
 def test_dual_gate_no_phrase_inside_window() -> None:
-    # Inside window but no phrase match -> None.
     result = detect_wind_down(
         "let me check the code",
         "en",
@@ -230,7 +187,6 @@ def test_dual_gate_both_pass_inside_window() -> None:
 
 
 def test_dual_gate_both_pass_30min_before_window() -> None:
-    # 21:45 local, window starts 22:00 -> within 30min threshold.
     result = detect_wind_down(
         "good night",
         "en",
@@ -243,7 +199,6 @@ def test_dual_gate_both_pass_30min_before_window() -> None:
 
 
 def test_dual_gate_phrase_but_too_early() -> None:
-    # 21:00 local, window starts 22:00 -> 60min too early -> None.
     result = detect_wind_down(
         "good night",
         "en",
@@ -252,9 +207,6 @@ def test_dual_gate_phrase_but_too_early() -> None:
         tz=UTC,
     )
     assert result is None
-
-
-# ---------------------------------------------------------------- fixture corpus
 
 
 _LANGS = sorted(WIND_DOWN_BY_LANG.keys())
@@ -281,9 +233,6 @@ def test_fixture_corpus(lang: str) -> None:
 
 
 def test_fixture_corpus_false_positive_rate_under_10_percent() -> None:
-    """Across all 8 languages (80 lines = 40 pos + 40 neg), the phrase-only
-    false positive rate MUST be < 10%. The dual gate ratchets this down to
-    the target of <5% in practice."""
     fp_count = 0
     neg_total = 0
     for lang in _LANGS:
@@ -308,14 +257,9 @@ def test_fixture_corpus_false_positive_rate_under_10_percent() -> None:
     )
 
 
-# ---------------------------------------------------------------- ReDoS guard
-
-
 def test_redos_protection_bounded_quantifiers_under_100ms() -> None:
-    """All patterns are pre-compiled and use bounded quantifiers.
-    10KB of 'a' characters must execute in < 100ms across every pattern."""
     big = "a" * 10240
-    deadline = 0.100  # seconds
+    deadline = 0.100
     total_start = time.monotonic()
     for lang, patterns in bedtime._COMPILED.items():
         for p in patterns:
@@ -332,11 +276,7 @@ def test_redos_protection_bounded_quantifiers_under_100ms() -> None:
     )
 
 
-# ---------------------------------------------------------------- coverage sanity
-
-
 def test_language_coverage_is_exactly_eight_d11() -> None:
-    """wind-down regex must cover exactly the 8 shield.py languages."""
     assert WIND_DOWN_LANGUAGES_SUPPORTED == frozenset(
         {"en", "ru", "ja", "ar", "de", "fr", "es", "zh"},
     )
@@ -344,5 +284,4 @@ def test_language_coverage_is_exactly_eight_d11() -> None:
 
 
 def test_gate_minutes_before_is_thirty_d09() -> None:
-    """dual-gate: 30 minutes before quiet-window start counts as late."""
     assert WIND_DOWN_GATE_MINUTES_BEFORE == 30

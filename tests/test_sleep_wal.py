@@ -1,4 +1,3 @@
-"""Write-ahead log for destructive sleep operations."""
 from __future__ import annotations
 
 import json
@@ -8,11 +7,9 @@ import pytest
 
 from iai_mcp.sleep_wal import SleepWAL, WALEntry, TOMBSTONE_TTL_DAYS
 
-
 @pytest.fixture
 def wal(tmp_path):
     return SleepWAL(path=tmp_path / ".sleep-wal.jsonl")
-
 
 class TestWALBasics:
     def test_begin_creates_pending_entry(self, wal):
@@ -47,13 +44,11 @@ class TestWALBasics:
         wal.commit(e2)
         assert wal.pending_entries() == []
 
-
 class TestWALCrashRecovery:
     def test_pending_survives_reopen(self, tmp_path):
         path = tmp_path / ".sleep-wal.jsonl"
         wal1 = SleepWAL(path=path)
         entry = wal1.begin("consolidate_merge", ["m-1", "m-2"])
-        # Simulate crash — don't commit
         del wal1
 
         wal2 = SleepWAL(path=path)
@@ -72,7 +67,6 @@ class TestWALCrashRecovery:
         wal2 = SleepWAL(path=path)
         assert wal2.pending_entries() == []
 
-
 class TestWALDryRun:
     def test_dry_run_flag(self, tmp_path, monkeypatch):
         monkeypatch.setenv("IAI_MCP_ERASURE_DRY_RUN", "true")
@@ -86,12 +80,10 @@ class TestWALDryRun:
         assert entry.status == "pending"
         assert wal.path.exists()
 
-
 class TestWALCleanup:
     def test_cleanup_removes_old_committed(self, tmp_path):
         path = tmp_path / ".sleep-wal.jsonl"
         wal = SleepWAL(path=path)
-        # Write a committed entry with old timestamp
         old_entry = {
             "id": "old-1",
             "operation": "tombstone",
@@ -119,7 +111,6 @@ class TestWALCleanup:
         removed = wal.cleanup(max_age_hours=1)
         assert removed == 0
         assert len(wal.pending_entries()) == 1
-
 
 class TestTombstoneTTL:
     def test_ttl_is_7_days(self):

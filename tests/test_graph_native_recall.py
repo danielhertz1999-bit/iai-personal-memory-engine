@@ -1,24 +1,3 @@
-"""— graph-native recall tests (RED scaffold).
-
-Close the latency gap by switching recall_for_response's seed + spread
-stages from per-id ``store.get(rid)`` LanceDB round-trips to in-RAM
-``G.nodes[rid]`` attribute lookups. ``build_runtime_graph`` attaches the
-record payload (embedding, surface, centrality, tier) to every graph
-node so the recall hot path never touches disk for a graph-resident id.
-
-Covered contracts:
-
-  A1 — every node in G carries embedding + surface + centrality + tier
-       after ``build_runtime_graph``.
-  A2 — seed stage does NOT call ``store.get`` (patch raises if invoked).
-  A3 — spread stage (rank/reachable walk) does NOT call ``store.get``.
-  A4 — verbatim L0 fast path (cue_text exact-match / gate skip) still
-       hits ``store.get`` — invariant path is untouched.
-  A5 — partial sync / missing attribute on a node falls back to
-       ``store.get`` without crashing; recall still returns hits.
-  A6 — correctness fence: recall returns the seeded records with
-       high cosine similarity (no correctness regression).
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -34,12 +13,8 @@ from iai_mcp.store import MemoryStore
 from iai_mcp.types import MemoryRecord
 
 
-# --------------------------------------------------------------------------- fixtures
-
-
 @pytest.fixture(autouse=True)
 def _isolated_keyring(monkeypatch: pytest.MonkeyPatch):
-    """Swap macOS Keychain for an in-memory dict so tests don't prompt."""
     import keyring as _keyring
 
     fake: dict[tuple[str, str], str] = {}
@@ -54,7 +29,6 @@ def _isolated_keyring(monkeypatch: pytest.MonkeyPatch):
 
 
 class _DetEmbedder:
-    """Deterministic embedder — seeds record vectors by text hash."""
 
     def __init__(self, dim: int = 384) -> None:
         self.DIM = dim
@@ -99,8 +73,6 @@ def _make_record(vec: list[float], text: str) -> MemoryRecord:
 
 @pytest.fixture
 def seeded_store(tmp_path: Path) -> tuple[MemoryStore, _DetEmbedder, list[MemoryRecord]]:
-    """Fresh store with 12 records so the seed+spread stages have enough
-    material to exercise the graph-native read path."""
     store = MemoryStore(path=tmp_path / "hippo")
     store.root = tmp_path
     emb = _DetEmbedder(dim=store.embed_dim)
@@ -113,17 +85,10 @@ def seeded_store(tmp_path: Path) -> tuple[MemoryStore, _DetEmbedder, list[Memory
     return store, emb, recs
 
 
-# ---------------------------------------------------------------- A1: node payload
-
-
 def test_A1_build_runtime_graph_attaches_node_payload(seeded_store):
-    """A1: every node carries embedding + surface + centrality + tier in sidecar."""
     store, _emb, recs = seeded_store
     graph, _assignment, _rc = retrieve.build_runtime_graph(store)
 
-    # Post-untangle: payload lives in the _node_payload sidecar, surfaced via
-    # graph.get_payload(uuid). The legacy graph._nx.nodes[*] read path was
-    # retired by the mosaicsigma wave.
     listed = list(graph.iter_nodes())
     assert len(listed) == len(recs)
     for rec in recs:
@@ -132,8 +97,6 @@ def test_A1_build_runtime_graph_attaches_node_payload(seeded_store):
         assert "surface" in payload, f"node {rec.id} missing surface sidecar"
         assert "centrality" in payload, f"node {rec.id} missing centrality sidecar"
         assert "tier" in payload, f"node {rec.id} missing tier sidecar"
-        # Embedding list matches the record's embedding within float32 precision
-        # (SQLite stores embeddings as float32 BLOB; minor precision loss is expected).
         import pytest as _pt
         assert list(payload["embedding"]) == _pt.approx(
             list(rec.embedding), rel=1e-5
@@ -142,33 +105,18 @@ def test_A1_build_runtime_graph_attaches_node_payload(seeded_store):
         assert payload["tier"] == rec.tier
 
 
-# ---------------------------------------------------------------- A2: seed stage
-
-
 def test_A2_seed_stage_reads_from_graph_not_store(seeded_store):
-    """A2: seed stage (top-K by cosine) must NOT call store.get.
-
-    We patch MemoryStore.get to raise; if recall_for_response still returns
-    a non-empty RecallResponse, the seed stage is graph-native.
-    """
     store, emb, _recs = seeded_store
     graph, assignment, rich_club = retrieve.build_runtime_graph(store)
 
-    # The verbatim L0 fast-path (gate skip) calls store.get too — disable
-    # the skip by choosing a cue that the gate will NOT classify as trivial.
     cue = "explain the authentication migration for long-running deployments"
 
-    # AllowedError raises ONLY on the hot-path store.get; the L0 fast-path
-    # is known not to fire for this cue.
     class _Boom(RuntimeError):
         pass
 
     original_get = store.get
 
     def _explode(rid):
-        # Allow the verbatim L0 UUID fetch to pass through so the fast-path
-        # check (no L0 record seeded) is a clean miss — but any OTHER store.get
-        # call blows up.
         from uuid import UUID
         l0 = UUID("00000000-0000-0000-0000-000000000001")
         if rid == l0:
@@ -189,15 +137,7 @@ def test_A2_seed_stage_reads_from_graph_not_store(seeded_store):
     assert len(resp.hits) >= 1
 
 
-# ---------------------------------------------------------------- A3: spread stage
-
-
 def test_A3_spread_stage_reads_from_graph_not_store(seeded_store):
-    """A3: rank+spread stages do NOT call store.get either.
-
-    Same shape as A2 but asserts over the full reachable-union not just
-    seeds.
-    """
     store, emb, _recs = seeded_store
     graph, assignment, rich_club = retrieve.build_runtime_graph(store)
 
@@ -224,20 +164,11 @@ def test_A3_spread_stage_reads_from_graph_not_store(seeded_store):
             session_id="s",
             budget_tokens=1500,
         )
-    # If spread/rank was using store.get, we would have exploded above.
     assert isinstance(resp.hits, list)
 
 
-# ---------------------------------------------------------------- A4: L0 fast path
-
-
 def test_A4_verbatim_l0_fast_path_still_calls_store_get(seeded_store):
-    """A4: the L0 (gate-skip) fast path still hits store.get — unchanged.
-
-     invariant: verbatim recall path is NOT touched.
-    """
     store, emb, _recs = seeded_store
-    # Seed the deterministic L0 record so the gate-skip branch fires.
     from uuid import UUID
     l0_id = UUID("00000000-0000-0000-0000-000000000001")
     l0_vec = emb.embed("l0-identity")
@@ -250,7 +181,7 @@ def test_A4_verbatim_l0_fast_path_still_calls_store_get(seeded_store):
         embedding=l0_vec,
         community_id=None,
         centrality=0.0,
-        detail_level=5,  # never_decay
+        detail_level=5,
         pinned=True,
         stability=0.0,
         difficulty=0.0,
@@ -266,7 +197,6 @@ def test_A4_verbatim_l0_fast_path_still_calls_store_get(seeded_store):
     store.insert(l0_rec)
     graph, assignment, rich_club = retrieve.build_runtime_graph(store)
 
-    # Pick a cue that the gate treats as trivial (short / who-am-i style).
     cue = "hi"
 
     with mock.patch.object(MemoryStore, "get", wraps=store.get) as spy:
@@ -280,22 +210,12 @@ def test_A4_verbatim_l0_fast_path_still_calls_store_get(seeded_store):
             session_id="s",
             budget_tokens=1500,
         )
-    # At LEAST one store.get call on the L0 fast path (verbatim invariant).
     assert spy.call_count >= 1
 
 
-# ---------------------------------------------------------------- A5: fallback
-
-
 def test_A5_missing_node_attr_falls_back_to_store_get(seeded_store):
-    """A5: if a node somehow lacks the embedding (race / partial sync),
-    pool collection falls back to store.get and recall still returns
-    correct hits — no crash.
-    """
     store, emb, recs = seeded_store
     graph, assignment, rich_club = retrieve.build_runtime_graph(store)
-    # Blow away the embedding sidecar entry on half the nodes — pool
-    # collection will fall back to store.get for these.
     victims = [str(r.id) for r in recs[:6]]
     for nid_str in victims:
         sidecar = graph._node_payload.get(nid_str)
@@ -316,20 +236,10 @@ def test_A5_missing_node_attr_falls_back_to_store_get(seeded_store):
     assert len(resp.hits) >= 1
 
 
-# ---------------------------------------------------------------- A6: correctness
-
-
 def test_A6_m04_correctness_no_regression(seeded_store):
-    """A6: recall returns the seeded record whose text matches the cue.
-
-    Minimal correctness fence inside this file (the heavyweight
-    bench.verbatim sweep covers gap=5/20/100 elsewhere; this guards the
-    happy-path-does-not-regress invariant inside the unit suite).
-    """
     store, emb, recs = seeded_store
     graph, assignment, rich_club = retrieve.build_runtime_graph(store)
 
-    # Query with text similar to record 7 — its cosine should dominate.
     resp = recall_for_response(
         store=store,
         graph=graph,
@@ -340,8 +250,6 @@ def test_A6_m04_correctness_no_regression(seeded_store):
         session_id="s",
         budget_tokens=1500,
     )
-    # At least one hit comes back.
     assert len(resp.hits) >= 1
-    # All hit record ids are in the seeded record id set.
     seeded_ids = {r.id for r in recs}
     assert all(h.record_id in seeded_ids for h in resp.hits)

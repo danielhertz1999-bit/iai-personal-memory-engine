@@ -1,17 +1,3 @@
-"""`memory_capture` dedup contract — regression tests.
-
-* `test_query_similar_accepts_tier_kwarg` — `query_similar` must accept a
-  `tier` kwarg, must filter at the SQLite/hnswlib layer when it is given, and
-  must `ValueError` BEFORE any I/O on bad tier values.
-* `test_capture_turn_dedups_on_high_cos_match` — capturing the same semantic
-  cue twice yields one inserted + one reinforced; the cosine dedup branch is
-  reachable for semantic/consolidated tiers.
-* `test_capture_turn_inserts_on_low_cos` — distinct cues both insert; no
-  false dedup.
-* `test_reinforce_record_increments_edge_weight` — the `store.reinforce_record`
-  typed wrapper is a thin `boost_edges` delegate whose self-loop weight
-  increases monotonically across calls.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -23,13 +9,6 @@ import pytest
 from iai_mcp.capture import capture_turn
 from iai_mcp.store import MemoryStore
 from iai_mcp.types import EMBED_DIM, MemoryRecord
-
-
-# --------------------------------------------------------------------------- fixtures
-# Pattern shared with the anti-hits-malformed test fixtures
-# (`_isolated_keyring` autouse fixture is the project canon for tests touching
-# encrypted records on the construction host where the real keyring is absent
-# or hangs).
 
 
 @pytest.fixture(autouse=True)
@@ -59,11 +38,6 @@ def _make_record(
     tier: str = "episodic",
     embedding: list[float] | None = None,
 ) -> MemoryRecord:
-    """Minimal-record helper. Mirrors the shape used in the sibling test file
-    `test_pipeline_anti_hits_malformed.py:_make_record` so existing fixture
-    expectations transfer exactly. Defaults to a deterministic seed embedding
-    (`[0.1] * EMBED_DIM`) so multiple records made with this helper share a
-    high-cosine neighbourhood (the dedup tests need that)."""
     now = datetime.now(timezone.utc)
     return MemoryRecord(
         id=rid,
@@ -88,15 +62,7 @@ def _make_record(
     )
 
 
-# --------------------------------------------------------------------------- tests
-
-
 def test_query_similar_accepts_tier_kwarg(store):
-    """tier kwarg filters at the storage layer.
-
-    Returns only episodic rows when tier='episodic'; bad tier values raise
-    ValueError BEFORE any I/O; tier=None preserves legacy behaviour.
-    """
     rid_e = uuid4()
     rid_s = uuid4()
     store.insert(_make_record(rid_e, "episodic-cue", tier="episodic"))
@@ -108,28 +74,15 @@ def test_query_similar_accepts_tier_kwarg(store):
     assert rid_e in ids, "episodic record should be returned by tier='episodic'"
     assert rid_s not in ids, "semantic record must be filtered out by tier='episodic'"
 
-    # Bad tier -> ValueError before any I/O.
     with pytest.raises(ValueError):
         store.query_similar(embedding, k=10, tier="bogus")
 
-    # Backwards-compat: tier=None preserves the legacy behaviour (both rows
-    # are returned by the cosine query, no where-clause applied).
     out_none = store.query_similar(embedding, k=10, tier=None)
     ids_none = {r.id for r, _ in out_none}
     assert rid_e in ids_none and rid_s in ids_none
 
 
 def test_capture_turn_dedups_on_high_cos_match(store):
-    """Cosine near-dup dedup branch: second capture of identical text -> reinforced.
-
-    The cosine dedup gate applies to semantic (and consolidated) tiers.
-    Episodic conversational turns bypass cosine-dedup in favour of exact
-    idempotency-key matching (verbatim 1:1 contract), so this test uses
-    tier="semantic" to exercise the cosine branch directly.
-
-    Post-fix: dedup branch is reachable; second call returns
-    `status="reinforced"` and the semantic-record count stays at 1.
-    """
     text = "the user prefers Russian on the surface; English in storage"
     cue = "lang preference"
 
@@ -146,17 +99,11 @@ def test_capture_turn_dedups_on_high_cos_match(store):
     assert r2["status"] == "reinforced", f"second capture should reinforce, got {r2}"
     assert "cos=" in r2["reason"], f"reason should record cosine score, got {r2}"
 
-    # Record count remains 1 -- no duplicate inserted.
     rows = list(store.iter_records())
     assert len([r for r in rows if r.tier == "semantic"]) == 1
 
 
 def test_capture_turn_inserts_on_low_cos(store):
-    """Distinct cues -> two inserts, no false dedup.
-
-    Asymmetric guard: if the dedup branch fires on EVERY capture
-    (e.g. cos threshold misread), this test catches it.
-    """
     r1 = capture_turn(
         store=store, text="apples are red", cue="apple",
         tier="episodic", session_id="s1", role="user",
@@ -174,20 +121,12 @@ def test_capture_turn_inserts_on_low_cos(store):
 
 
 def test_reinforce_record_increments_edge_weight(store):
-    """reinforce_record self-loop weight increases monotonically across calls.
-
-    The typed wrapper builds `[(rid, rid)]` and delegates to `boost_edges`;
-    the canonical-pair coalescer produces the `(str(rid), str(rid))` self-loop
-    key, and the weight strictly increases on each successive call.
-    """
     rid = uuid4()
     store.insert(_make_record(rid, "anchor-record"))
 
     w1 = store.reinforce_record(rid)
     w2 = store.reinforce_record(rid)
 
-    # Both calls return dict[(str, str), float] keyed by the canonical
-    # sorted-self-loop pair.
     key = (str(rid), str(rid))
     assert key in w1, f"self-loop key missing from first call: {w1}"
     assert key in w2, f"self-loop key missing from second call: {w2}"

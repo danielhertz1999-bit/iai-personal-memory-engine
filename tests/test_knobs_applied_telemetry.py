@@ -1,20 +1,3 @@
-"""Assert the _knobs_applied audit-trail block on recall.
-
-Contract:
-  (a) Calling the production recall path (core.dispatch — NOT apply_profile
-      standalone) with default profile produces a response with
-      _knobs_applied listing 11 entries (8 helper + 2 upstream-gains +
-      1 wake_depth seed).
-  (b) Setting AUTIST-03 dunn_quadrant to a non-default value produces a
-      _knobs_applied entry whose provenance contains 'profile.py' —
-      proves upstream-gains accumulator is wired all the way to response.
-  (c) The accumulator value is deterministic.
-
-The production-path test exercises core.dispatch (or end-to-end MCP), NOT
-apply_profile standalone — to prove the upstream-gains accumulator is wired
-through pipeline.recall_for_response to the response. A passing
-apply_profile-only test would not exercise that wiring.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -25,13 +8,7 @@ from iai_mcp.response_decorator import HELPER_TO_KNOB_ID, apply_profile
 from iai_mcp.types import EMBED_DIM, MemoryRecord
 
 
-# --------------------------------------------------------------------------
-# Synthetic helpers (apply_profile unit tests)
-# --------------------------------------------------------------------------
-
-
 def _hit(literal: str = "h", suggestions: list[str] | None = None) -> dict:
-    """Build a synthetic hit dict matching the _hit_to_json shape."""
     return {
         "record_id": "00000000-0000-0000-0000-000000000001",
         "score": 0.5,
@@ -47,11 +24,7 @@ def _resp(hits: list[dict], **extra) -> dict:
     return base
 
 
-# ---- Unit: apply_profile dispatch-loop telemetry ---------------------------
-
-
 def test_knobs_applied_present_after_apply_profile() -> None:
-    """Every recall response carries _knobs_applied."""
     response = _resp([_hit()])
     profile = default_state()
     apply_profile(response, profile)
@@ -60,10 +33,6 @@ def test_knobs_applied_present_after_apply_profile() -> None:
 
 
 def test_knobs_applied_provenance_shape() -> None:
-    """Each value is '<file>:<symbol>' or '<file>:<symbol>:<extra>' (no-op marker).
-
-    All file components end in '.py'; all entries have at least file:symbol.
-    """
     response = _resp([_hit()])
     apply_profile(response, default_state())
     assert response["_knobs_applied"], "expected at least one helper entry"
@@ -76,7 +45,6 @@ def test_knobs_applied_provenance_shape() -> None:
 
 
 def test_knobs_applied_deterministic() -> None:
-    """Same call → same _knobs_applied dict."""
     response_1 = _resp([_hit()])
     response_2 = _resp([_hit()])
     profile = default_state()
@@ -86,10 +54,6 @@ def test_knobs_applied_deterministic() -> None:
 
 
 def test_knobs_applied_preserves_upstream_seeded_entries() -> None:
-    """apply_profile MUST extend, never overwrite — preserves entries
-    seeded by core.dispatch. The dispatch loop only
-    adds entries; pre-existing entries (AUTIST-03, AUTIST-09, MCP-12) stay.
-    """
     response = _resp(
         [_hit()],
         _knobs_applied={
@@ -110,7 +74,6 @@ def test_knobs_applied_preserves_upstream_seeded_entries() -> None:
 
 
 def test_knobs_applied_no_op_markers_for_pda_neutral() -> None:
-    """PDA-tolerance with mode=neutral records a no-op marker."""
     response = _resp([_hit()])
     profile = default_state()
     profile["demand_avoidance_tolerance"] = "neutral"
@@ -122,10 +85,8 @@ def test_knobs_applied_no_op_markers_for_pda_neutral() -> None:
 
 
 def test_knobs_applied_no_op_markers_for_inertia_off() -> None:
-    """inertia_awareness with knob=False records a no-op marker."""
     response = _resp([_hit()])
     profile = default_state()
-    # default inertia_awareness is False per profile.py KnobSpec.
     apply_profile(response, profile)
     ka = response["_knobs_applied"]
     assert "AUTIST-10" in ka
@@ -133,7 +94,6 @@ def test_knobs_applied_no_op_markers_for_inertia_off() -> None:
 
 
 def test_knobs_applied_no_op_marker_for_scene_construction_off() -> None:
-    """scene_construction_scaffold=False records a no-op marker."""
     response = _resp([_hit()])
     profile = default_state()
     profile["scene_construction_scaffold"] = False
@@ -143,48 +103,24 @@ def test_knobs_applied_no_op_marker_for_scene_construction_off() -> None:
     assert "no-op" in ka["AUTIST-14"], ka["AUTIST-14"]
 
 
-# ---- HELPER_TO_KNOB_ID exhaustiveness + no-fabrication ---------------------
-
-
 def test_helper_to_knob_id_has_11_verified_entries() -> None:
-    """HELPER_TO_KNOB_ID has exactly 11 verified
-    entries — 8 helper-keyed (the wired AUTIST helpers) + 2 upstream-gains
-    (dunn_quadrant, interest_boost) + 1 session-start (wake_depth).
-
-    NO entries for removed knobs (AUTIST-02 sensory_channel_weights,
-    AUTIST-08 event_vs_time_cue, AUTIST-11 alexithymia_accommodation,
-    AUTIST-12 double_empathy) — those knobs were deleted.
-    Re-introducing them here = silent regression.
-    """
     assert len(HELPER_TO_KNOB_ID) == 11, (
         f"HELPER_TO_KNOB_ID must have exactly 11 verified entries "
         f"(8 helper + 2 upstream-gains + 1 wake_depth seed), "
         f"got {len(HELPER_TO_KNOB_ID)}: {HELPER_TO_KNOB_ID}"
     )
     knob_ids = set(HELPER_TO_KNOB_ID.values())
-    # 10 AUTIST + 1 MCP-12 = 11 unique knob IDs.
     assert len(knob_ids) == 11, knob_ids
-    # No removed knobs.
     for removed in ("AUTIST-02", "AUTIST-08", "AUTIST-11", "AUTIST-12"):
         assert removed not in knob_ids, (
-            f"{removed} was removed in Plan 07.12-02; do not re-add"
+            f"{removed} was removed; do not re-add"
         )
-    # Required knob IDs are present.
     expected_autist = {f"AUTIST-{i:02d}" for i in (1, 3, 4, 5, 6, 7, 9, 10, 13, 14)}
     assert expected_autist.issubset(knob_ids), (expected_autist - knob_ids)
     assert "MCP-12" in knob_ids
 
 
-# ---- Profile gains accumulator -----------------------
-
-
 def test_profile_modulation_records_into_accumulator() -> None:
-    """profile_modulation_for_record(record, state, knobs_applied=acc) writes
-    AUTIST-01 / AUTIST-03 / AUTIST-09 provenance strings into acc when the
-    corresponding gain branch fires. Provenance MUST contain 'profile.py'
-    (proves upstream-gains accumulator is wired in profile.py, not stubbed
-    elsewhere).
-    """
     now = datetime.now(timezone.utc)
     rec = MemoryRecord(
         id=uuid4(),
@@ -214,20 +150,16 @@ def test_profile_modulation_records_into_accumulator() -> None:
 
     accumulator: dict[str, str] = {}
     gains = profile_modulation_for_record(rec, state, knobs_applied=accumulator)
-    assert "monotropism_depth" in gains  # behaviour unchanged
+    assert "monotropism_depth" in gains
     assert "AUTIST-01" in accumulator, accumulator
     assert "AUTIST-09" in accumulator, accumulator
     assert "AUTIST-03" in accumulator, accumulator
-    # Provenance MUST anchor in profile.py.
     assert "profile.py" in accumulator["AUTIST-01"], accumulator["AUTIST-01"]
     assert "profile.py" in accumulator["AUTIST-03"], accumulator["AUTIST-03"]
     assert "profile.py" in accumulator["AUTIST-09"], accumulator["AUTIST-09"]
 
 
 def test_profile_modulation_back_compat_without_kwarg() -> None:
-    """profile_modulation_for_record without knobs_applied still returns gains —
-    back-compat preserved for callers that don't pass the kwarg.
-    """
     now = datetime.now(timezone.utc)
     rec = MemoryRecord(
         id=uuid4(),
@@ -252,16 +184,11 @@ def test_profile_modulation_back_compat_without_kwarg() -> None:
     )
     state = default_state()
     state["interest_boost"] = 0.3
-    # No kwarg — must not raise, must return gains as before.
     gains = profile_modulation_for_record(rec, state)
     assert "interest_boost" in gains
 
 
-# ---- Integration: production core.dispatch path ---
-
-
 def _seed_one_record(store, text: str = "reference content") -> None:
-    """Canonical seed pattern shared with the first-turn recall test."""
     now = datetime.now(timezone.utc)
     rec = MemoryRecord(
         id=uuid4(),
@@ -288,26 +215,9 @@ def _seed_one_record(store, text: str = "reference content") -> None:
 
 
 def _call_production_dispatch_path(tmp_path, monkeypatch) -> dict:
-    """Exercise the PRODUCTION recall path end-to-end via core.dispatch.
-
-    This MUST hit core.dispatch with a non-empty store so the
-    recall_for_response branch runs and the upstream-gains accumulator
-    fires. An empty store would route to retrieve.recall, which does NOT
-    enter profile_modulation_for_record.
-
-    The fixture sets profile_state values that exercise the upstream gains
-    so AUTIST-03 / AUTIST-09 / AUTIST-01 entries are recorded with
-    profile.py provenance:
-      - dunn_quadrant="seeking" → AUTIST-03 fires
-      - interest_boost=0.5 → AUTIST-09 fires
-      - monotropism_depth has no matching tag → AUTIST-01 not from profile,
-        but the apply_profile dispatch loop still records it from the
-        helper.
-    """
     from iai_mcp import core
     from iai_mcp.store import MemoryStore
 
-    # Save module-level state so we don't leak into other tests.
     saved_profile = dict(core._profile_state)
     pending = {"sknobs": True}
 
@@ -343,38 +253,23 @@ def _call_production_dispatch_path(tmp_path, monkeypatch) -> dict:
 
 
 def test_knobs_applied_via_production_dispatch_path(tmp_path, monkeypatch) -> None:
-    """The production recall path (core.dispatch)
-    populates _knobs_applied with 11 entries, including AUTIST-03 / AUTIST-09
-    with provenance pointing into profile.py and MCP-12 with provenance
-    pointing into session.py.
-
-    A passing apply_profile-only test would not catch a stubbed upstream-gains
-    accumulator. This test exercises the production wiring end-to-end.
-    """
     response = _call_production_dispatch_path(tmp_path, monkeypatch)
 
     assert "_knobs_applied" in response, sorted(response.keys())
     ka = response["_knobs_applied"]
     assert isinstance(ka, dict), ka
 
-    # 11 entries: 8 helper-keyed + 2 upstream-gains + 1 wake_depth seed.
-    # Default-state recall fires every helper (helpers always record their
-    # entry; no-op markers preserve presence). Fixture sets seeking/0.5 so
-    # the upstream-gains entries fire too.
     assert len(ka) == 11, ka
 
-    # The upstream-gains entries MUST be present and anchored in profile.py.
     for required in ("AUTIST-03", "AUTIST-09", "MCP-12"):
         assert required in ka, (required, sorted(ka.keys()))
     assert "profile.py" in ka["AUTIST-03"], ka["AUTIST-03"]
     assert "profile.py" in ka["AUTIST-09"], ka["AUTIST-09"]
     assert "session.py" in ka["MCP-12"], ka["MCP-12"]
 
-    # Removed-knob keys MUST NOT appear (deleted them).
     for removed in ("AUTIST-02", "AUTIST-08", "AUTIST-11", "AUTIST-12"):
         assert removed not in ka, (removed, ka)
 
-    # The 10 AUTIST knob IDs that should be present.
     for autist in (
         "AUTIST-01", "AUTIST-03", "AUTIST-04", "AUTIST-05",
         "AUTIST-06", "AUTIST-07", "AUTIST-09", "AUTIST-10",

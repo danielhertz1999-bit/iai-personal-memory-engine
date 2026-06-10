@@ -1,17 +1,9 @@
-"""WAL pending-entries detection at daemon startup."""
 from __future__ import annotations
 
 import pytest
 
-
-# --------------------------------------------------------------------------- fixtures
-
-
 @pytest.fixture(autouse=True)
 def _isolated_keyring(monkeypatch: pytest.MonkeyPatch):
-    """Standard project test isolation. Without this fixture
-    the test will fail on the construction host because the OS keyring is
-    unavailable."""
     import keyring as _keyring
 
     fake: dict[tuple[str, str], str] = {}
@@ -24,37 +16,18 @@ def _isolated_keyring(monkeypatch: pytest.MonkeyPatch):
     )
     yield fake
 
-
-# --------------------------------------------------------------------------- tests
-
-
 def test_wal_pending_entries_behavioral(tmp_path):
-    """SleepWAL.pending_entries() returns [] when WAL file does not exist,
-    and returns at least 1 entry after a begin() call with no commit.
-
-    This exercises the mechanism the startup recovery relies on: a begin()
-    with no subsequent commit() or rollback() leaves a pending entry that
-    the startup recovery block will detect."""
     from iai_mcp.sleep_wal import SleepWAL
 
     wal = SleepWAL(path=tmp_path / ".sleep-wal.jsonl")
 
-    # No WAL file yet — must return empty list
     assert wal.pending_entries() == []
 
-    # Write a pending entry (no commit → remains pending)
     wal.begin(operation="optimize_drop", target_ids=["test-id"])
 
-    # At least one entry must be pending
     assert len(wal.pending_entries()) >= 1
 
-
 def test_grep_production_callsite_exists():
-    """Regression guard: daemon.py MUST contain the
-    'sleep_wal_pending_recovered' event emit string.
-
-    If this string is removed from daemon.py, the WAL startup recovery
-    has been de-wired and this test will fail, catching the regression."""
     from pathlib import Path
 
     repo_root = Path(__file__).resolve().parent.parent

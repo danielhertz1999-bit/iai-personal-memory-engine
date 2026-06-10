@@ -1,13 +1,3 @@
-"""Regression tests for `iai status` daemon probe via AF_UNIX socket.
-
-Previously cmd_status shelled out to `iai-mcp topology`, which opened
-MemoryStore() -> HippoDB -> exclusive fcntl lock. While the live daemon
-holds that lock, the subprocess always exited rc=1 -> status showed DOWN.
-The fix routes the probe through _send_jsonrpc_request (socket JSON-RPC),
-which the daemon answers without the lock contention.
-
-These tests are fully mocked: no live daemon, no real store, no socket I/O.
-"""
 from __future__ import annotations
 
 import io
@@ -23,7 +13,6 @@ def _make_args():
 
 
 def _noop_subscription(monkeypatch):
-    """Stub verify_credentials_subscription to avoid file I/O in these tests."""
     monkeypatch.setattr(
         "iai_mcp.claude_cli.verify_credentials_subscription",
         lambda: {"ok": True, "subscription_type": "active"},
@@ -31,7 +20,6 @@ def _noop_subscription(monkeypatch):
 
 
 def test_status_daemon_up_via_socket(monkeypatch):
-    """Socket returns topology result dict -> status shows UP + N + regime."""
     from iai_mcp import iai_cli
 
     fake_resp = {
@@ -64,7 +52,6 @@ def test_status_daemon_up_via_socket(monkeypatch):
 
 
 def test_status_daemon_down_graceful(monkeypatch):
-    """Socket returns None (daemon down/refused) -> graceful DOWN, no crash."""
     from iai_mcp import iai_cli
 
     monkeypatch.setattr("iai_mcp.cli._send_jsonrpc_request", lambda *a, **k: None)

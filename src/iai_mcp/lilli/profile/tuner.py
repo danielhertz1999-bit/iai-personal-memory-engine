@@ -1,21 +1,3 @@
-"""Retrieval-policy RL and identity-anchor trust refinement.
-
-Two mechanisms live here:
-
-1. Retrieval-policy RL -- tabular gradient on retrieval score weights.
-   Feedback sources:
-   - user acted on hit (used) -> boost W_COSINE
-   - user issued contradict (corrected) -> reduce W_COSINE
-   - user re-asked same cue (re_asked) -> reduce W_COSINE
-
-2. Epsilon-greedy bandit over retrieval strategies keyed by query type.
-
-3. Identity-anchor trust refinement -- reads s5_invariant_update /
-   s5_invariant_proposal events and drifts s5_trust_score up for
-   consistently-agreeing anchors, down for frequently-rejected ones.
-
-All writes go through the events table; no.jsonl files.
-"""
 from __future__ import annotations
 
 import random
@@ -27,45 +9,26 @@ from iai_mcp.events import query_events
 from iai_mcp.store import MemoryStore
 
 
-# ---------------------------------------------------------------- constants
-
 LEARN_RATE: float = 0.05
 MAX_WEIGHT: float = 5.0
 MIN_WEIGHT: float = 0.0
-EPSILON_EXPLORE: float = 0.1  # bandit exploration probability
-
-
-# ---------------------------------------------------------------- feedback
+EPSILON_EXPLORE: float = 0.1
 
 
 @dataclass
 class RetrievalFeedback:
-    """Implicit feedback signal on a memory_recall response."""
 
-    query_type: str                # e.g. "fact_lookup" | "open_ended" | "contradiction_check"
+    query_type: str
     hit_ids: list[UUID]
     used_ids: list[UUID] = field(default_factory=list)
-    corrected: bool = False        # user issued memory_contradict on a hit
-    re_asked: bool = False         # user re-issued the same cue within 5 turns
-
-
-# ---------------------------------------------------------------- retrieval-policy RL
+    corrected: bool = False
+    re_asked: bool = False
 
 
 def update_retrieval_weights(
     feedback: RetrievalFeedback,
     current_weights: dict[str, float],
 ) -> dict[str, float]:
-    """Tabular gradient on retrieval score weights.
-
-    Primary signal: use-rate = |used_ids ∩ hit_ids| / |hit_ids|.
-    delta = (use_rate - 0.5) * LEARN_RATE
-    Correction penalty: -LEARN_RATE
-    Re-ask penalty: -LEARN_RATE * 0.5
-
-    All weights clamped to [MIN_WEIGHT, MAX_WEIGHT].
-    Returns a new dict (does not mutate the input).
-    """
     w = dict(current_weights)
     delta = 0.0
     if feedback.hit_ids:
@@ -81,14 +44,10 @@ def update_retrieval_weights(
     w_cos = w.get("W_COSINE", 1.0)
     w["W_COSINE"] = max(MIN_WEIGHT, min(MAX_WEIGHT, w_cos + delta))
 
-    # Clamp other weights in case of external mutation.
     for k in ("W_AAAK", "W_DEGREE", "W_AGE"):
         if k in w:
             w[k] = max(MIN_WEIGHT, min(MAX_WEIGHT, w[k]))
     return w
-
-
-# ---------------------------------------------------------------- epsilon-greedy bandit
 
 
 def pick_retrieval_strategy(
@@ -96,20 +55,6 @@ def pick_retrieval_strategy(
     history: dict,
     strategies: list[str] | None = None,
 ) -> str:
-    """Epsilon-greedy bandit over retrieval strategies per query type.
-
-    `history` shape:
-        {
-            "<query_type>": {
-                "<strategy>": {"mean": float, "n": int},
-                ...
-            },
-            ...
-        }
-
-    Returns the strategy with the highest mean for this query_type except on
-    the epsilon fraction of calls where a random strategy is explored.
-    """
     strategies = strategies or ["pipeline_default", "greedy_2hop", "rich_club_first"]
     if random.random() < EPSILON_EXPLORE:
         return random.choice(strategies)
@@ -122,9 +67,6 @@ def pick_retrieval_strategy(
     )
 
 
-# ---------------------------------------------------------------- trust refinement
-
-
 TRUST_INCREMENT_PER_COMMIT: float = 0.02
 TRUST_DECREMENT_PER_REJECT: float = 0.01
 
@@ -134,13 +76,6 @@ def refine_s5_trust_score(
     record_id: UUID,
     current: float,
 ) -> float:
-    """Identity-anchor trust score drifts based on consensus history.
-
-    +TRUST_INCREMENT per s5_invariant_update event with agree_count >= 3
-    -TRUST_DECREMENT per s5_invariant_proposal with passes_vigilance == False
-
-    Clamped to [0, 1].
-    """
     updates = query_events(store, kind="s5_invariant_update", limit=200)
     commits = sum(
         1 for e in updates

@@ -1,23 +1,3 @@
-"""Shared-cosine helpers — load-bearing infrastructure tests.
-
-Verifies the shared-cosine helpers:
-
-- single shared cosine pass — `_collect_graph_pool` is the (ids, embs)
-  pool collector that feeds the one-shot matmul at the top of `_recall_core`.
-- mode-dependent community-gate soft bias — `COMMUNITY_BIAS_VERBATIM`
-  (0.0, literal / episodic) and
-  `COMMUNITY_BIAS_CONCEPT` (0.1, semantic / categorical
-  hint), dispatched by `_gate_bias_for_mode(mode)` from the cue-classifier
-  in `core.dispatch()`.
-- candidate-pool size — `K_CANDIDATES = 200`, justified by the
-  empirical 99th-percentile gold rank from the LongMemEval-S v1 trace
-  plus 30% margin.
-- `_RecallCoreResult` — dataclass shape returned by `_recall_core`.
-
-These probes are the first wave of the redesign tests; the
-heavier behavioural fixture (matmul-counter, gate-as-diagnostic, verbatim
-filter placement, etc.) lives in `tests/test_recall_core_unit.py`.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -32,7 +12,6 @@ from iai_mcp.types import EMBED_DIM, MemoryRecord
 
 
 def _make(vec: list[float], text: str = "rec") -> MemoryRecord:
-    """Construct a MemoryRecord for shared-cosine pool tests."""
     now = datetime.now(timezone.utc)
     return MemoryRecord(
         id=uuid4(),
@@ -57,17 +36,7 @@ def _make(vec: list[float], text: str = "rec") -> MemoryRecord:
     )
 
 
-# --------------------------------------------------- _collect_graph_pool tests
-
-
 def test_collect_graph_pool_returns_aligned_ids_and_embeddings(tmp_path) -> None:
-    """fast path: graph._nx node attr "embedding" is the cheap source.
-
-    Build 5 nodes whose primary-axis embeddings are pre-installed onto
-    the NetworkX node dict (the `build_runtime_graph` shape). Assert the
-    returned (ids, embs) pair is row-aligned: pool_embs[i] == records[i].embedding
-    when pool_ids[i] == records[i].id.
-    """
     from iai_mcp.pipeline import _collect_graph_pool
 
     store = MemoryStore(path=tmp_path / "hippo")
@@ -81,8 +50,6 @@ def test_collect_graph_pool_returns_aligned_ids_and_embeddings(tmp_path) -> None
     graph = MemoryGraph()
     for rec in records:
         graph.add_node(rec.id, community_id=None, embedding=list(rec.embedding))
-        # Mirror what build_runtime_graph does: write the payload into the
-        # sidecar so _collect_graph_pool's fast path hits via get_embedding.
         graph.set_node_payload(rec.id, {"embedding": list(rec.embedding)})
 
     pool_ids, pool_embs = _collect_graph_pool(graph, None, store)
@@ -90,7 +57,6 @@ def test_collect_graph_pool_returns_aligned_ids_and_embeddings(tmp_path) -> None
     assert len(pool_ids) == 5
     assert pool_embs.shape == (5, EMBED_DIM)
     assert pool_embs.dtype == np.float32
-    # Row alignment: pool_embs[i] reflects pool_ids[i]'s record.
     id_to_rec = {r.id: r for r in records}
     for i, rid in enumerate(pool_ids):
         rec = id_to_rec[rid]
@@ -100,12 +66,6 @@ def test_collect_graph_pool_returns_aligned_ids_and_embeddings(tmp_path) -> None
 
 
 def test_collect_graph_pool_empty_graph(tmp_path) -> None:
-    """Empty graph returns ([], np.zeros((0, embed_dim), dtype=float32)).
-
-    The shape and dtype contract is load-bearing: downstream callers
-    (_recall_core) need a 2D float32 array even when the pool is empty,
-    so `pool_embs @ cue_vec` short-circuits cleanly to an empty result.
-    """
     from iai_mcp.pipeline import _collect_graph_pool
 
     store = MemoryStore(path=tmp_path / "hippo")
@@ -117,7 +77,6 @@ def test_collect_graph_pool_empty_graph(tmp_path) -> None:
 
 
 def test_collect_graph_pool_falls_back_to_store_get(tmp_path) -> None:
-    """When _nx.nodes has no embedding, _collect_graph_pool falls back to store.get."""
     from iai_mcp.pipeline import _collect_graph_pool
 
     store = MemoryStore(path=tmp_path / "hippo")
@@ -126,7 +85,6 @@ def test_collect_graph_pool_falls_back_to_store_get(tmp_path) -> None:
     store.insert(rec)
     graph = MemoryGraph()
     graph.add_node(rec.id, community_id=None, embedding=list(vec))
-    # Ensure the sidecar does NOT carry the embedding (force fallback path).
     sidecar = graph._node_payload.get(str(rec.id))
     if sidecar and "embedding" in sidecar:
         del sidecar["embedding"]
@@ -140,11 +98,7 @@ def test_collect_graph_pool_falls_back_to_store_get(tmp_path) -> None:
     )
 
 
-# --------------------------------------------------------- module-level constants
-
-
 def test_K_CANDIDATES_is_200() -> None:
-    """K_CANDIDATES = 200, single module constant (no tier branch)."""
     from iai_mcp.pipeline import K_CANDIDATES
 
     assert K_CANDIDATES == 200
@@ -152,11 +106,6 @@ def test_K_CANDIDATES_is_200() -> None:
 
 
 def test_COMMUNITY_BIAS_constants_are_mode_dependent() -> None:
-    """verbatim=0.0 (pure) and concept=0.1 (CLS neocortical).
-
-    Constants live at module level for downstream (`_recall_core` Stage 5)
-    + test introspection. They are floats, never strings or ints.
-    """
     from iai_mcp.pipeline import COMMUNITY_BIAS_CONCEPT, COMMUNITY_BIAS_VERBATIM
 
     assert COMMUNITY_BIAS_VERBATIM == 0.0
@@ -166,31 +115,16 @@ def test_COMMUNITY_BIAS_constants_are_mode_dependent() -> None:
 
 
 def test_gate_bias_for_mode_returns_correct_value() -> None:
-    """helper: dispatch off mode parameter; defensive default is 0.0.
-
-    Anything other than the literal string "concept" returns
-    COMMUNITY_BIAS_VERBATIM (0.0) so a malformed / missing / case-mismatched
-    mode never accidentally biases recall toward categorical filtering.
-    """
     from iai_mcp.pipeline import _gate_bias_for_mode
 
     assert _gate_bias_for_mode("verbatim") == 0.0
     assert _gate_bias_for_mode("concept") == 0.1
-    # Defensive defaults — "never accidentally bias" rule.
     assert _gate_bias_for_mode("unknown") == 0.0
     assert _gate_bias_for_mode("") == 0.0
-    # Case-sensitive: "CONCEPT" is NOT "concept".
     assert _gate_bias_for_mode("CONCEPT") == 0.0
 
 
 def test_RecallCoreResult_dataclass_has_required_fields() -> None:
-    """`_RecallCoreResult` is the shape returned by `_recall_core`.
-
-    Default-constructed instance has all 7 fields present with
-    correct empty/default values so downstream entry points
-    (recall_for_response / recall_for_benchmark in 08-02) can apply
-    pack/cap on a fully-populated structure.
-    """
     from iai_mcp.pipeline import _RecallCoreResult
 
     r = _RecallCoreResult()

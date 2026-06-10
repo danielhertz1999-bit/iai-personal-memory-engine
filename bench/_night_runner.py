@@ -1,42 +1,9 @@
-"""Tonight-only bench wrapper that forces buffer flush before queries.
-
-Background:
-   (Hippo storage migration) made MemoryStore.insert buffered.
-  Inserts accumulate in an in-process buffer that flushes on size threshold
-  (IAI_MCP_RECORD_BUFFER_MAX, default 500), time threshold (5 s), or
-  explicit flush_record_buffer(store). Existing benches do
-  "insert N records then query" with N below the size threshold and
-  faster than the time threshold, so the queries see an empty table.
-
-  The proper fix is to add flush_record_buffer() calls in each bench
-  after batch insert (a per-bench refactor).
-
-  This shim is a TONIGHT-ONLY wrapper that monkey-patches
-  MemoryStore.query_similar and the recall pipeline entry points to
-  flush the record/edge/event buffers first. The patches affect the
-  bench-process only; the production daemon (separate process) is
-  unaffected. The patches do not change persistent data, only the
-  flush timing.
-
-Usage:
-    .venv/bin/python bench/_night_runner.py <bench_module> [args...]
-
-Example:
-    IAI_MCP_STORE=/tmp/bench-1 IAI_MCP_CRYPTO_PASSPHRASE=disposable \\
-      .venv/bin/python bench/_night_runner.py verbatim
-"""
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 from types import ModuleType
 
-# When invoked as `python bench/_night_runner.py …`, Python puts only
-# `bench/` on sys.path. Add the worktree root + src/ so `from bench import …`
-# and `import iai_mcp` both resolve. Canonical bench shim form (matches
-# tests/test_bench_worktree_resolution.py contract: `_SRC_PATH =...` +
-# `if _SRC_PATH not in sys.path:` at module level, BEFORE any iai_mcp/bench
-# import).
 _SRC_PATH = str(Path(__file__).resolve().parent.parent / "src")
 _ROOT_PATH = str(Path(__file__).resolve().parent.parent)
 if _SRC_PATH not in sys.path:
@@ -45,10 +12,6 @@ if _ROOT_PATH not in sys.path:
     sys.path.insert(0, _ROOT_PATH)
 
 
-# Static dispatch table: every supported bench is mapped to a thunk that
-# performs an EXPLICIT literal-name import. No dynamic `importlib.import_module`
-# call anywhere, so semgrep CWE-706 cannot fire and there is no way for an
-# attacker-controlled argv to load arbitrary code.
 def _load_verbatim() -> ModuleType:
     from bench import verbatim  # noqa: PLC0415
     return verbatim
@@ -96,7 +59,6 @@ _BENCH_DISPATCH = {
 
 
 def _apply_patches() -> None:
-    """Monkey-patch query paths to flush record/edge/event buffers first."""
     from iai_mcp.store import MemoryStore, flush_record_buffer, flush_edge_buffer
     from iai_mcp.events import flush_event_buffer
     from iai_mcp import retrieve

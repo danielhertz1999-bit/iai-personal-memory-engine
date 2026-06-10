@@ -1,20 +1,3 @@
-"""User-facing terminal CLI: `iai`.
-
-Distinct from `iai-mcp` (operator-side daemon ops + maintenance). The `iai`
-CLI is the user-tier interface — short, colored, fast — for driving memory
-operations from a shell:
-
-    iai recall "what did I work on yesterday"
-    iai capture "the export format is JSONL with one record per line"
-    iai ask    "summarize the auth refactor I started last week"
-    iai status
-
-Recall + capture talk to the daemon over the AF_UNIX socket via the
-shared `_send_jsonrpc_request` helper in `iai_mcp.cli`. On daemon-down
-recall falls back to hippocampus-led direct-store recall (the always-
-available awake memory); bank-recall is the final fallback only when
-the hippocampus store is genuinely absent or unopenable.
-"""
 from __future__ import annotations
 
 import argparse
@@ -26,23 +9,17 @@ from typing import Any
 __version__ = "1.0.0"
 
 
-# Brand color (ANSI bright cyan). Honors the POSIX-standard NO_COLOR env
-# var and TTY detection — pipes and redirected stdout get plain text.
 _CYAN = "\x1b[96m"
 _DIM = "\x1b[2m"
 _RESET = "\x1b[0m"
 
 
 def _color(text: str, *, color: str = _CYAN) -> str:
-    """Wrap text in an ANSI color unless NO_COLOR is set or stdout
-    isn't a tty (POSIX-friendly default)."""
     if os.environ.get("NO_COLOR") or not sys.stdout.isatty():
         return text
     return f"{color}{text}{_RESET}"
 
 
-# Block-letter ASCII art rendered in brand cyan. Six-row figure in ANSI
-# Shadow font. Encodes the CLI wordmark "iai-cli".
 _LOGO_LINES: tuple[str, ...] = (
     "  ██╗ █████╗ ██╗     ██████╗██╗     ██╗",
     "  ██║██╔══██╗██║    ██╔════╝██║     ██║",
@@ -54,8 +31,6 @@ _LOGO_LINES: tuple[str, ...] = (
 
 
 def _print_logo() -> None:
-    """Print the cyan logo + tagline. Idempotent and side-effect-free
-    beyond stdout writes — safe to call from `--help` paths."""
     for line in _LOGO_LINES:
         print(_color(line))
     print(_color("  iai-cli · terminal memory for your agent  ", color=_DIM))
@@ -63,11 +38,6 @@ def _print_logo() -> None:
 
 
 def _format_hits(hits: list[dict], *, max_surface_chars: int = 200) -> str:
-    """Render the recall result list as a 2-line-per-hit block.
-
-    Each hit:
-        0.812  <surface truncated to max_surface_chars>
-    """
     lines: list[str] = []
     for h in hits:
         surface = (h.get("literal_surface") or h.get("surface") or "")[:max_surface_chars]
@@ -81,62 +51,26 @@ def _format_hits(hits: list[dict], *, max_surface_chars: int = 200) -> str:
 
 
 def cmd_recall(args: argparse.Namespace) -> int:
-    """`iai recall <cue>` — graph-native recall via daemon socket.
-
-    Daemon-down path:
-    1. PRIMARY: direct-store recall (hippocampus-led) against the resolved
-       store root.  Root is IAI_MCP_STORE if set, else ~/.iai-mcp.  Uses
-       recall_semantic_warm which gives full structural parity post-warm,
-       or an instant recency degrade on cold start.  Store is reached
-       regardless of daemon lifecycle — the hippocampus is always-available.
-    2. LAST RESORT: bank-recall subprocess, ONLY when the store is genuinely
-       absent (no brain.sqlite3) or the direct-store call raises.
-
-    Per-operation daemon-dependence (honest framing):
-    - Daemon up: full graph-pipeline via socket.
-    - Daemon down, store present: hippocampus-led direct-store recall.
-    - Daemon down, store absent: bank-recall fallback.
-
-    --json flag: print a JSON payload for programmatic use by the MCP wrapper.
-    """
     import json as _json
 
-    # Lazy import keeps `iai --help` cheap.
     from iai_mcp.cli import _send_jsonrpc_request
 
     cue = args.cue
     limit = max(1, int(args.limit))
     json_mode = bool(getattr(args, "json", False))
 
-    # Short read timeout for the memory_recall RPC so a slow/stalled daemon
-    # degrades in ~2s instead of burning the full 30s read_timeout.
-    # The daemon is still used when it replies promptly (healthy fast path).
-    # Overridable via IAI_RECALL_READ_TIMEOUT env var for power users.
-    # NOTE: cli.py's _send_jsonrpc_request 30.0 default is NOT changed; only
-    # this iai-recall call site passes a short value (other callers like
-    # `iai-mcp daemon status` rely on the default for their own timeouts).
     _raw_rt = os.environ.get("IAI_RECALL_READ_TIMEOUT", "")
     try:
         _recall_read_timeout = max(0.5, float(_raw_rt))
     except (ValueError, TypeError):
         _recall_read_timeout = 2.0
 
-    # Small freshness margin (seconds) for the asleep-skip decision.
-    # When the daemon is confidently SLEEP/HIBERNATION AND has been in that
-    # state for longer than this margin, skip the socket round-trip and recall
-    # in-process via the hippocampus path.  The margin keeps the skip away from
-    # the SLEEP-transition boundary (stale-SLEEP-near-wake race).  Any state
-    # read failure, too-fresh timestamp, or non-SLEEP state falls through to the
-    # normal RPC.  Overridable via IAI_RECALL_ASLEEP_MARGIN_SEC.
     _raw_am = os.environ.get("IAI_RECALL_ASLEEP_MARGIN_SEC", "")
     try:
         _asleep_margin_sec = max(0.0, float(_raw_am))
     except (ValueError, TypeError):
         _asleep_margin_sec = 3.0
 
-    # Asleep-detection: read the lifecycle state file under the resolved store
-    # root cheaply (no socket, no ping).  Skip the RPC only when the daemon is
-    # confidently asleep (SLEEP or HIBERNATION, since_ts older than the margin).
     _asleep = False
     try:
         from datetime import datetime as _dt, timezone as _tz
@@ -183,12 +117,6 @@ def cmd_recall(args: argparse.Namespace) -> int:
             print(_format_hits(hits))
             return 0
 
-    # Daemon unreachable or malformed reply.
-    # PRIMARY degraded path: hippocampus-led direct-store recall against the
-    # resolved store root. Store root is IAI_MCP_STORE if set, else the
-    # default ~/.iai-mcp. Bank is the LAST resort, only when the store is
-    # genuinely absent (no brain.sqlite3) or the direct recall raises.
-    # The daemon memory_recall handler does NOT self-call embed_cue.
 
     _store_root_direct: "str | None" = None
     _store_reached: bool = False
@@ -200,10 +128,6 @@ def cmd_recall(args: argparse.Namespace) -> int:
         store_root = _Path(_store_env) if _store_env else _Path.home() / ".iai-mcp"
         _store_root_direct = str(store_root)
 
-        # Guard: only attempt direct-store recall when the store is present.
-        # HippoDB creates directories on first open (even read_only=True creates
-        # the dir), so checking the SQLite file distinguishes an initialised
-        # store from a genuinely absent one.
         _hippo_db = store_root / "hippo" / "brain.sqlite3"
         if not _hippo_db.exists():
             raise FileNotFoundError(f"store absent: {_hippo_db}")
@@ -211,9 +135,6 @@ def cmd_recall(args: argparse.Namespace) -> int:
         _store_reached = True
         degraded_hits = _recall_warm(store_root, cue, n=limit)
 
-        # Store was reached — return regardless of whether hits are non-empty.
-        # Empty result means the cue has no matches in the hippocampus; that is
-        # a legitimate "(no hits)" answer, NOT a reason to fall through to bank.
         if json_mode:
             _src = (degraded_hits[0].get("_source", "direct-store") if degraded_hits else "direct-store")
             payload = {
@@ -238,11 +159,8 @@ def cmd_recall(args: argparse.Namespace) -> int:
         return 0
     except Exception:  # noqa: BLE001
         if _store_reached:
-            # Store was opened but recall itself failed; surface partial error.
             pass
-        # Store absent or recall failed — fall through to bank last resort.
 
-    # Last resort: bank-recall subprocess (store absent or direct-store open failed).
     print(_color("(daemon unreachable — bank-fallback)", color=_DIM), file=sys.stderr)
     completed = subprocess.run(  # noqa: S603 -- argv list, no shell
         ["iai-mcp", "bank-recall", "--query", cue, "--limit", str(limit)],
@@ -259,21 +177,6 @@ def cmd_recall(args: argparse.Namespace) -> int:
 
 
 def cmd_ask(args: argparse.Namespace) -> int:
-    """`iai ask "<question>"` -- recall memories, then synthesize an
-    answer via the user's Claude subscription (`claude -p` subprocess).
-
-    Pipeline:
-      1. Recall top-K hits for the question
-      2. Build a compact JSON prompt with question + memories
-      3. Invoke claude_cli.invoke_claude_sync (subscription-billed)
-      4. Print answer with a 'Sources:' footer of recall ids
-
-    Failure modes (all return non-zero with stderr explanation):
-      - Recall returned no hits -> "(no memories to ground the answer)"
-      - subscription gate denies (missing/expired creds)
-      - BudgetTracker.can_spend denies (daily/weekly cap reached)
-      - claude -p timeout / nonzero exit / unparseable output
-    """
     import json as _json
 
     from iai_mcp.cli import _send_jsonrpc_request
@@ -281,7 +184,6 @@ def cmd_ask(args: argparse.Namespace) -> int:
     question = args.question
     limit = max(1, int(args.limit))
 
-    # Step 1: recall
     recall_resp = _send_jsonrpc_request(
         "memory_recall",
         {"cue": question, "budget_tokens": limit * 300},
@@ -299,7 +201,6 @@ def cmd_ask(args: argparse.Namespace) -> int:
         )
         return 1
 
-    # Step 2: build compact JSON prompt
     memories = [
         {
             "id": str(h.get("id") or h.get("record_id") or "?"),
@@ -314,7 +215,6 @@ def cmd_ask(args: argparse.Namespace) -> int:
         f"Memories: {_json.dumps(memories)}"
     )
 
-    # Step 3: subscription-billed subprocess
     from iai_mcp.claude_cli import invoke_claude_sync
 
     result = invoke_claude_sync(prompt, model="haiku", timeout_sec=60.0)
@@ -339,19 +239,9 @@ def cmd_ask(args: argparse.Namespace) -> int:
 
 
 def cmd_status(args: argparse.Namespace) -> int:  # noqa: ARG001 -- argparse contract
-    """`iai status` -- 5-line user-tier health summary.
-
-    Distinct from `iai-mcp doctor` (operator-tier with 17 checks). This is
-    the short version a user runs from their shell to confirm everything
-    is alive and pointing at the right credentials.
-    """
     from iai_mcp.claude_cli import verify_credentials_subscription
     from iai_mcp.cli import _send_jsonrpc_request
 
-    # Probe the daemon over the AF_UNIX socket (JSON-RPC topology call).
-    # The daemon owns the Hippo exclusive lock and can serve topology while
-    # holding it — no deadlock. None return means socket absent/refused/timeout
-    # (daemon down or mid-REM busy), which collapses gracefully to DOWN.
     daemon_state = "DOWN"
     record_count = "?"
     regime = "?"
@@ -364,7 +254,6 @@ def cmd_status(args: argparse.Namespace) -> int:  # noqa: ARG001 -- argparse con
             record_count = str(n) if n is not None else "?"
             regime = str(result.get("regime") or "?")
 
-    # Subscription
     creds = verify_credentials_subscription()
     if creds.get("ok"):
         sub_label = creds.get("subscription_type") or creds.get("billing_type") or "active"
@@ -380,11 +269,6 @@ def cmd_status(args: argparse.Namespace) -> int:  # noqa: ARG001 -- argparse con
 
 
 def cmd_capture(args: argparse.Namespace) -> int:
-    """`iai capture "<text>"` — write one episodic record.
-
-    Primary path: daemon socket (richer capture pipeline).
-    Daemon-down fallback: direct write to the Hippo store (H2 — no hard-fail).
-    """
     from iai_mcp.cli import _send_jsonrpc_request
 
     text = args.text
@@ -400,9 +284,6 @@ def cmd_capture(args: argparse.Namespace) -> int:
         },
     )
     if not isinstance(resp, dict):
-        # Daemon unreachable.  Direct-write fallback only when IAI_MCP_STORE is
-        # explicitly set (hermetic / operator-configured env).  Without it we
-        # refuse to write to the default ~/.iai-mcp path — start the daemon.
         store_root_env = os.environ.get("IAI_MCP_STORE")
         if store_root_env:
             try:
@@ -453,7 +334,6 @@ def cmd_capture(args: argparse.Namespace) -> int:
 
 
 def _resolve_store_root():
-    """Resolve the store root: IAI_MCP_STORE env first, then ~/.iai-mcp."""
     from pathlib import Path
 
     env = os.environ.get("IAI_MCP_STORE")
@@ -461,15 +341,6 @@ def _resolve_store_root():
 
 
 def cmd_last(args: argparse.Namespace) -> int:
-    """`iai last [--n N] [--session SESSION_ID] [--json]` — show most-recent user turns.
-
-    The DIRECT store read (no daemon socket, no flock) is the PRIMARY path.
-    Returns drained store turns even when the daemon is down. The daemon
-    socket is an optional accelerator: if the direct read yields nothing AND
-    the daemon is reachable, the socket result is used instead.
-
-    --json: emit turns as a JSON object on stdout (for MCP wrapper shell-out).
-    """
     import json as _json
 
     from iai_mcp.direct_recency import read_recent_user_turns_direct
@@ -480,21 +351,15 @@ def cmd_last(args: argparse.Namespace) -> int:
 
     store_root = _resolve_store_root()
 
-    # --- PRIMARY PATH: direct store read (daemon-free) ---
     turns_direct = read_recent_user_turns_direct(store_root, n=n, session_id=session_id)
 
-    # Merge pending live-capture events that haven't yet drained into the store.
     from iai_mcp.capture import read_pending_live_events
 
     pending = read_pending_live_events(session_id=session_id)
 
     if turns_direct or pending:
-        # Build the merged turn list the same way core.episodes_recent does.
-        # Avoid opening a locked MemoryStore — assemble turn dicts directly
-        # from the pre-fetched store rows and pending events.
         from iai_mcp.capture import _idem_tag as _cap_idem_tag
 
-        # Build store idem-tag set for dedup.
         store_idem_set: set[str] = set()
         for r in turns_direct:
             for tag in (r.tags or []):
@@ -518,7 +383,6 @@ def cmd_last(args: argparse.Namespace) -> int:
             seen_pending.add(idem)
             pending_user.append(ev)
 
-        # Build serialisable turn dicts for all results.
         turn_dicts = []
         for r in turns_direct:
             turn_dicts.append({
@@ -545,7 +409,6 @@ def cmd_last(args: argparse.Namespace) -> int:
                 "captured_at": ev.get("ts_iso"),
             })
 
-        # Sort newest-first, cap to n.
         from datetime import datetime, timezone
 
         def _ts_key(d: dict):
@@ -575,7 +438,6 @@ def cmd_last(args: argparse.Namespace) -> int:
             print(_color(f"[{captured}] {sid}: {surface}"))
         return 0
 
-    # --- OPTIONAL ACCELERATOR: daemon socket (only when direct read empty) ---
     from iai_mcp.cli import _send_jsonrpc_request
 
     resp = _send_jsonrpc_request(

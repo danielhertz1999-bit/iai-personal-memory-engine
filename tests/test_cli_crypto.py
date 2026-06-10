@@ -1,15 +1,3 @@
-"""iai-mcp crypto + iai-mcp migrate --from=2 --to=3 CLI tests.
-
-The keyring backend was retired in favor of a file-backed primary backend at
-`{IAI_MCP_STORE}/.crypto.key` (32 raw bytes, mode 0o600). CLI tests
-monkeypatch IAI_MCP_STORE to a tmp_path and pre-create / inspect the file
-directly.
-
-Commands under test:
-- `iai-mcp crypto status`         -> JSON-ish status of file backend + user_id
-- `iai-mcp crypto rotate`         -> rotate key + re-encrypt all records
-- `iai-mcp migrate --from=2 --to=3 [--dry-run]`  -> encryption migration
-"""
 from __future__ import annotations
 
 import json
@@ -23,16 +11,6 @@ import pytest
 
 
 def test_cli_crypto_status_shows_file_backend(tmp_path, monkeypatch, capsys):
-    """`iai-mcp crypto status` reports the file backend.
-
-    Pre-creates a 32-byte 0o600 `.crypto.key` in the store root, calls the
-    status command, asserts:
-      - exit code 0
-      - output mentions backend=file
-      - output includes the file path (or at least its filename)
-      - output exposes mode 0o600
-      - NO mention of "keyring" (the backend is gone)
-    """
     import argparse
 
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
@@ -50,33 +28,20 @@ def test_cli_crypto_status_shows_file_backend(tmp_path, monkeypatch, capsys):
     out_lower = out.lower()
     assert exit_code == 0
     assert "default" in out
-    # New file-backend output contract:
     assert "file" in out_lower, f"status must report backend=file; got:\n{out}"
     assert ".crypto.key" in out, f"status must include the file path; got:\n{out}"
     assert "600" in out, f"status must expose mode 0o600; got:\n{out}"
-    # The keyring shape is gone:
     assert "keyring" not in out_lower, (
         f"status must NOT mention keyring (backend retired); got:\n{out}"
     )
 
 
 def test_cli_crypto_rotate_regenerates_key(tmp_path, monkeypatch, capsys):
-    """`iai-mcp crypto rotate` writes a fresh key to the
-    file backend AND re-encrypts records under the new key.
-
-    Pre-creates a `.crypto.key` (key A) at 0o600, seeds a record encrypted
-    under key A, calls rotate, asserts:
-      - the file now contains different 32 bytes at mode 0o600
-      - the seeded record's ciphertext was re-encrypted (different blob,
-        still iai:enc:v1: prefixed, decrypts to the original plaintext
-        through the rotated wrapper)
-    """
     import argparse
 
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
     monkeypatch.delenv("IAI_MCP_CRYPTO_PASSPHRASE", raising=False)
 
-    # Seed key A in the file backend.
     key_path = tmp_path / ".crypto.key"
     key_a = secrets.token_bytes(32)
     key_path.write_bytes(key_a)
@@ -86,7 +51,6 @@ def test_cli_crypto_rotate_regenerates_key(tmp_path, monkeypatch, capsys):
     from iai_mcp.store import MemoryStore, RECORDS_TABLE
     from iai_mcp.types import EMBED_DIM, MemoryRecord
 
-    # Seed a record under the initial key.
     store = MemoryStore()
     rec = MemoryRecord(
         id=uuid4(),
@@ -121,31 +85,24 @@ def test_cli_crypto_rotate_regenerates_key(tmp_path, monkeypatch, capsys):
     assert exit_code == 0
     assert "rotat" in out.lower()
 
-    # File backend invariant: the key file now holds different 32 bytes
-    # at mode 0o600.
     new_key_bytes = key_path.read_bytes()
     assert len(new_key_bytes) == 32
     assert new_key_bytes != key_a, "rotate must write a fresh key to the file"
     mode = stat.S_IMODE(os.stat(key_path).st_mode)
     assert mode == 0o600, f"rotated key file must be 0o600, got 0o{mode:03o}"
 
-    # Data invariant: the seeded record was re-encrypted under the new key.
-    # store2 picks up the rotated key from the file backend; the AESGCM
-    # wrapper cache is freshly built from the new key.
     store2 = MemoryStore()
     post_ct = store2.db.open_table(RECORDS_TABLE).to_pandas()[
         lambda df: df["id"] == str(rec.id)
     ].iloc[0]["literal_surface"]
     assert post_ct.startswith("iai:enc:v1:")
-    assert post_ct != initial_ct  # Re-encrypted under a new key.
-    # Content round-trip still works through the rotated key.
+    assert post_ct != initial_ct
     got = store2.get(rec.id)
     assert got is not None
     assert got.literal_surface == "rotation test content"
 
 
 def test_cli_migrate_to_3_dry_run_counts_plaintext_rows(tmp_path, monkeypatch, capsys):
-    """iai-mcp migrate --from=2 --to=3 --dry-run prints a plaintext-row count."""
     import argparse
 
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
@@ -154,7 +111,6 @@ def test_cli_migrate_to_3_dry_run_counts_plaintext_rows(tmp_path, monkeypatch, c
     from iai_mcp.types import EMBED_DIM, MemoryRecord
 
     store = MemoryStore()
-    # Forcibly add a PLAINTEXT row directly to the table (bypass insert()'s encryption).
     rid = uuid4()
     row = {
         "id": str(rid),
@@ -187,13 +143,11 @@ def test_cli_migrate_to_3_dry_run_counts_plaintext_rows(tmp_path, monkeypatch, c
     exit_code = cmd_migrate(args)
     out = capsys.readouterr().out
     assert exit_code == 0
-    # Output mentions a record count + the word migrate/would.
     assert "would" in out.lower() or "dry" in out.lower() or "migrat" in out.lower()
-    assert "1" in out  # We planted exactly one plaintext row.
+    assert "1" in out
 
 
 def test_cli_migrate_to_3_encrypts_plaintext_rows(tmp_path, monkeypatch, capsys):
-    """`iai-mcp migrate --from=2 --to=3` actually encrypts plaintext rows."""
     import argparse
 
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
@@ -242,7 +196,6 @@ def test_cli_migrate_to_3_encrypts_plaintext_rows(tmp_path, monkeypatch, capsys)
 def test_cli_migrate_to_3_rejects_unsupported_version_pair(
     tmp_path, monkeypatch, capsys
 ):
-    """--from=9 --to=42 is rejected with a clear error + non-zero exit."""
     import argparse
 
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
@@ -253,34 +206,21 @@ def test_cli_migrate_to_3_rejects_unsupported_version_pair(
     err = capsys.readouterr().err.lower()
     out = capsys.readouterr().out.lower()
     assert exit_code != 0
-    # Some guidance in stderr or stdout.
     assert ("unsupported" in err or "invalid" in err or
             "unsupported" in out or "invalid" in out)
 
 
 def test_neural_map_bench_passes_after_encryption(tmp_path):
-    """bench/neural_map N=100 must still pass <100ms p95 post-encryption.
-
-    Load-robust: skips on a busy host (wall-clock latency is then noise) and
-    asserts the MINIMUM p95 over N independent runs (best-of-N rejects a single
-    transient outlier). The encryption-correctness aspect is preserved — the
-    bench seeds + reads through the encrypted store on every run; only the
-    wall-clock assertion is wrapped. bench/neural_map.py thresholds unchanged.
-    """
     from bench.neural_map import run_neural_map_bench, D_SPEED_P95_MS
 
     from _perf_helpers import best_of_n, skip_if_loaded
 
     skip_if_loaded()
 
-    # First run carries the structural/correctness sanity (the encrypted store
-    # actually round-trips N=100 records over 10 iterations).
     out = run_neural_map_bench(n=100, iterations=10, store_path=tmp_path / "run0", seed=0)
     assert out["n"] == 100
     assert out["iterations"] == 10
 
-    # best-of-N on p95: each run gets its own fresh store dir + seed so the
-    # runs are independent (no shared warm-cache state).
     counter = {"i": 0}
 
     def _one_p95() -> float:
@@ -301,12 +241,6 @@ def test_neural_map_bench_passes_after_encryption(tmp_path):
 
 
 def test_cli_crypto_init_creates_fresh_file(tmp_path, monkeypatch, capsys):
-    """`iai-mcp crypto init` creates a fresh 32-byte 0o600 file.
-
-    No file pre-existing; no keyring needed; resulting file must be exactly
-    32 bytes at mode 0o600, exit 0, output cites the path. The key bytes
-    themselves MUST NOT appear in stdout.
-    """
     import argparse
 
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
@@ -326,15 +260,10 @@ def test_cli_crypto_init_creates_fresh_file(tmp_path, monkeypatch, capsys):
     assert key_path.stat().st_size == 32
     mode = stat.S_IMODE(os.stat(key_path).st_mode)
     assert mode == 0o600, f"init key file must be 0o600, got 0o{mode:03o}"
-    # Output cites the path so the user knows where the key lives.
     assert ".crypto.key" in out
-    # The 32 raw key bytes MUST NOT appear in the output (no key disclosure).
     raw = key_path.read_bytes()
-    # Stdout is decoded; a binary blob would not round-trip cleanly. Sanity:
-    # check that no run of >=4 raw bytes appears in stdout.
     for i in range(0, 32, 4):
         chunk = raw[i:i + 4]
-        # Skip null-padded windows that could trivially collide with text.
         if chunk == b"\x00\x00\x00\x00":
             continue
         assert chunk.decode("latin-1") not in out, (
@@ -343,11 +272,6 @@ def test_cli_crypto_init_creates_fresh_file(tmp_path, monkeypatch, capsys):
 
 
 def test_cli_crypto_init_refuses_when_file_exists(tmp_path, monkeypatch, capsys):
-    """`iai-mcp crypto init` refuses if `.crypto.key` exists.
-
-    Pre-create any-content file at the canonical path; `init` must exit 1
-    with an error pointing at the path. File contents must be unchanged.
-    """
     import argparse
 
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
@@ -365,27 +289,16 @@ def test_cli_crypto_init_refuses_when_file_exists(tmp_path, monkeypatch, capsys)
     err = capsys.readouterr().err
     assert exit_code == 1
     assert ".crypto.key" in err
-    # File contents unchanged.
     assert key_path.read_bytes() == pre
 
 
 def test_cli_crypto_rotate_invalidates_aesgcm_cache(tmp_path, monkeypatch):
-    """`cmd_crypto_rotate` MUST invalidate the cached AESGCM after writing
-    the fresh key.
-
-    The rotate test above (`test_cli_crypto_rotate_regenerates_key`) reads
-    post-rotate state via a fresh `MemoryStore()` which sidesteps the cache
-    entirely; removing the hook would not break it. This test pins the hook
-    directly via `unittest.mock.patch.object` so a future refactor that drops
-    the `store._invalidate_aesgcm_cache()` line is caught immediately.
-    """
     import argparse
     from unittest.mock import patch
 
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
     monkeypatch.delenv("IAI_MCP_CRYPTO_PASSPHRASE", raising=False)
 
-    # Seed a key file so the rotate path proceeds normally.
     key_path = tmp_path / ".crypto.key"
     key_path.write_bytes(secrets.token_bytes(32))
     os.chmod(key_path, 0o600)

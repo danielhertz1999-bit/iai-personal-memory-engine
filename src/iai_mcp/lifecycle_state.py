@@ -1,16 +1,3 @@
-"""Typed schema + atomic load/save for lifecycle_state.json.
-
-The 4-state lifecycle (WAKE / DROWSY / SLEEP / HIBERNATION) needs a single
-source of truth on disk. The daemon is the ONLY writer of
-`~/.iai-mcp/lifecycle_state.json`; wrappers signal events via Unix socket
-OR atomic-write `~/.iai-mcp/wake.signal` filesystem marker.
-
-Persistence pattern mirrors `daemon_state.py` and `maintenance.py`:
-- Writes via `tempfile.mkstemp` + `os.replace` (POSIX atomic rename).
-- Crash mid-write leaves the prior file intact; readers either see
-  the old complete blob or the new complete blob, never partial bytes.
-- File mode 0o600 (user-only).
-"""
 from __future__ import annotations
 
 import json
@@ -21,12 +8,10 @@ from enum import Enum
 from pathlib import Path
 from typing import TypedDict
 
-# Default location. Overridable for tests via the `path` arg of load/save.
 LIFECYCLE_STATE_PATH: Path = Path.home() / ".iai-mcp" / "lifecycle_state.json"
 
 
 class LifecycleState(str, Enum):
-    """Four lifecycle states."""
 
     WAKE = "WAKE"
     DROWSY = "DROWSY"
@@ -35,84 +20,38 @@ class LifecycleState(str, Enum):
 
 
 class SleepCycleProgress(TypedDict, total=False):
-    """Per-attempt progress of the multi-step sleep pipeline.
-
-    All fields optional so the dict can be partially populated mid-cycle;
-    `last_completed_index=-1` and `attempt=1` represent a freshly-started
-    cycle.
-
-    The field `last_completed_step` was renamed to `last_completed_index`
-    (a position into `SleepPipeline._STEP_ORDER`). The legacy key remains
-    in the schema so older `lifecycle_state.json` files round-trip cleanly;
-    `SleepPipeline._load_progress` migrates the value on read.
-    """
 
     last_completed_index: int
-    # Legacy key kept for back-compat reads (in-memory migrated by
-    # `SleepPipeline._load_progress`). Absent on records written by current code.
     last_completed_step: int
     attempt: int
     last_error: str | None
-    started_at: str  # ISO-8601 UTC
+    started_at: str
 
 
 class Quarantine(TypedDict):
-    """A failing sleep step can quarantine the cycle until `until_ts`."""
 
-    until_ts: str   # ISO-8601 UTC
+    until_ts: str
     reason: str
-    since_ts: str   # ISO-8601 UTC
+    since_ts: str
 
 
 class LifecycleStateRecord(TypedDict):
-    """On-disk schema for `lifecycle_state.json`.
 
-    `sleep_cycle_progress` and `quarantine` are nullable; the rest are
-    always present in a well-formed record. `shadow_run` toggles whether
-    the state machine actually executes process termination on
-    HIBERNATION (False post-) or merely logs the would-action.
-    """
-
-    current_state: str   # one of LifecycleState values
-    since_ts: str        # ISO-8601 UTC
-    last_activity_ts: str  # ISO-8601 UTC
+    current_state: str
+    since_ts: str
+    last_activity_ts: str
     wrapper_event_seq: int
     sleep_cycle_progress: SleepCycleProgress | None
     quarantine: Quarantine | None
     shadow_run: bool
-    # crisis_mode: True when EssentialVariableTracker has detected a topology
-    # breach in the most recent sleep cycle; CRISIS_RECLUSTER step short-
-    # circuits to no-op unless True. Cleared back to False after one
-    # successful CRISIS_RECLUSTER pass. Owned by S2Coordinator.set_crisis_mode
-    # (the sole production writer).
     crisis_mode: bool
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def _utc_now_iso() -> str:
-    """Return ISO-8601 UTC timestamp with explicit `+00:00` suffix.
-
-    `isoformat()` on a UTC-aware datetime emits `+00:00` rather than `Z`.
-    Both forms are valid ISO-8601; downstream readers (CLI status, event
-    log, Hypothesis tests) parse via `datetime.fromisoformat` which
-    accepts the offset form.
-    """
     return datetime.now(timezone.utc).isoformat()
 
 
 def default_state() -> LifecycleStateRecord:
-    """Return a fresh WAKE record with shadow_run=False (default).
-
-    Used by `load_state` when the file is absent or malformed (self-heal),
-    and by tests / callers that need a known starting point.
-
-    HIBERNATION transitions exit the daemon process via the global shutdown
-    event in `daemon.main()`. The lifecycle state machine owns shutdown
-    authority.
-    """
     now = _utc_now_iso()
     return {
         "current_state": LifecycleState.WAKE.value,
@@ -127,13 +66,6 @@ def default_state() -> LifecycleStateRecord:
 
 
 def _validate_record(raw: object) -> LifecycleStateRecord:
-    """Reject malformed JSON; return a typed copy on success.
-
-    A minimal schema check — enough to catch hand-edited corruption and
-    out-of-band writes from a stale schema version, without pulling in
-    pydantic for runtime validation. Reads stay zero-allocation past the
-    JSON parse step.
-    """
     if not isinstance(raw, dict):
         raise ValueError(
             f"lifecycle_state record must be a JSON object, got {type(raw).__name__}"
@@ -163,9 +95,6 @@ def _validate_record(raw: object) -> LifecycleStateRecord:
             f"lifecycle_state.shadow_run must be a bool, got {shadow!r}"
         )
 
-    # Back-compat: absent crisis_mode on pre- lifecycle_state.json
-    # files is tolerated as False. Save_state writes the explicit key going
-    # forward so the absent path triggers only on the first read after deploy.
     crisis_mode = raw.get("crisis_mode", False)
     if not isinstance(crisis_mode, bool):
         raise ValueError(
@@ -191,18 +120,10 @@ def _validate_record(raw: object) -> LifecycleStateRecord:
                     f"lifecycle_state.quarantine.{k} must be string"
                 )
 
-    # Cast is safe after the checks above; mypy/pylance accept the dict.
     return raw  # type: ignore[return-value]
 
 
 def load_state(path: Path | None = None) -> LifecycleStateRecord:
-    """Read `lifecycle_state.json`; return `default_state()` if absent.
-
-    On JSON-decode error or schema-validation error: also returns a
-    fresh default state. The legacy file is left in place (no auto-delete)
-    so an operator can inspect it; `save_state` will overwrite it on the
-    next persist.
-    """
     target = path if path is not None else LIFECYCLE_STATE_PATH
     if not target.exists():
         return default_state()
@@ -217,19 +138,7 @@ def load_state(path: Path | None = None) -> LifecycleStateRecord:
 
 
 def save_state(record: LifecycleStateRecord, path: Path | None = None) -> None:
-    """Atomically persist `record` via tempfile + os.replace.
-
-    Mirrors `daemon_state.save_state` bullet-for-bullet:
-    creates parent dir if missing; writes to a sibling temp file in the
-    same directory (required so os.replace is an atomic same-filesystem
-    rename); fsyncs the file contents before rename so the data is on
-    disk; chmods 0o600 before the swap so the visible file is never
-    world-readable; on exception unlinks the temp file so /tmp does not
-    accumulate.
-    """
     target = path if path is not None else LIFECYCLE_STATE_PATH
-    # Validate before writing so callers get an early ValueError on
-    # malformed records rather than persisting garbage to disk.
     _validate_record(record)
 
     target.parent.mkdir(parents=True, exist_ok=True)

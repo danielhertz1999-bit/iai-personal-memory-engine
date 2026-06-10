@@ -1,12 +1,3 @@
-"""Tests for the AAAK index generator + English-raw enforcement.
-
-Rules:
-- Storage is RAW VERBATIM English always.
-- AAAK is a RETRIEVAL VIEW only: wing/room/entities/tags metadata string.
-- The index MUST NOT contain literal_surface content.
-- Non-English literal_surface must be flagged with a `raw:<lang>` tag; unflagged
-  non-English content raises ValueError at write time via enforce_english_raw.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -52,11 +43,7 @@ def _make(
     )
 
 
-# ------------------------------------------------ generate_aaak_index format
-
-
 def test_aaak_index_has_exactly_three_slashes():
-    """Format invariant: W:<>/R:<>/E:<>/T:<> -> 3 separators regardless of content."""
     r = _make()
     idx = generate_aaak_index(r)
     assert idx.count("/") == 3
@@ -82,22 +69,16 @@ def test_aaak_index_has_four_key_value_segments():
 def test_aaak_index_includes_entity_tag_stripped():
     r = _make(tags=["entity:Alice", "entity:IAI-MCP", "project"])
     idx = generate_aaak_index(r)
-    # entity: prefix stripped; entities comma-joined
     assert "Alice" in idx.split("/E:")[1]
     assert "IAI-MCP" in idx.split("/E:")[1]
 
 
 def test_aaak_index_deterministic():
-    """Same record -> same index on repeat calls."""
     r = _make(tags=["entity:X", "flag"])
     assert generate_aaak_index(r) == generate_aaak_index(r)
 
 
-# -------------------------------------------------------------- no-leak
-
-
 def test_aaak_index_does_not_contain_literal_surface():
-    """literal_surface MUST NOT appear anywhere in the index."""
     verbatim = "Alice mentioned the SECRET_PASSWORD_ABC_XYZ on day 3"
     r = _make(text=verbatim, tags=["entity:Alice", "project"])
     idx = generate_aaak_index(r)
@@ -106,7 +87,6 @@ def test_aaak_index_does_not_contain_literal_surface():
 
 
 def test_aaak_index_unknown_community_marker():
-    """community_id=None -> room becomes 'unknown'."""
     r = _make(community_id=None)
     idx = generate_aaak_index(r)
     assert "R:unknown" in idx
@@ -115,15 +95,10 @@ def test_aaak_index_unknown_community_marker():
 def test_aaak_index_dash_when_no_entities():
     r = _make(tags=["project"])
     idx = generate_aaak_index(r)
-    # No entity: tags -> E:-
     assert "/E:-/" in idx
 
 
-# -------------------------------------------------------- parse round-trip
-
-
 def test_parse_aaak_index_round_trips_entities_and_tags():
-    """parse(generate(r)) recovers the entity + tag lists."""
     r = _make(tier="semantic", tags=["entity:Alice", "entity:IAI", "project", "urgent"])
     idx = generate_aaak_index(r)
     parsed = parse_aaak_index(idx)
@@ -140,12 +115,8 @@ def test_parse_aaak_dash_segments_become_empty_lists():
     assert parsed["tags"] == []
 
 
-# ------------------------------------------ English-raw enforcement
-
-
 def test_enforce_english_raw_accepts_pure_english():
     r = _make(text="Alice said the IAI-MCP project is go")
-    # Should not raise
     enforce_english_raw(r)
 
 
@@ -161,7 +132,6 @@ def test_enforce_english_raw_accepts_cyrillic_with_raw_tag():
         text="Alice сказал: пусть сохранится точно",
         tags=["raw:ru", "project"],
     )
-    # With explicit raw:ru declaration the rule is satisfied.
     enforce_english_raw(r)
 
 

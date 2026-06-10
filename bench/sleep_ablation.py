@@ -1,114 +1,4 @@
 #!/usr/bin/env python3
-"""Sleep-ablation benchmark — measures recall quality BEFORE vs AFTER a real
-local consolidation cycle (sleep-on vs sleep-off differentiator).
-
-Design rationale
-----------------
-The system is CLS/hippocampus-cortex: records start at stability=0.0 and gain
-strength through sleep (FSRS stability boost, DREAM_DECAY prune, cluster LTP,
-schema-mine).  The designed strength is POST-consolidation.  This bench
-measures whether that strength translates into measurable recall improvement.
-
-Corpus design
--------------
-* 4 thematic clusters × 5 target facts + 10 in-cluster confusors each
-  (topics: weather, cooking, fitness, coding) = 20 targets + 40 confusors.
-* 100 off-topic noise records. Total: 160 records.
-* In-cluster confusors are on the same topic as the target cluster but answer
-  different questions. They compete for the same probe embeddings and push
-  cold target rank below ceiling.
-* Probes are thematically general (not literal paraphrases of the target text),
-  so ANN must rank the specific target above the confusors.
-* Hebbian edges seeded between ALL cluster members (targets + confusors) to
-  trigger _build_hebbian_clusters (CLUSTER_MIN_SIZE=3; 15 per cluster meets it).
-* K_PROBE=50 candidate pool for rank/MRR sensitivity; recall@10 as threshold.
-* Consolidation is the ONLY state change between PRE and POST probes.
-
-Ground truth
-------------
-UUID-based: _expected_id_in_top_k on the originally-inserted record UUID.
-Using UUID (not exact text) avoids false-negative from consolidation creating
-summary records whose literal_surface displaces the target in a strict-string
-check.
-
-Metrics
--------
-* recall@10 (primary): fraction of probes where target UUID is in top-10.
-* MRR: mean reciprocal rank at top-10 (1/rank if found, else 0).
-* mean_rank: mean position of target in top-10 (None if not found → counts
-  as 11 for averaging).
-
-Consolidation entry point
--------------------------
-run_heavy_consolidation() from iai_mcp.sleep — returns a dict with
-summaries_created, decay_result, schema_candidates, tier.  Used instead of
-SleepPipeline because:
-  (a) Returns evidence directly (no log-parsing needed).
-  (b) Avoids lifecycle_state_path default = ~/.iai-mcp (live daemon).
-  (c) Single-step invocation — no quarantine / resume machinery needed.
-Confirmed tier == "tier0" (llm_enabled=False, has_api_key=False) as proof
-no LLM call fired.
-
-What run_heavy_consolidation does on a fresh store
---------------------------------------------------
-On a fresh store (no prior usage history):
-1. _decay_edges: no-op (DECAY_GRACE_DAYS=90; all edges are age 0).
-2. _process_cluster_summaries: creates 4 semantic summary records — one per
-   cluster. Each is "Cluster summary (15 records, lang=en): <prefix1>; ...".
-3. Hebbian LTP: boost_edges on existing hebbian edges in each cluster (weight
-   increases; topology unchanged; degree-based rank signal unchanged).
-4. _tier0_schema_surfacing: tag-pair co-occurrence candidates surfaced.
-5. _persist_tier1_schemas: auto-status schemas persisted (schema_instance_of
-   edges + semantic schema records).
-
-What CANNOT change with run_heavy_consolidation
------------------------------------------------
-* record.stability is NOT updated (only run_light_consolidation FSRS-ticks
-  recently-recalled records).
-* The ranking formula (W_COSINE*cos + W_AAAK + W_DEGREE*deg_norm - W_AGE +
-  stability_instability_lift) scores stability as (1-stability)*0.1 — a fresh
-  stability=0.0 record gets +0.1 instability boost, which is UNCHANGED after
-  heavy consolidation (stability stays 0.0 for original records).
-* Edge weight boosts (LTP) affect edge weights but NOT the degree count used
-  in deg_norm — so the degree-normalised ranking signal does not change.
-* DECAY_GRACE_DAYS=90 means no edge pruning on fresh edges.
-
-Honest interpretation of results
----------------------------------
-Consolidation adds 4 cluster summaries to the candidate pool (schema records
-go to patterns_observed, not hits[] — see RecallResponse contract). The 4
-summaries occasionally outrank the specific target fact for broad, topic-level
-probes because the summary mentions multiple cluster facts and is more general.
-The result: recall@10 = 1.000 BEFORE and AFTER (all targets remain findable
-in top-10). MRR falls slightly (0.902 → 0.835) because ~4/20 probes see their
-target drop 1-2 rank positions per seed — always displaced by a confusor or
-the cluster summary, not a schema or off-topic record. The system is designed
-for LONG-TERM improvement (stability accumulation over many sessions);
-one-shot consolidation cannot produce a positive delta via the scoring formula
-(cosine-dominated, W_COSINE=1.0; stability and edge weights aren't ranking
-terms; degree-count unchanged by LTP; decay has 90d grace). This bench
-confirms the consolidation RUNS CORRECTLY (tier0, no LLM, state change
-verified) and preserves recall@10 through the cycle.
-
-For a test of "sleep improves recall," the genuine differentiator is the
-forgetting path (full SleepPipeline ERASURE_AGENT/DREAM pruning with aged
-noise state backdated past the 90-day grace period). That bench requires
-explicit architectural design — it is out of scope for this one-shot ablation.
-
-Usage
------
-    IAI_MCP_STORE=/tmp/iai-bench-store-ablation \\
-    IAI_MCP_CRYPTO_PASSPHRASE=bench-throwaway-v83 \\
-    python bench/sleep_ablation.py \\
-        --seeds 13 42 137 \\
-        --output bench/results/sleep_ablation.json
-
-Exit codes
-----------
-0 = ran to completion (results in JSON — positive delta is headline).
-1 = setup error (production store attempted, dependency missing, etc.).
-2 = consolidation refused to run local-only (LLM dependency detected).
-"""
 from __future__ import annotations
 
 import argparse
@@ -125,9 +15,6 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
-# ---------------------------------------------------------------------------
-# sys.path surgery (resolve src/ and repo root — mirrors personal_fact_drift)
-# ---------------------------------------------------------------------------
 
 _SRC_PATH = str(Path(__file__).resolve().parent.parent / "src")
 _ROOT_PATH = str(Path(__file__).resolve().parent.parent)
@@ -136,42 +23,21 @@ if _SRC_PATH not in sys.path:
 if _ROOT_PATH not in sys.path:
     sys.path.insert(0, _ROOT_PATH)
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
 
 PRODUCTION_STORE = Path.home() / ".iai-mcp"
 
-# Bench-only passphrase.  Safe to hardcode — the setup gate refuses production.
 BENCH_PASSPHRASE = "bench-throwaway-v83"
 
 DEFAULT_STORE_BASE = "/tmp/iai-bench-store-ablation"
 DEFAULT_OUTPUT = "bench/results/sleep_ablation.json"
 DEFAULT_SEEDS = [13, 42, 137]
-DEFAULT_K = 10          # recall@K threshold reported
-K_PROBE = 50            # raw candidate pool size for recall / rank computation
+DEFAULT_K = 10
+K_PROBE = 50
 
 WARMUP_PASSES = 3
 
-# ---------------------------------------------------------------------------
-# Thematic corpus
-# ---------------------------------------------------------------------------
-# 4 clusters × 5 target facts each = 20 targets.
-# Each cluster also has 10 in-cluster CONFUSOR records (same topic, different
-# specific fact) = 40 confusors. Probes are thematically general (not literal
-# paraphrases of the target) so the ANN must rank the target above the confusors.
-#
-# Probe design rule: each probe is a GENERAL question about the cluster topic
-# that COULD match several in-cluster records. The only ground truth is the
-# specific target UUID. This creates genuine retrieval difficulty with cold k=50.
-#
-# Confusors are injected as plain episodic records (no probe; not probed).
-# They share hebbian edges with the targets (seeded at bench run time) to
-# trigger cluster summarization during consolidation.
 
 CLUSTER_CORPUS: list[dict[str, str]] = [
-    # --- cluster 0: weather / atmosphere ---
-    # 5 targets (have a 'probe' key) + 10 confusors (no 'probe' key)
     {"text": "Cold fronts bring sudden drops in temperature.",
      "probe": "Which atmospheric phenomenon lowers temperature most rapidly?",
      "cluster_id": "weather"},
@@ -187,7 +53,6 @@ CLUSTER_CORPUS: list[dict[str, str]] = [
     {"text": "Trade winds blow steadily from east to west near the equator.",
      "probe": "How do persistent equatorial winds circulate globally?",
      "cluster_id": "weather"},
-    # confusors — same cluster, no probe
     {"text": "Jet streams are fast-flowing air currents in the upper troposphere.",
      "cluster_id": "weather"},
     {"text": "Humidity measures the water vapour content of the atmosphere.",
@@ -209,7 +74,6 @@ CLUSTER_CORPUS: list[dict[str, str]] = [
     {"text": "Sea breezes develop when land heats faster than adjacent water.",
      "cluster_id": "weather"},
 
-    # --- cluster 1: cooking / food science ---
     {"text": "Maillard reaction creates browning when food is heated above 140 C.",
      "probe": "What chemical change produces crust browning in cooked food?",
      "cluster_id": "cooking"},
@@ -225,7 +89,6 @@ CLUSTER_CORPUS: list[dict[str, str]] = [
     {"text": "Caramelization of sugar begins at approximately 160 C.",
      "probe": "At what temperature do sugar molecules decompose into flavour compounds?",
      "cluster_id": "cooking"},
-    # confusors
     {"text": "Fermentation converts sugars into alcohol and carbon dioxide via yeast.",
      "cluster_id": "cooking"},
     {"text": "Osmosis draws moisture out of vegetables when salt is applied.",
@@ -247,7 +110,6 @@ CLUSTER_CORPUS: list[dict[str, str]] = [
     {"text": "Brining absorbs salt into meat increasing moisture retention during cooking.",
      "cluster_id": "cooking"},
 
-    # --- cluster 2: fitness / physiology ---
     {"text": "Aerobic exercise improves cardiovascular efficiency over time.",
      "probe": "What training modality most directly strengthens heart and lung capacity?",
      "cluster_id": "fitness"},
@@ -263,7 +125,6 @@ CLUSTER_CORPUS: list[dict[str, str]] = [
     {"text": "Rest days allow muscle fibres to repair and grow stronger.",
      "probe": "Why is recovery time essential for muscle hypertrophy?",
      "cluster_id": "fitness"},
-    # confusors
     {"text": "VO2 max measures the maximum oxygen a person can use during exercise.",
      "cluster_id": "fitness"},
     {"text": "Cortisol levels rise after prolonged intense exercise and may inhibit recovery.",
@@ -285,7 +146,6 @@ CLUSTER_CORPUS: list[dict[str, str]] = [
     {"text": "Eccentric muscle contractions create more micro-tears than concentric ones.",
      "cluster_id": "fitness"},
 
-    # --- cluster 3: software / coding ---
     {"text": "Dependency injection decouples a class from its concrete dependencies.",
      "probe": "What software pattern reduces coupling between modules?",
      "cluster_id": "coding"},
@@ -301,7 +161,6 @@ CLUSTER_CORPUS: list[dict[str, str]] = [
     {"text": "Event-driven architecture decouples producers from consumers via messages.",
      "probe": "What architecture style lets services communicate without direct coupling?",
      "cluster_id": "coding"},
-    # confusors
     {"text": "SOLID principles guide object-oriented software design.",
      "cluster_id": "coding"},
     {"text": "Garbage collection automatically reclaims unreachable memory.",
@@ -324,7 +183,6 @@ CLUSTER_CORPUS: list[dict[str, str]] = [
      "cluster_id": "coding"},
 ]
 
-# Off-topic noise sentences (no thematic cluster overlap with above).
 _NOISE_SENTENCES: list[str] = [
     "The committee voted to adjourn the meeting at noon.",
     "A new species of deep-sea fish was discovered near hydrothermal vents.",
@@ -410,11 +268,6 @@ _NOISE_SENTENCES: list[str] = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Data structures
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class TargetFact:
     fact_id: str
@@ -433,19 +286,13 @@ class ProbeOutcome:
     expected_uuid: str
     recall_at_10_pre: bool
     recall_at_10_post: bool
-    rank_pre: int | None      # 1-based; None = not found in top-10
+    rank_pre: int | None
     rank_post: int | None
     mrr_pre: float
     mrr_post: float
 
 
-# ---------------------------------------------------------------------------
-# Production store guard
-# ---------------------------------------------------------------------------
-
-
 def _refuse_production_store(store_path: Path) -> None:
-    """Abort with exit code 1 if store_path resolves inside ~/.iai-mcp."""
     try:
         resolved = store_path.resolve()
         prod = PRODUCTION_STORE.resolve()
@@ -460,22 +307,10 @@ def _refuse_production_store(store_path: Path) -> None:
         sys.exit(1)
 
 
-# ---------------------------------------------------------------------------
-# Metric helpers
-# ---------------------------------------------------------------------------
-
-
 def _find_rank(hits: list, expected_uuid: str, k: int) -> int | None:
-    """Return 1-based rank of expected_uuid in top-k hits, or None.
-
-    MemoryHit carries `record_id` (not `id`).  Accept both spellings and
-    the dict form for forward-compat.
-    """
     for i, hit in enumerate(hits[:k]):
-        # MemoryHit.record_id is the canonical attribute name.
         if hasattr(hit, "record_id") and str(hit.record_id) == expected_uuid:
             return i + 1
-        # Legacy / dict-shaped fallback.
         if hasattr(hit, "id") and str(hit.id) == expected_uuid:
             return i + 1
         if isinstance(hit, dict):
@@ -494,22 +329,7 @@ def _recall_at_k(rank: int | None) -> bool:
     return rank is not None
 
 
-# ---------------------------------------------------------------------------
-# Corpus + store builder
-# ---------------------------------------------------------------------------
-
-
 def _build_corpus(seed: int) -> tuple[list[TargetFact], list[tuple[str, str]]]:
-    """Return (targets, confusors) for one seed.
-
-    targets — TargetFact objects (have a probe; are probed for ground truth).
-    confusors — list of (text, cluster_id) tuples (no probe; inserted as noise
-                within the cluster to increase intra-cluster retrieval difficulty).
-
-    CLUSTER_CORPUS entries with a 'probe' key become targets; entries without
-    become confusors.  The shuffled order within each list is deterministic for
-    the seed.
-    """
     rng = random.Random(seed)
 
     targets: list[TargetFact] = []
@@ -542,37 +362,12 @@ def _build_noise(seed: int, n: int = 100) -> list[str]:
     return pool[:n]
 
 
-# ---------------------------------------------------------------------------
-# Core per-seed driver
-# ---------------------------------------------------------------------------
-
-
 def run_one_seed(
     seed: int,
     store_dir: Path,
     embedder_key: str,
     k: int = DEFAULT_K,
 ) -> tuple[list[ProbeOutcome], dict[str, Any]]:
-    """Run the full ablation for a single seed.
-
-    Pipeline (single-store, consolidation as isolated variable):
-      1. INSERT phase: all target facts + in-cluster confusors + off-topic noise.
-      2. SEED HEBBIAN EDGES: boost_edges within each cluster (targets + confusors;
-         simulates co-retrieval history; needed for _build_hebbian_clusters).
-      3. PRE-PROBE: retrieve K_PROBE candidates per target, measure recall@DEFAULT_K
-         and MRR within the K_PROBE pool.
-      4. SNAPSHOT STATE: record count, total edge count.
-      5. RUN HEAVY CONSOLIDATION (llm_enabled=False; no LLM call).
-      6. VERIFY CONSOLIDATION FIRED (summaries_created, tier==tier0).
-      7. POST-SNAPSHOT STATE: re-measure record count, edge count.
-      8. REBUILD GRAPH.
-      9. POST-PROBE: re-probe with same K_PROBE, compare ranks.
-
-    Candidate pool: K_PROBE >> DEFAULT_K so rank movement below the @K threshold
-    is still measurable via MRR and mean_rank.
-
-    Returns (outcomes, diagnostics).
-    """
     from iai_mcp.embed import Embedder
     from iai_mcp.guard import BudgetLedger, RateLimitLedger
     from iai_mcp.pipeline import recall_for_benchmark
@@ -592,7 +387,6 @@ def run_one_seed(
 
     store_dir.mkdir(parents=True, exist_ok=True)
 
-    # Snapshot env so we restore on every exit path.
     _env_snap = {
         "IAI_MCP_STORE": os.environ.get("IAI_MCP_STORE"),
         "IAI_MCP_CRYPTO_PASSPHRASE": os.environ.get("IAI_MCP_CRYPTO_PASSPHRASE"),
@@ -611,20 +405,15 @@ def run_one_seed(
     store = MemoryStore(path=store_dir)
     embedder = Embedder(model_key=embedder_key)
 
-    # Warm-up to absorb model load cost.
     _ = embedder.embed_batch(["warm-up " + str(i) for i in range(WARMUP_PASSES)])
 
-    # --- INSERT phase ---
     facts, confusors = _build_corpus(seed)
     noise_texts = _build_noise(seed)
     now = datetime.now(timezone.utc)
 
-    # Track (text, cluster_id, uuid) for all cluster members (targets + confusors)
-    # so we can seed hebbian edges across the full cluster.
     cluster_all_uuids: dict[str, list[UUID]] = {}
 
     try:
-        # Embed + insert target facts.
         target_texts = [f.text for f in facts]
         target_embs = embedder.embed_batch(target_texts)
 
@@ -657,7 +446,6 @@ def run_one_seed(
             store.insert(rec)
             cluster_all_uuids.setdefault(fact.cluster_id, []).append(fact.record_uuid)
 
-        # Embed + insert in-cluster confusors.
         conf_texts = [c[0] for c in confusors]
         conf_cluster_ids = [c[1] for c in confusors]
         if conf_texts:
@@ -693,7 +481,6 @@ def run_one_seed(
                 store.insert(rec)
                 cluster_all_uuids.setdefault(cluster_id, []).append(uid)
 
-        # Embed + insert off-topic noise records.
         noise_embs = embedder.embed_batch(noise_texts)
         for text, emb in zip(noise_texts, noise_embs):
             rec = MemoryRecord(
@@ -734,9 +521,6 @@ def run_one_seed(
         _restore_env()
         return [], diagnostics
 
-    # --- SEED HEBBIAN EDGES within each cluster (targets + confusors) ---
-    # Full pairwise within each cluster triggers _build_hebbian_clusters
-    # (CLUSTER_MIN_SIZE=3; each cluster has 15 members → 105 pairs per cluster).
     try:
         for cluster_id, uuids in cluster_all_uuids.items():
             if len(uuids) < 2:
@@ -755,7 +539,6 @@ def run_one_seed(
         _restore_env()
         return [], diagnostics
 
-    # --- PRE-PROBE snapshot state ---
     try:
         pre_record_count = store.db.open_table("records").to_pandas().shape[0]
         pre_edge_count = store.db.open_table("edges").to_pandas().shape[0]
@@ -764,7 +547,6 @@ def run_one_seed(
     except Exception as exc:  # noqa: BLE001
         diagnostics["errors"].append(f"pre_snapshot: {exc!r}")
 
-    # --- BUILD GRAPH pre ---
     try:
         graph_pre, assignment_pre, rich_club_pre = build_runtime_graph(store)
     except Exception as exc:  # noqa: BLE001
@@ -772,7 +554,6 @@ def run_one_seed(
         _restore_env()
         return [], diagnostics
 
-    # --- PRE-PROBE (K_PROBE candidate pool for sensitivity) ---
     pre_outcomes: dict[str, dict[str, Any]] = {}
     try:
         for fact in facts:
@@ -788,7 +569,6 @@ def run_one_seed(
                 mode="concept",
             )
             hits = list(resp.hits) if hasattr(resp, "hits") else []
-            # Recall@K uses DEFAULT_K threshold; rank/MRR use K_PROBE pool.
             rank = _find_rank(hits, str(fact.record_uuid), K_PROBE)
             pre_outcomes[fact.fact_id] = {
                 "recall_at_k": (rank is not None and rank <= k),
@@ -805,11 +585,9 @@ def run_one_seed(
         _restore_env()
         return [], diagnostics
 
-    # --- RUN HEAVY CONSOLIDATION ---
     consolidation_result: dict[str, Any] = {}
     try:
         cfg = SleepConfig()
-        # Ensure local-only (no LLM):
         cfg.llm_enabled = False
         budget = BudgetLedger(store)
         rate = RateLimitLedger(store)
@@ -824,7 +602,6 @@ def run_one_seed(
         flush_record_buffer(store)
         flush_edge_buffer(store)
 
-        # Verify no LLM fired.
         tier = consolidation_result.get("tier", "unknown")
         if tier not in ("tier0",):
             diagnostics["errors"].append(
@@ -840,7 +617,6 @@ def run_one_seed(
         _restore_env()
         return [], diagnostics
 
-    # --- POST-SNAPSHOT state evidence ---
     try:
         post_record_count = store.db.open_table("records").to_pandas().shape[0]
         post_edge_count = store.db.open_table("edges").to_pandas().shape[0]
@@ -851,7 +627,6 @@ def run_one_seed(
     except Exception as exc:  # noqa: BLE001
         diagnostics["errors"].append(f"post_snapshot: {exc!r}")
 
-    # --- REBUILD GRAPH post ---
     try:
         graph_post, assignment_post, rich_club_post = build_runtime_graph(store)
     except Exception as exc:  # noqa: BLE001
@@ -859,7 +634,6 @@ def run_one_seed(
         _restore_env()
         return [], diagnostics
 
-    # --- POST-PROBE ---
     outcomes: list[ProbeOutcome] = []
     try:
         for fact in facts:
@@ -902,11 +676,6 @@ def run_one_seed(
     return outcomes, diagnostics
 
 
-# ---------------------------------------------------------------------------
-# Aggregation
-# ---------------------------------------------------------------------------
-
-
 def _outcomes_to_dicts(outcomes: list[ProbeOutcome]) -> list[dict]:
     return [
         {
@@ -930,7 +699,6 @@ def aggregate(
     per_seed_outcomes: dict[int, list[ProbeOutcome]],
     per_seed_diagnostics: dict[int, dict[str, Any]],
 ) -> dict[str, Any]:
-    """Aggregate per-seed outcomes into a summary."""
     per_seed_rows = []
     flat_probes: list[dict] = []
 
@@ -952,7 +720,6 @@ def aggregate(
         mean_mrr_pre = sum(o.mrr_pre for o in outcomes) / n
         mean_mrr_post = sum(o.mrr_post for o in outcomes) / n
 
-        # mean_rank: if not found in K_PROBE pool, treat as K_PROBE+1 (sentinel).
         _kp = K_PROBE
         ranks_pre = [(o.rank_pre if o.rank_pre is not None else _kp + 1) for o in outcomes]
         ranks_post = [(o.rank_post if o.rank_post is not None else _kp + 1) for o in outcomes]
@@ -1017,11 +784,6 @@ def aggregate(
         "per_seed": per_seed_rows,
         "per_probe": flat_probes,
     }
-
-
-# ---------------------------------------------------------------------------
-# Environment + system metadata
-# ---------------------------------------------------------------------------
 
 
 def _build_env_metadata(
@@ -1097,11 +859,6 @@ def _build_env_metadata(
             "--output bench/results/sleep_ablation.json"
         ),
     }
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 
 def main() -> int:
@@ -1189,7 +946,6 @@ def main() -> int:
     print(f"  {s['interpretation']}")
     print()
 
-    # Emit consolidation evidence per seed.
     for row in result["per_seed"]:
         if row["consolidation_ran"]:
             print(

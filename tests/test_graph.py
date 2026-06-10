@@ -1,4 +1,3 @@
-"""Tests for iai_mcp.graph (adjacency-dict backend, 2-hop spread)."""
 from __future__ import annotations
 
 from uuid import uuid4
@@ -28,7 +27,6 @@ def test_n_just_below_500_constructs() -> None:
 
 
 def test_two_hop_reaches_exactly_two_hops() -> None:
-    """linear chain A-B-C-D seeded at A returns {B, C} -- D is 3 hops."""
     g = MemoryGraph()
     a, b, c, d = uuid4(), uuid4(), uuid4(), uuid4()
     for n in (a, b, c, d):
@@ -40,8 +38,8 @@ def test_two_hop_reaches_exactly_two_hops() -> None:
     reached = set(g.two_hop_neighborhood([a], top_k=5))
     assert b in reached
     assert c in reached
-    assert d not in reached  # 3 hops away
-    assert a not in reached  # seed excluded
+    assert d not in reached
+    assert a not in reached
 
 
 def test_two_hop_multiple_seeds_deduped() -> None:
@@ -51,8 +49,6 @@ def test_two_hop_multiple_seeds_deduped() -> None:
         g.add_node(n, community_id=None, embedding=[0.0] * 384)
     g.add_edge(a, b)
     g.add_edge(b, c)
-    # Both a and c as seeds: 2-hop from a reaches {b,c}, from c reaches {b,a};
-    # union minus seeds should be {b}.
     reached = set(g.two_hop_neighborhood([a, c], top_k=5))
     assert reached == {b}
 
@@ -63,7 +59,6 @@ def test_two_hop_empty_seeds_returns_empty_list() -> None:
 
 
 def test_centrality_hub_beats_leaves() -> None:
-    """5-node star: hub's betweenness strictly greater than any leaf's."""
     g = MemoryGraph()
     hub = uuid4()
     leaves = [uuid4() for _ in range(4)]
@@ -95,7 +90,6 @@ def test_get_embedding_returns_stored_vector() -> None:
 
 
 def test_rich_club_coefficient_on_star_graph() -> None:
-    """Star has hub with degree 4; coefficient well-defined."""
     g = MemoryGraph()
     hub = uuid4()
     leaves = [uuid4() for _ in range(4)]
@@ -103,19 +97,12 @@ def test_rich_club_coefficient_on_star_graph() -> None:
     for leaf in leaves:
         g.add_node(leaf, community_id=None, embedding=[0.0] * 384)
         g.add_edge(hub, leaf)
-    # Should not raise; returns a float.
     coef = g.rich_club_coefficient()
     assert isinstance(coef, float)
     assert coef >= 0.0
 
 
 def test_edge_attr_symmetric() -> None:
-    """add_edge stores a SHARED dict between _adj[u][v] and _adj[v][u].
-
-    Verifies the symmetry invariant: writing the weight in one direction
-    propagates atomically to the other. Without this, Hebbian-strength
-    updates would silently asymmetrize over long-running sessions.
-    """
     g = MemoryGraph()
     u, v = uuid4(), uuid4()
     g.add_node(u, None, [0.0] * 384)
@@ -127,14 +114,6 @@ def test_edge_attr_symmetric() -> None:
 
 
 def test_iter_edges_once_only() -> None:
-    """iter_edges_with_weight emits each undirected edge exactly once.
-
-    Adjacency-list storage double-emits each (u, v) pair (once from u's
-    neighbor list, once from v's). The canonical-pair ``u <= v`` filter
-    inside iter_edges_with_weight collapses the two visits into one
-    so consumers see the same once-only semantic a hash-mapped graph
-    would emit.
-    """
     g = MemoryGraph()
     u, v, w = uuid4(), uuid4(), uuid4()
     for n in (u, v, w):
@@ -147,9 +126,6 @@ def test_iter_edges_once_only() -> None:
 
 
 def test_self_loop_preserved_in_storage() -> None:
-    """Self-loops are stored once in _adj, emitted once by the iterator,
-    and stripped from CSR.
-    """
     g = MemoryGraph()
     u = uuid4()
     g.add_node(u, None, [0.0] * 384)
@@ -158,5 +134,4 @@ def test_self_loop_preserved_in_storage() -> None:
     edges = list(g.iter_edges_with_weight())
     assert sum(1 for src, dst, _ in edges if src == dst == u) == 1
     _indptr, indices, _data = g.to_csr_arrays()
-    # Self-loop stripped at CSR construction.
     assert len(indices) == 0

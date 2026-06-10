@@ -1,63 +1,44 @@
-"""Typed exception hierarchy for IAI-MCP.
-
-: Replace bare except-Exception with narrowed, loggable exceptions.
-Organized by subsystem. All inherit from IAIMCPError for catch-all at boundaries.
-"""
 
 from __future__ import annotations
 
 
 class IAIMCPError(Exception):
-    """Base for all IAI-MCP exceptions. Catch at daemon boundary only."""
+    pass
 
 
 class NativeError(IAIMCPError):
-    """A mandatory native-extension operation (encode or graph compute) failed.
-
-    Raised instead of swallowing so callers can distinguish a native-runtime
-    failure from a soft infrastructure error (graph-build cache miss,
-    community-detection OOM, etc.) that is safe to degrade gracefully.
-    Carry the original exception as ``__cause__`` via ``raise NativeError(...)
-    from original``.
-    """
-
-
-# --- Store subsystem ---
+    pass
 
 
 class StoreError(IAIMCPError):
-    """Base for storage-layer failures."""
+    pass
 
 
 class StoreInsertError(StoreError):
-    """Failed to insert a record into the store."""
+    pass
 
 
 class StoreQueryError(StoreError):
-    """Failed to query records from the store."""
+    pass
 
 
 class StoreSchemaError(StoreError):
-    """Schema mismatch or migration required."""
+    pass
 
 
 class StoreConcurrencyError(StoreError):
-    """Concurrent access conflict (lock contention, WAL)."""
+    pass
 
 
 class StoreCorruptionError(StoreError):
-    """Data integrity violation detected."""
-
-
-# --- Sleep pipeline subsystem ---
+    pass
 
 
 class SleepPipelineError(IAIMCPError):
-    """Base for sleep/REM pipeline failures."""
+    pass
 
 
 class SleepStepError(SleepPipelineError):
-    """A named pipeline step failed."""
 
     def __init__(self, step_name: str, cause: Exception | None = None):
         self.step_name = step_name
@@ -66,86 +47,66 @@ class SleepStepError(SleepPipelineError):
 
 
 class SleepCheckpointError(SleepPipelineError):
-    """Checkpoint read/write failure."""
+    pass
 
 
 class SleepQuarantineError(SleepPipelineError):
-    """Record quarantined after repeated failures."""
-
-
-# --- Retrieval subsystem ---
+    pass
 
 
 class RetrievalError(IAIMCPError):
-    """Base for retrieval/recall failures."""
+    pass
 
 
 class EmbeddingError(RetrievalError):
-    """Embedding model failed to produce vector."""
+    pass
 
 
 class CommunityGateError(RetrievalError):
-    """Leiden community gate produced no candidates."""
+    pass
 
 
 class BudgetExceededError(RetrievalError):
-    """Token budget exceeded during packing."""
-
-
-# --- Daemon lifecycle ---
+    pass
 
 
 class LifecycleError(IAIMCPError):
-    """Base for daemon lifecycle failures."""
+    pass
 
 
 class LifecycleTransitionError(LifecycleError):
-    """Invalid state transition attempted."""
+    pass
 
 
 class DaemonTickError(LifecycleError):
-    """Non-fatal error within a daemon tick (logged, not propagated)."""
-
-
-# --- Capture subsystem ---
+    pass
 
 
 class CaptureError(IAIMCPError):
-    """Base for ambient capture failures."""
+    pass
 
 
 class CaptureDeduplicationError(CaptureError):
-    """Dedup check failed (not a duplicate — the check itself errored)."""
+    pass
 
 
 class CaptureDrainError(CaptureError):
-    """Deferred capture drain failure."""
-
-
-# --- Crypto subsystem ---
+    pass
 
 
 class CryptoError(IAIMCPError):
-    """Base for encryption/decryption failures."""
+    pass
 
 
 class CryptoDecryptError(CryptoError):
-    """Failed to decrypt a record or bank file."""
+    pass
 
 
 class CryptoKeyMissing(CryptoError):
-    """Expected key material not found."""
-
-
-# --- VSM / algedonic bypass ---
+    pass
 
 
 class AlgedonicSignal(IAIMCPError):
-    """S1→S5 escalation signal when a subsystem detects critical failure.
-
-    Not a crash — this is a cybernetic control signal that triggers
-    S5 to evaluate whether the system's identity/viability is at risk.
-    """
 
     def __init__(self, subsystem: str, severity: str, detail: str):
         self.subsystem = subsystem

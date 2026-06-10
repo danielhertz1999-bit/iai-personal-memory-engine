@@ -1,8 +1,3 @@
-"""v6.0 prerequisite: sleep pipeline crash recovery.
-
-Verifies that the sleep pipeline resumes from checkpoint after simulated crash.
-Must pass BEFORE any v6.0 sleep refactoring begins.
-"""
 from __future__ import annotations
 
 import json
@@ -16,13 +11,11 @@ try:
 except ImportError:
     SleepPipeline = None
 
-
 @pytest.fixture
 def pipeline_dir(tmp_path):
     store_path = tmp_path / "store"
     store_path.mkdir()
     return store_path
-
 
 def _write_checkpoint(store_path: Path, step_name: str, completed: list[str]):
     cp = store_path / ".sleep-checkpoint.json"
@@ -32,7 +25,6 @@ def _write_checkpoint(store_path: Path, step_name: str, completed: list[str]):
         "cycle_id": "test-cycle-001",
     }))
     return cp
-
 
 class TestSleepCrashRecovery:
     def test_checkpoint_file_created_on_step_start(self, pipeline_dir):

@@ -1,22 +1,3 @@
-"""Production answer-packing entry-point contract.
-
-Tests the public function `recall_for_response(...)`. Contract:
-
-- Signature: store, graph, assignment, rich_club, embedder, cue,
-  session_id, budget_tokens=1500, profile_state=None, turn=0, mode='concept'.
-- NO `k_hits` parameter — calling with `k_hits=10` MUST raise TypeError.
-- Returns RecallResponse (not _RecallCoreResult).
-- Packs hits under `budget_tokens`: each hit contributes
-  `len(literal_surface) // 4` tokens to the running budget; loop breaks
-  when `budget_used + tokens > budget_tokens` AND `len(hits) >= 1`
-  (always at least one hit when one exists).
-- mode plumbing: the `mode` parameter threads through to
-  `_recall_core` unchanged.
-
-Cross-file: see `tests/test_recall_for_benchmark.py` for the top-K
-contract, and `tests/test_recall_core_unit.py` for the underlying
-`_recall_core` shape and stage-internal behaviour.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -30,11 +11,7 @@ from iai_mcp.store import MemoryStore
 from iai_mcp.types import EMBED_DIM, MemoryRecord, RecallResponse
 
 
-# ------------------------------------------------------------ test fixtures
-
-
 class _FakeEmbedder:
-    """Stand-in embedder. The cue's embedding is configurable per-test."""
 
     DIM = EMBED_DIM
 
@@ -78,12 +55,6 @@ def _make(
 def _build_store_and_graph(
     tmp_path, n: int, surface_len: int = 4,
 ) -> tuple[MemoryStore, MemoryGraph, list[MemoryRecord]]:
-    """Build N records with primary-axis distinct embeddings + matching graph.
-
-    Each record's literal_surface has `surface_len` characters so the
-    per-hit token estimate is `surface_len // 4`. Tune `surface_len` to
-    control budget-pack behaviour deterministically.
-    """
     store = MemoryStore(path=tmp_path / "hippo")
     recs: list[MemoryRecord] = []
     for i in range(n):
@@ -110,7 +81,6 @@ def _build_store_and_graph(
 
 
 def _flat_assignment(recs: list[MemoryRecord]) -> CommunityAssignment:
-    """Single flat community covering all records (healthy graph baseline)."""
     cid = uuid4()
     centroid = [1.0] + [0.0] * (EMBED_DIM - 1)
     return CommunityAssignment(
@@ -123,16 +93,7 @@ def _flat_assignment(recs: list[MemoryRecord]) -> CommunityAssignment:
     )
 
 
-# -------------------------------------------------- contract / signature tests
-
-
 def test_recall_for_response_no_k_hits_param(tmp_path) -> None:
-    """Test 1: calling with `k_hits=10` raises TypeError.
-
-    The contract split is the whole point: production answer-packing
-    cannot accept a top-K cap parameter, otherwise an optional argument
-    would let the two contracts silently swap semantics.
-    """
     from iai_mcp.pipeline import recall_for_response
 
     store, graph, recs = _build_store_and_graph(tmp_path, n=5)
@@ -143,12 +104,11 @@ def test_recall_for_response_no_k_hits_param(tmp_path) -> None:
             store=store, graph=graph, assignment=assignment,
             rich_club=[], embedder=_FakeEmbedder(),
             cue="test", session_id="s1",
-            k_hits=10,    # this kwarg does not exist
+            k_hits=10,
         )
 
 
 def test_recall_for_response_returns_recall_response_type(tmp_path) -> None:
-    """Test 2: returns a RecallResponse with all 7 fields populated."""
     from iai_mcp.pipeline import recall_for_response
 
     store, graph, recs = _build_store_and_graph(tmp_path, n=5)
@@ -171,16 +131,8 @@ def test_recall_for_response_returns_recall_response_type(tmp_path) -> None:
 
 
 def test_recall_for_response_packs_under_budget(tmp_path) -> None:
-    """Test 3: hits packed under `budget_tokens`.
-
-    Each record's literal_surface = 200 chars -> tokens = 200 // 4 = 50.
-    With budget_tokens=120, the loop breaks after the first hit
-    (50 tokens). Adding a second would push us to 100; adding a third
-    would push us to 150 > 120 AND len(hits) >= 1, so we break.
-    """
     from iai_mcp.pipeline import recall_for_response
 
-    # surface_len=200 -> 50 tokens per hit.
     store, graph, recs = _build_store_and_graph(tmp_path, n=5, surface_len=200)
     assignment = _flat_assignment(recs)
 
@@ -190,18 +142,11 @@ def test_recall_for_response_packs_under_budget(tmp_path) -> None:
         cue="test", session_id="s3", budget_tokens=120,
     )
 
-    # Tight budget: 1 fits (50 tokens, budget_used=50), 2nd would push
-    # to 100 (still <= 120, fits), 3rd would push to 150 > 120 AND
-    # len(hits) >= 1, break. So we get exactly 2 hits.
     assert len(resp.hits) == 2
     assert resp.budget_used == 100
 
 
 def test_recall_for_response_returns_all_with_unlimited_budget(tmp_path) -> None:
-    """Test 4: with budget_tokens=10000 (effectively unlimited), all hits are returned.
-
-    The exhaustion is the ranker's natural stop, not the budget cap.
-    """
     from iai_mcp.pipeline import recall_for_response
 
     store, graph, recs = _build_store_and_graph(tmp_path, n=5, surface_len=4)
@@ -213,19 +158,12 @@ def test_recall_for_response_returns_all_with_unlimited_budget(tmp_path) -> None
         cue="test", session_id="s4", budget_tokens=10000,
     )
 
-    # All 5 records fit (5 * 1 token = 5 tokens, budget = 10000).
     assert len(resp.hits) == 5
 
 
 def test_recall_for_response_minimum_one_hit(tmp_path) -> None:
-    """Test 5: with extremely tight budget, the minimum-1-hit guard returns 1 hit.
-
-    Even when the first hit's tokens exceed `budget_tokens`, the contract
-    guarantees `len(hits) >= 1` when at least one ranked hit exists.
-    """
     from iai_mcp.pipeline import recall_for_response
 
-    # surface_len=400 -> 100 tokens per hit; budget=50 (tighter than even 1 hit).
     store, graph, recs = _build_store_and_graph(tmp_path, n=5, surface_len=400)
     assignment = _flat_assignment(recs)
 
@@ -235,16 +173,10 @@ def test_recall_for_response_minimum_one_hit(tmp_path) -> None:
         cue="test", session_id="s5", budget_tokens=50,
     )
 
-    # One hit always survives (the production "always at least one" guard).
     assert len(resp.hits) == 1
 
 
 def test_recall_for_response_threads_mode_to_core(tmp_path) -> None:
-    """Test 5b: wiring — `mode` flows from entry point to `_recall_core` unchanged.
-
-    Calling with `mode="verbatim"` must produce a response whose
-    `cue_mode == "verbatim"` (proves the parameter threaded through).
-    """
     from iai_mcp.pipeline import recall_for_response
 
     store, graph, recs = _build_store_and_graph(tmp_path, n=5)
@@ -270,7 +202,6 @@ def test_recall_for_response_threads_mode_to_core(tmp_path) -> None:
 
 
 def test_recall_for_response_signature_has_no_k_hits_param() -> None:
-    """The function signature exposes `budget_tokens` and `mode` but NOT `k_hits`."""
     import inspect
     from iai_mcp.pipeline import recall_for_response
 
@@ -285,7 +216,6 @@ def test_recall_for_response_signature_has_no_k_hits_param() -> None:
 
 
 def test_recall_for_response_default_budget_tokens_1500() -> None:
-    """The default budget_tokens is 1500 (matches the production default)."""
     import inspect
     from iai_mcp.pipeline import recall_for_response
 
@@ -293,19 +223,7 @@ def test_recall_for_response_default_budget_tokens_1500() -> None:
     assert sig.parameters["budget_tokens"].default == 1500
 
 
-# ------------------------------------------------------ shared / parity tests
-
-
 def test_recall_for_response_shares_core_with_benchmark(tmp_path) -> None:
-    """Both entry points share `_recall_core` — only the final pack/cap differs.
-
-    This test proves ("only the final pack/cap differs"): when
-    called with the same fixture and the same `mode`, the cue-matched
-    record (cosine=1.0) must be the top hit on BOTH entry points, and
-    both must surface the same set of record_ids (only ordering of
-    tied-cosine records may differ across calls due to age-penalty
-    floating-point drift between the two `datetime.now()` calls).
-    """
     from iai_mcp.pipeline import recall_for_benchmark, recall_for_response
 
     store, graph, recs = _build_store_and_graph(tmp_path, n=8, surface_len=4)
@@ -315,25 +233,19 @@ def test_recall_for_response_shares_core_with_benchmark(tmp_path) -> None:
         store=store, graph=graph, assignment=assignment,
         rich_club=[], embedder=_FakeEmbedder(),
         cue="test", session_id="s-shared-r",
-        budget_tokens=10000,    # unlimited so all ranked hits surface
+        budget_tokens=10000,
     )
     resp_b = recall_for_benchmark(
         store=store, graph=graph, assignment=assignment,
         rich_club=[], embedder=_FakeEmbedder(),
         cue="test", session_id="s-shared-b",
-        k_hits=100,             # > graph size so all ranked hits surface
+        k_hits=100,
     )
 
-    # Top hit must be the cue-matched record (cosine=1.0 vs orthogonal 0.0
-    # for the rest) on both entry points — this is the load-bearing
-    # ranking claim.
     assert resp_y.hits[0].record_id == resp_b.hits[0].record_id, (
         "top scored hit (cosine=1.0 cue-match) must be identical across "
         "entry points; only the final pack/cap is supposed to differ"
     )
-    # Both entry points must surface the same SET of record_ids when
-    # neither cap is binding. The within-set ordering may vary among
-    # tied-cosine records due to age-penalty floating-point drift.
     r_set = {h.record_id for h in resp_y.hits}
     b_set = {h.record_id for h in resp_b.hits}
     assert r_set == b_set, (
@@ -345,48 +257,18 @@ def test_recall_for_response_shares_core_with_benchmark(tmp_path) -> None:
 
 
 def test_recall_for_response_budget_enforced_over_pending_markers(tmp_path, monkeypatch) -> None:
-    """Final budget enforcement covers QUAL-02 pending-marker additions.
-
-    Regression test for the overflow bug: QUAL-02 appends embedding_pending
-    rows AFTER the initial scored-hits budget pack, without updating budget_used.
-    This caused the returned budget_used to be inconsistent with the actual
-    total surface of returned hits (underreported), violating the session
-    token-budget invariant.
-
-    Setup:
-    - budget_tokens=50 (tight)
-    - 5 scored records with surface_len=4 (1 token each): all 5 fit under
-      budget, budget_used=5 after scored pack.
-    - recent_pending_markers returns 10 fake pending hits with surface_len=80
-      (20 tokens each). These are appended by QUAL-02 after the scored pack.
-
-    Without the final enforcement pass:
-    - hits = 5 scored + 10 pending = 15 total
-    - budget_used = 5 (from scored pack only — not counting pending)
-    - actual surface tokens = 5 + 10×20 = 205 >> budget_tokens=50
-    - budget_used != actual_tokens → invariant violated
-
-    With the fix:
-    - Final pass re-packs the fully assembled hits under budget_tokens=50.
-    - After 5 scored (5 tokens), 1st pending (20 tokens) → 25 ≤ 50 → keep.
-    - 2nd pending (20 tokens) → 45 ≤ 50 → keep.
-    - 3rd pending (20 tokens) → 65 > 50 AND len≥1 → break.
-    - hits ≤ 7, budget_used = 45, actual_tokens == budget_used.
-    """
     from iai_mcp.pipeline import recall_for_response
     from iai_mcp.types import MemoryRecord
 
     store, graph, recs = _build_store_and_graph(tmp_path, n=5, surface_len=4)
     assignment = _flat_assignment(recs)
 
-    # Build 10 fake pending-marker records (80 chars surface = 20 tokens each).
-    _large_surface = "x" * 80  # 80 chars = 20 tokens
+    _large_surface = "x" * 80
     _fake_pending: list[MemoryRecord] = []
     for _i in range(10):
         _pm = _make(vec=[0.0] * EMBED_DIM, text=_large_surface)
         _fake_pending.append(_pm)
 
-    # Monkeypatch store.recent_pending_markers to inject fake pending markers.
     monkeypatch.setattr(store, "recent_pending_markers", lambda n=50: _fake_pending[:n])
 
     resp = recall_for_response(
@@ -396,18 +278,12 @@ def test_recall_for_response_budget_enforced_over_pending_markers(tmp_path, monk
         budget_tokens=50,
     )
 
-    # Contract 1: budget_used must equal actual surface tokens of returned hits.
-    # The final enforcement pass re-derives budget_used from the capped list.
     actual_tokens = sum(len(h.literal_surface) // 4 for h in resp.hits)
     assert resp.budget_used == actual_tokens, (
         f"budget_used={resp.budget_used} != actual surface tokens={actual_tokens}; "
         f"the final enforcement pass is not updating budget_used consistently"
     )
 
-    # Contract 2: hit count must be far below 15 (5 scored + 10 pending without cap).
-    # With scored=5 (1 token each) and pending at 20 tokens each, after the 5
-    # scored hits (5 tokens) the first 2 pending fit (5+20+20=45 ≤ 50), the
-    # 3rd pending would push to 65 > 50 AND len≥1 → break at 7 hits.
     assert len(resp.hits) <= 7, (
         f"len(hits)={len(resp.hits)} exceeds expected cap of 7 "
         f"(5 scored + 2 pending within budget_tokens=50); "

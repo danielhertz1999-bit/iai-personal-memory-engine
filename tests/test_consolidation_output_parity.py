@@ -1,31 +1,3 @@
-"""GOLDEN ARTIFACT-PARITY GATE — legacy run_heavy_consolidation vs canonical
-matched steps produce IDENTICAL store-state on isolated tmp stores.
-
-After extraction into shared helpers (single-source), 'parity' really means
-'the canonical pipeline wires up and emits every legacy output via the same
-helpers, with no double-run of decay or schema.' The assertions here prove:
-
-  L1  decay/prune : matched post-run hebbian edge weights and prune set
-  L2+L3 cluster  : count of NEW semantic records + consolidated_from edges
-  L4  cluster LTP: hebbian weights between co-cluster members boosted equally
-  L6  schema     : auto-status schemas persisted, schema_instance_of edges
-  L7  cls event  : cls_consolidation_run payload value-asserted on
-                   {mode, tier, summaries_created, decay_result, schemas_induced};
-                   schema_candidates / tier_eligible / batch_submitted
-                   are PRESENCE-ONLY (key exists) because schema_candidates'
-                   legacy source (_tier0_schema_surfacing single-tag) differs
-                   from the canonical tag-pair count by construction.
-
-Matched-step ordering (LOAD-BEARING for L1/L4 parity — decay BEFORE cluster):
-  DREAM_DECAY -> CLUSTER_SUMMARY -> SCHEMA_MINE
-
-This test is the gate authorizing removal of the legacy _tick_body Steps 5-7.
-It runs a MATCHED operation set (exactly the three legacy-equivalent steps),
-NOT a full _sleep_pipeline.run (which includes 9 extra steps that would mutate
-the inspected edges and break exact equality).
-
-PART 3 runs a full pipeline separately to prove CLUSTER_SUMMARY is wired.
-"""
 from __future__ import annotations
 
 import json
@@ -38,11 +10,6 @@ import pytest
 
 from iai_mcp.store import EDGES_TABLE, MemoryStore
 from iai_mcp.types import EMBED_DIM, MemoryRecord
-
-
-# ---------------------------------------------------------------------------
-# Keyring isolation — same discipline as test_sleep_consolidation_streaming.py
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture(autouse=True)
@@ -60,11 +27,6 @@ def _isolated_keyring(monkeypatch: pytest.MonkeyPatch):
     yield fake
 
 
-# ---------------------------------------------------------------------------
-# Record factory (no PII; generic test data)
-# ---------------------------------------------------------------------------
-
-
 def _rec(
     text: str,
     tags: list[str] | None = None,
@@ -73,7 +35,6 @@ def _rec(
     detail: int = 2,
     created_days_ago: int = 100,
 ) -> MemoryRecord:
-    """Minimal MemoryRecord for parity-gate seeding."""
     now = datetime.now(timezone.utc)
     from datetime import timedelta
     created = now - timedelta(days=created_days_ago)
@@ -100,44 +61,21 @@ def _rec(
     )
 
 
-# ---------------------------------------------------------------------------
-# Deterministic seed helper
-# ---------------------------------------------------------------------------
-
-
 def _seed_store(store: MemoryStore) -> dict[str, Any]:
-    """Populate store with records + edges that exercise every output class.
-
-    Returns metadata: list of record ids inserted, cluster member ids,
-    so the caller can verify edge/record parity without guessing.
-
-    Design constraints:
-    - At least one hebbian connected component of size >= CLUSTER_MIN_SIZE (3).
-    - Tag co-occurrence that yields at least one status=="auto" schema candidate
-      (evidence_count >= 5 for "auto" in induce_schemas_tier0).
-    - Hebbian edges older than DECAY_GRACE_DAYS (90d) so decay/prune fires on L1.
-    - Plasticity_gain=1.0 assumed (no user_model override).
-    """
     from iai_mcp.sleep import CLUSTER_MIN_SIZE
 
-    # --- cluster: 4 records forming a connected component ---
-    # Use a shared tag PAIR repeated on >=9 records for schema auto-status.
-    # induce_schemas_tier0 auto threshold: count >= 5 AND confidence >= 0.85
-    # confidence = min(1.0, count/10.0) → need count >= 9 (confidence=0.9 >= 0.85).
     schema_tag_a = "topic-alpha"
     schema_tag_b = "topic-beta"
     cluster_recs = []
     for i in range(4):
         r = _rec(
             text=f"cluster record {i}",
-            # Both schema tags + an extra for variety; the pair (a,b) will co-occur.
             tags=[schema_tag_a, schema_tag_b, f"extra-{i}"],
             created_days_ago=110,
         )
         store.insert(r)
         cluster_recs.append(r)
 
-    # Extra records with the SAME pair (total 10 records with the pair for count=10).
     extra_recs = []
     for i in range(6):
         r = _rec(
@@ -148,12 +86,9 @@ def _seed_store(store: MemoryStore) -> dict[str, Any]:
         store.insert(r)
         extra_recs.append(r)
 
-    # Pair: another separate record (non-cluster, no schema tags).
     lone_rec = _rec(text="lone record", tags=["other"])
     store.insert(lone_rec)
 
-    # Hebbian triangle + one more edge to ensure the 4 cluster records
-    # are fully connected (size == 4 >= CLUSTER_MIN_SIZE==3).
     ids = [r.id for r in cluster_recs]
     store.boost_edges(
         [
@@ -163,17 +98,11 @@ def _seed_store(store: MemoryStore) -> dict[str, Any]:
             (ids[0], ids[3]),
         ],
         edge_type="hebbian",
-        # weight=0.5 default; make old enough to be decay-eligible (>90d).
         delta=0.5,
     )
-    # Manually age the edges to > 90 days so _decay_edges fires on them.
-    # We do this by directly updating the updated_at timestamps.
     from iai_mcp.store import EDGES_TABLE
     from iai_mcp.hippo import HippoIntegrityError
 
-    # Fixed backdate (not datetime.now) so the edge age is IDENTICAL for both
-    # stores; combined with a pinned decay clock this makes the decay exponent
-    # deterministic and the weight parity exact regardless of wall-clock load.
     old_ts = datetime(2025, 9, 28, tzinfo=timezone.utc).isoformat()
     tbl = store.db.open_table(EDGES_TABLE)
     for src_id, dst_id in [
@@ -191,7 +120,7 @@ def _seed_store(store: MemoryStore) -> dict[str, Any]:
                 values={"updated_at": old_ts},
             )
         except Exception:
-            pass  # best-effort timestamp backdate
+            pass
 
     return {
         "cluster_ids": ids,
@@ -240,7 +169,6 @@ def _get_edges(store: MemoryStore, edge_type: str) -> list[dict]:
 
 
 def _get_events(store: MemoryStore, kind: str) -> list[dict]:
-    """Query events by kind via the canonical query_events API (handles AES-GCM decrypt)."""
     from iai_mcp.events import query_events
     try:
         rows = query_events(store, kind=kind, limit=100)
@@ -254,27 +182,10 @@ def _get_records_by_tier(store: MemoryStore, tier: str) -> list[dict]:
     return [r for r in recs if r.tier == tier]
 
 
-# ---------------------------------------------------------------------------
-# PART 1: VALUE-PARITY — matched steps only (NOT a full pipeline run)
-# ---------------------------------------------------------------------------
-
-
 def test_parity_matched_steps_store_state(tmp_path, monkeypatch):
-    """PART 1: Legacy run_heavy_consolidation and matched canonical steps
-    (dream_decay -> cluster_summary -> schema_mine) produce IDENTICAL store
-    state on isolated identically-seeded tmp stores.
-
-    Order is LOAD-BEARING (decay-before-cluster for L1/L4 weight parity).
-    """
     from iai_mcp.guard import BudgetLedger, RateLimitLedger
     from iai_mcp.sleep_pipeline import SleepStep
 
-    # Pin the decay clock so both runs see the SAME `now`. Both legacy and
-    # canonical decay go through iai_mcp.sleep._decay_edges, which reads
-    # datetime.now() via the module attribute; with a fixed instant and a fixed
-    # edge backdate, the decay exponent is identical -> exact weight parity,
-    # independent of the wall-clock gap between the two runs (which previously
-    # leaked ~microdays into the exponent under load).
     import datetime as _dt
 
     class _FixedDT(_dt.datetime):
@@ -284,23 +195,17 @@ def test_parity_matched_steps_store_state(tmp_path, monkeypatch):
 
     monkeypatch.setattr("iai_mcp.sleep.datetime", _FixedDT)
 
-    # Seed two identical stores.
     store_a = _make_store(tmp_path, "a")
     store_b = _make_store(tmp_path, "b")
     _seed_store(store_a)
     _seed_store(store_b)
 
-    # --- Store A: legacy ---
     _run_heavy(store_a)
 
-    # --- Store B: matched canonical steps in legacy order ---
     pipeline_b = _make_pipeline(store_b, tmp_path, "b")
 
-    # Patch steps that we do NOT want to run (they would mutate beyond legacy scope).
-    # We run only DREAM_DECAY, CLUSTER_SUMMARY, SCHEMA_MINE in legacy order.
-    # All other steps are nooped.
     _noop = lambda ic: (True, {})
-    _step_methods_backup = pipeline_b._step_methods  # read-only; we override per-step
+    _step_methods_backup = pipeline_b._step_methods
 
     payloads_b: dict[SleepStep, dict] = {}
     for step in [SleepStep.DREAM_DECAY, SleepStep.CLUSTER_SUMMARY, SleepStep.SCHEMA_MINE]:
@@ -308,10 +213,6 @@ def test_parity_matched_steps_store_state(tmp_path, monkeypatch):
         assert done, f"step {step.name} returned done=False unexpectedly"
         payloads_b[step] = payload
 
-    # --- L1: decay/prune parity ---
-    # Two identically-seeded stores get different record UUIDs (each uuid4() call
-    # is independent). Therefore we compare STRUCTURAL PROPERTIES (count + sorted
-    # weight distribution) rather than exact (src, dst) UUID key pairs.
     edges_a_hebb = _get_edges(store_a, "hebbian")
     edges_b_hebb = _get_edges(store_b, "hebbian")
 
@@ -326,11 +227,9 @@ def test_parity_matched_steps_store_state(tmp_path, monkeypatch):
             f"L1 hebbian weight mismatch at position {i}: legacy={wa}, canonical={wb}"
         )
 
-    # --- L2+L3: cluster semantic records + consolidated_from edges ---
     sem_a = _get_records_by_tier(store_a, "semantic")
     sem_b = _get_records_by_tier(store_b, "semantic")
 
-    # Filter to cls_summary tagged records (the ones created by cluster summarisation).
     cls_sum_a = [r for r in sem_a if "cls_summary" in (r.tags or [])]
     cls_sum_b = [r for r in sem_b if "cls_summary" in (r.tags or [])]
     assert len(cls_sum_a) == len(cls_sum_b), (
@@ -343,17 +242,10 @@ def test_parity_matched_steps_store_state(tmp_path, monkeypatch):
         f"L3 consolidated_from edge count: legacy={len(cf_a)}, canonical={len(cf_b)}"
     )
 
-    # --- L4: cluster LTP — hebbian edges between cluster members ---
-    # The seed planted 4 cluster records with 4 hebbian edges.
-    # After LTP both stores should have equal weights on those pairs.
-    # (Already covered by the L1 key+weight check, but make explicit.)
     assert len(cls_sum_a) >= 1, "Expected at least one cluster summary to exercise L4"
 
-    # --- L6: schema persistence ---
     si_a = _get_edges(store_a, "schema_instance_of")
     si_b = _get_edges(store_b, "schema_instance_of")
-    # Discriminating check: the seed must yield at least one auto-status schema.
-    # Without this, L6 parity is vacuous (0==0 proves nothing).
     assert len(si_a) >= 1, (
         f"Seed does not exercise L6 — schema_instance_of edge count = 0 in store A. "
         f"Adjust seed so the tag pair (topic-alpha, topic-beta) co-occurs on >=9 records "
@@ -367,23 +259,7 @@ def test_parity_matched_steps_store_state(tmp_path, monkeypatch):
     )
 
 
-# ---------------------------------------------------------------------------
-# PART 2: CLS-EVENT PARITY
-# ---------------------------------------------------------------------------
-
-
 def test_parity_cls_event(tmp_path):
-    """PART 2: cls_consolidation_run parity via manually collected step payloads.
-
-    PART 1 runs steps directly (bypassing _sleep_pipeline.run), so store B
-    has no cls event yet — the event fires only at pipeline clean completion.
-    We collect the step payloads from PART 1-style direct calls and invoke
-    _emit_cls_consolidation_run manually on store B.
-
-    VALUE-ASSERTED keys: {mode, tier, summaries_created, decay_result (nested),
-    schemas_induced (persisted count)}.
-    PRESENCE-ONLY keys: schema_candidates, tier_eligible, batch_submitted.
-    """
     from iai_mcp.sleep import _emit_cls_consolidation_run
     from iai_mcp.sleep_pipeline import SleepStep
 
@@ -392,30 +268,24 @@ def test_parity_cls_event(tmp_path):
     _seed_store(store_a)
     _seed_store(store_b)
 
-    # --- Store A: legacy (emits cls event internally) ---
     _run_heavy(store_a)
 
-    # --- Store B: matched steps + manual emit ---
     pipeline_b = _make_pipeline(store_b, tmp_path, "b2")
 
-    # Run matched steps in legacy order, collect payloads.
     done_decay, payload_decay = pipeline_b._step_dream_decay(None)
     done_cluster, payload_cluster = pipeline_b._step_cluster_summary(None)
     done_schema, payload_schema = pipeline_b._step_schema_mine(None)
 
     assert done_decay and done_cluster and done_schema
 
-    # Reconstruct nested decay_result from DREAM_DECAY's flat payload.
     decay_result_b = {
         "decayed": int(payload_decay.get("decayed", 0)),
         "pruned": int(payload_decay.get("pruned", 0)),
     }
     summaries_created_b = int(payload_cluster.get("summaries_created", 0))
-    # schemas_induced = PERSISTED count (schemas_persisted key from our extended step).
     schemas_induced_b = int(payload_schema.get("schemas_persisted", 0))
     schema_candidates_b = int(payload_schema.get("schemas_induced", 0))
 
-    # Manually emit cls event on store B (same helper the pipeline uses).
     _emit_cls_consolidation_run(
         store_b,
         "test-session",
@@ -425,11 +295,9 @@ def test_parity_cls_event(tmp_path):
         schemas_induced=schemas_induced_b,
     )
 
-    # --- Fetch cls events from both stores ---
     cls_a = _get_events(store_a, "cls_consolidation_run")
     cls_b = _get_events(store_b, "cls_consolidation_run")
 
-    # Filter to "heavy" mode only.
     cls_a_heavy = [e for e in cls_a if e["data"].get("mode") == "heavy"]
     cls_b_heavy = [e for e in cls_b if e["data"].get("mode") == "heavy"]
 
@@ -439,7 +307,6 @@ def test_parity_cls_event(tmp_path):
     data_a = cls_a_heavy[-1]["data"]
     data_b = cls_b_heavy[-1]["data"]
 
-    # VALUE-ASSERTED keys.
     for key in ["mode", "tier"]:
         assert data_a[key] == data_b[key], (
             f"cls key {key!r} mismatch: legacy={data_a[key]!r}, canonical={data_b[key]!r}"
@@ -448,7 +315,6 @@ def test_parity_cls_event(tmp_path):
         f"cls summaries_created: legacy={data_a['summaries_created']}, "
         f"canonical={data_b['summaries_created']}"
     )
-    # decay_result is nested in both; compare fields.
     dr_a = data_a.get("decay_result", {})
     dr_b = data_b.get("decay_result", {})
     if isinstance(dr_a, str):
@@ -466,38 +332,18 @@ def test_parity_cls_event(tmp_path):
         f"canonical={data_b['schemas_induced']}"
     )
 
-    # PRESENCE-ONLY keys: must exist but values may differ.
     for key in ["schema_candidates", "tier_eligible", "batch_submitted"]:
         assert key in data_a, f"Legacy cls event missing presence-only key {key!r}"
         assert key in data_b, f"Canonical cls event missing presence-only key {key!r}"
 
 
-# ---------------------------------------------------------------------------
-# PART 3: Full pipeline run — CLUSTER_SUMMARY in completed_steps
-# ---------------------------------------------------------------------------
-
-
 def test_full_pipeline_includes_cluster_summary_step(tmp_path, monkeypatch):
-    """PART 3: A full _sleep_pipeline.run includes CLUSTER_SUMMARY in
-    completed_steps AND emits a cls_consolidation_run event with the
-    value-asserted key set.
-
-    This is NOT a parity comparison against legacy — it verifies CLUSTER_SUMMARY
-    is wired into _STEP_ORDER and the pipeline runs it end-to-end.
-
-    Steps that are irrelevant to this check and expensive/complex (reconsolidation
-    critic, DMN reflection, erasure) are patched to no-ops so the test is fast
-    and hermetic. CLUSTER_SUMMARY and the cls event are NOT patched.
-    """
     from iai_mcp.sleep_pipeline import SleepPipeline, SleepStep
 
     store = _make_store(tmp_path, "full")
     _seed_store(store)
     pipeline = _make_pipeline(store, tmp_path, "full")
 
-    # Patch the expensive/non-deterministic steps to no-ops.
-    # We keep DREAM_DECAY, CLUSTER_SUMMARY, SCHEMA_MINE live (they are the
-    # ones we want to verify). The rest are patched.
     _noop = lambda ic: (True, {})
     steps_to_noop = [
         SleepStep.KNOB_TUNE,
@@ -526,7 +372,6 @@ def test_full_pipeline_includes_cluster_summary_step(tmp_path, monkeypatch):
     assert SleepStep.DREAM_DECAY in result["completed_steps"]
     assert SleepStep.SCHEMA_MINE in result["completed_steps"]
 
-    # Assert cls_consolidation_run event was emitted by the pipeline.
     cls_events = _get_events(store, "cls_consolidation_run")
     heavy_cls = [e for e in cls_events if e["data"].get("mode") == "heavy"]
     assert len(heavy_cls) >= 1, (

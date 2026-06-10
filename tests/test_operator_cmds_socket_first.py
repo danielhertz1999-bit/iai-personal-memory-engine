@@ -1,10 +1,3 @@
-"""Regression tests: operator commands (health, trajectory, audit, daemon_stats)
-use the daemon socket first and guard the direct-open fallback with
-HippoLockHeldError, mirroring the already-shipped cmd_topology pattern.
-
-All tests are fully mocked: no live daemon, no real store, no socket I/O,
-no filesystem access.
-"""
 from __future__ import annotations
 
 import argparse
@@ -12,24 +5,14 @@ import io
 from contextlib import redirect_stdout
 from unittest.mock import MagicMock, call, patch
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def _args(**kwargs) -> argparse.Namespace:
     return argparse.Namespace(**kwargs)
 
-
 def _rpc_ok(payload: dict) -> dict:
-    """Wrap a payload in a JSON-RPC success envelope."""
     return {"result": payload}
 
-
 def _rpc_none() -> None:
-    """Simulate daemon-down: _send_jsonrpc_request returns None."""
     return None
-
 
 def _capture(fn) -> str:
     buf = io.StringIO()
@@ -37,16 +20,9 @@ def _capture(fn) -> str:
         rc = fn()
     return buf.getvalue(), rc
 
-
-# ---------------------------------------------------------------------------
-# cmd_health
-# ---------------------------------------------------------------------------
-
 class TestCmdHealthSocketPath:
-    """Socket path exercises."""
 
     def test_renders_llm_health_from_socket(self):
-        """(a) Socket delivers one llm_health event → renders correctly, rc 0."""
         from iai_mcp.cli import cmd_health
 
         payload = {
@@ -71,7 +47,6 @@ class TestCmdHealthSocketPath:
         mock_rpc.assert_called_once_with("events_query", {"kind": "llm_health", "limit": 1})
 
     def test_no_events_prints_not_recorded(self):
-        """(a) Socket delivers empty events list → prints 'no events recorded', rc 0."""
         from iai_mcp.cli import cmd_health
 
         payload = {"events": [], "count": 0}
@@ -83,7 +58,6 @@ class TestCmdHealthSocketPath:
         mock_store.assert_not_called()
 
     def test_socket_down_fallback_runs(self):
-        """(b) Socket returns None → fallback MemoryStore path runs, rc 0."""
         from iai_mcp.cli import cmd_health
 
         mock_event = {
@@ -103,7 +77,6 @@ class TestCmdHealthSocketPath:
         mock_ms.assert_called_once()
 
     def test_hippo_lock_held_on_fallback_clean_message(self):
-        """(c) Socket None + HippoLockHeldError on fallback → clean message, rc 0."""
         from iai_mcp.cli import cmd_health
         from iai_mcp.hippo import HippoLockHeldError
 
@@ -113,13 +86,7 @@ class TestCmdHealthSocketPath:
         assert rc == 0
         assert "daemon holds store lock" in out
 
-
-# ---------------------------------------------------------------------------
-# cmd_trajectory
-# ---------------------------------------------------------------------------
-
 def _make_trajectory_events(n: int = 3) -> list[dict]:
-    """Build n minimal trajectory_metric events (2 per metric for m1/m2/m3)."""
     events = []
     for i in range(n):
         events.append({
@@ -130,10 +97,8 @@ def _make_trajectory_events(n: int = 3) -> list[dict]:
         })
     return events
 
-
 class TestCmdTrajectorySocketPath:
     def test_renders_from_socket(self):
-        """(a) Socket delivers trajectory events → renders stats, rc 0."""
         from iai_mcp.cli import cmd_trajectory
 
         events = _make_trajectory_events(3)
@@ -150,7 +115,6 @@ class TestCmdTrajectorySocketPath:
         assert call_args[0][1]["kind"] == "trajectory_metric"
 
     def test_empty_events_prints_no_data(self):
-        """(a) Socket delivers empty events → prints 'no trajectory data recorded'."""
         from iai_mcp.cli import cmd_trajectory
 
         payload = {"events": [], "count": 0}
@@ -162,7 +126,6 @@ class TestCmdTrajectorySocketPath:
         mock_store.assert_not_called()
 
     def test_socket_down_fallback_runs(self):
-        """(b) Socket returns None → fallback aggregate_trajectory runs, rc 0."""
         from iai_mcp.cli import cmd_trajectory
 
         fake_data = {"m1": [(None, 1.0), (None, 2.0)], "m2": [], "m3": [], "m4": [], "m5": [], "m6": []}
@@ -175,7 +138,6 @@ class TestCmdTrajectorySocketPath:
         mock_ms.assert_called_once()
 
     def test_hippo_lock_held_on_fallback_clean_message(self):
-        """(c) Socket None + HippoLockHeldError on fallback → clean message, rc 0."""
         from iai_mcp.cli import cmd_trajectory
         from iai_mcp.hippo import HippoLockHeldError
 
@@ -186,7 +148,6 @@ class TestCmdTrajectorySocketPath:
         assert "daemon holds store lock" in out
 
     def test_since_passed_to_socket(self):
-        """Socket call includes since param when --since flag provided."""
         from iai_mcp.cli import cmd_trajectory
 
         payload = {"events": [], "count": 0}
@@ -194,11 +155,6 @@ class TestCmdTrajectorySocketPath:
             _capture(lambda: cmd_trajectory(_args(since="2")))
         call_params = mock_rpc.call_args[0][1]
         assert "since" in call_params
-
-
-# ---------------------------------------------------------------------------
-# cmd_audit
-# ---------------------------------------------------------------------------
 
 def _audit_event(kind: str = "s5_invariant_update") -> dict:
     return {
@@ -210,10 +166,8 @@ def _audit_event(kind: str = "s5_invariant_update") -> dict:
         "session_id": "s-1",
     }
 
-
 class TestCmdAuditSocketPath:
     def test_all_mode_renders_from_socket(self):
-        """(a) audit all: socket audit_query delivers events → renders, rc 0."""
         from iai_mcp.cli import cmd_audit
 
         events = [_audit_event("s5_invariant_update")]
@@ -228,7 +182,6 @@ class TestCmdAuditSocketPath:
         assert mock_rpc.call_args[0][0] == "audit_query"
 
     def test_shield_mode_sends_shield_kinds(self):
-        """(a) audit shield: socket call uses shield kinds."""
         from iai_mcp.cli import cmd_audit
 
         events = [_audit_event("shield_rejection")]
@@ -244,7 +197,6 @@ class TestCmdAuditSocketPath:
         assert "shield_flag" in kinds
 
     def test_identity_mode_sends_identity_kinds(self):
-        """(a) audit identity: socket call uses s5_ kinds."""
         from iai_mcp.cli import cmd_audit
 
         events = [_audit_event("s5_cooldown_block")]
@@ -259,7 +211,6 @@ class TestCmdAuditSocketPath:
         assert "shield_rejection" not in kinds
 
     def test_drift_mode_uses_detect_drift_socket_method(self):
-        """(a) audit drift: socket detect_drift → no_anomaly message, rc 0."""
         from iai_mcp.cli import cmd_audit
 
         payload = {"alerts": [], "count": 0}
@@ -272,7 +223,6 @@ class TestCmdAuditSocketPath:
         assert mock_rpc.call_args[0][0] == "detect_drift"
 
     def test_drift_mode_renders_alerts_from_socket(self):
-        """(a) audit drift: socket returns alerts → prints each alert."""
         from iai_mcp.cli import cmd_audit
 
         alerts = [{"window_sessions": 5, "first_value": 0.1, "last_value": 0.9}]
@@ -285,7 +235,6 @@ class TestCmdAuditSocketPath:
         mock_store.assert_not_called()
 
     def test_socket_down_audit_all_fallback_runs(self):
-        """(b) audit all: socket None → fallback audit_identity_events runs, rc 0."""
         from iai_mcp.cli import cmd_audit
 
         events = [_audit_event("s5_invariant_update")]
@@ -298,7 +247,6 @@ class TestCmdAuditSocketPath:
         mock_ms.assert_called_once()
 
     def test_socket_down_drift_fallback_runs(self):
-        """(b) audit drift: socket None → fallback detect_drift_anomaly runs, rc 0."""
         from iai_mcp.cli import cmd_audit
 
         with patch("iai_mcp.cli._send_jsonrpc_request", return_value=None), \
@@ -310,7 +258,6 @@ class TestCmdAuditSocketPath:
         mock_ms.assert_called_once()
 
     def test_hippo_lock_held_audit_all_clean_message(self):
-        """(c) Socket None + HippoLockHeldError on fallback → clean message, rc 0."""
         from iai_mcp.cli import cmd_audit
         from iai_mcp.hippo import HippoLockHeldError
 
@@ -321,7 +268,6 @@ class TestCmdAuditSocketPath:
         assert "daemon holds store lock" in out
 
     def test_hippo_lock_held_audit_drift_clean_message(self):
-        """(c) audit drift: Socket None + HippoLockHeldError on fallback → clean, rc 0."""
         from iai_mcp.cli import cmd_audit
         from iai_mcp.hippo import HippoLockHeldError
 
@@ -332,7 +278,6 @@ class TestCmdAuditSocketPath:
         assert "daemon holds store lock" in out
 
     def test_severity_filter_applied_to_socket_results(self):
-        """Severity post-filter works on socket-sourced event list."""
         from iai_mcp.cli import cmd_audit
 
         events = [
@@ -344,15 +289,8 @@ class TestCmdAuditSocketPath:
             out_crit, rc = _capture(
                 lambda: cmd_audit(_args(audit_sub=None, since=None, severity="critical"))
             )
-        # Only critical events should appear (severity filter reduces list to 1)
         assert rc == 0
-        # Output should contain something (the critical event rendered)
         assert out_crit.strip()
-
-
-# ---------------------------------------------------------------------------
-# cmd_daemon_stats
-# ---------------------------------------------------------------------------
 
 def _session_events(n: int, tokens: int = 3000) -> list[dict]:
     return [
@@ -365,10 +303,8 @@ def _session_events(n: int, tokens: int = 3000) -> list[dict]:
         for i in range(n)
     ]
 
-
 class TestCmdDaemonStatsSocketPath:
     def test_renders_p90_from_socket(self):
-        """(a) Socket delivers session_started events → renders p90, rc 0."""
         from iai_mcp.cli import cmd_daemon_stats
 
         events = _session_events(5, tokens=2000)
@@ -386,7 +322,6 @@ class TestCmdDaemonStatsSocketPath:
         assert call_params["limit"] == 100
 
     def test_empty_socket_events_no_data(self):
-        """(a) Socket delivers zero events → 'no-data' p90, rc 0."""
         from iai_mcp.cli import cmd_daemon_stats
 
         payload = {"events": [], "count": 0}
@@ -398,7 +333,6 @@ class TestCmdDaemonStatsSocketPath:
         mock_store.assert_not_called()
 
     def test_socket_down_fallback_runs(self):
-        """(b) Socket returns None → direct-open compute_session_start_tokens_p90, rc 0."""
         from iai_mcp.cli import cmd_daemon_stats
 
         fake_result = {"p90": 4000, "n_samples": 10}
@@ -411,7 +345,6 @@ class TestCmdDaemonStatsSocketPath:
         mock_ms.assert_called_once()
 
     def test_hippo_lock_held_on_fallback_clean_message(self):
-        """(c) Socket None + HippoLockHeldError on fallback → clean message, rc 0."""
         from iai_mcp.cli import cmd_daemon_stats
         from iai_mcp.hippo import HippoLockHeldError
 
@@ -422,10 +355,8 @@ class TestCmdDaemonStatsSocketPath:
         assert "daemon holds store lock" in out
 
     def test_socket_whitelist_error_falls_through_to_direct_open(self):
-        """Socket returns whitelist error (old daemon) → fallback runs, rc 0."""
         from iai_mcp.cli import cmd_daemon_stats
 
-        # Old daemon returns result={"error": "kind... not user-visible"}
         error_resp = {"result": {"error": "kind 'session_started' is not user-visible"}}
         fake_result = {"p90": 3500, "n_samples": 50}
         with patch("iai_mcp.cli._send_jsonrpc_request", return_value=error_resp), \
@@ -433,11 +364,9 @@ class TestCmdDaemonStatsSocketPath:
              patch("iai_mcp.cli.compute_session_start_tokens_p90", return_value=fake_result):
             out, rc = _capture(lambda: cmd_daemon_stats(_args()))
         assert rc == 0
-        # Fallback ran because payload["events"] was missing
         mock_ms.assert_called_once()
 
     def test_p90_computed_correctly_from_socket_events(self):
-        """p90 math: 100 identical events → p90 equals that value."""
         from iai_mcp.cli import cmd_daemon_stats
 
         events = _session_events(100, tokens=1234)

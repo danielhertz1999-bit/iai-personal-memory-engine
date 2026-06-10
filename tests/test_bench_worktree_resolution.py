@@ -1,32 +1,3 @@
-"""Regression test: every `bench/*.py` that needs `iai_mcp.*` carries an
-idempotent top-of-file `sys.path` shim that resolves to THIS worktree's
-`src/`, not the parent venv's editable install.
-
-Two complementary approaches:
-
-* **Approach B - AST (always-on, fast ~1s):** parametrise across the
-  bench scripts that import `iai_mcp` (directly or transitively via
-  `bench.*`). Walk `tree.body` and assert (a) the shim's
-  `_SRC_PATH = str(...)` assignment and (b) the
-  `if _SRC_PATH not in sys.path:` `If` block both appear at body-index
-  STRICTLY LESS than the index of the first `Import`/`ImportFrom` node
-  that references `iai_mcp.*` or `bench.*`.
-
-* **Approach A - subprocess (slow, opt-in via `--runslow`):**
-  spawn each script with `--help` from `cwd=/tmp` and a sanitised env
-  (no `PYTHONPATH`). All must exit 0. Real-world reproducibility check.
-
-Plus three regression guards:
-* the no-op skip-list scripts MUST NOT carry the shim - they don't
-  import `iai_mcp`;
-* the shim block is idempotent in the same process - simulating its
-  insert against a snapshot of `sys.path` is a no-op when the path is
-  already present;
-* the on-disk `bench/*.py` inventory matches the union of the two
-  authoritative lists, catching drift if a new bench script is added.
-
-The split is empirical.
-"""
 from __future__ import annotations
 
 import ast
@@ -40,8 +11,6 @@ import pytest
 WORKTREE_ROOT = Path(__file__).resolve().parent.parent
 BENCH_DIR = WORKTREE_ROOT / "bench"
 
-# Authoritative inventories. An empirical scan classifies each bench script
-# by whether it imports iai_mcp (directly or via bench.*).
 BENCH_SCRIPTS_NEEDING_SHIM = [
     "_night_runner.py",
     "consolidation_rss_peak.py",
@@ -76,9 +45,6 @@ BENCH_SCRIPTS_NO_SHIM = [
 
 
 def _imports_iai_or_bench(node: ast.AST) -> bool:
-    """Return True iff `node` is an `Import` / `ImportFrom` that pulls in
-    `iai_mcp.*` or `bench.*`.
-    """
     if isinstance(node, ast.Import):
         return any(
             alias.name == "iai_mcp"
@@ -99,7 +65,6 @@ def _imports_iai_or_bench(node: ast.AST) -> bool:
 
 
 def _is_src_path_assign(node: ast.AST) -> bool:
-    """Return True iff `node` is `_SRC_PATH = str(...)`."""
     return (
         isinstance(node, ast.Assign)
         and len(node.targets) == 1
@@ -109,7 +74,6 @@ def _is_src_path_assign(node: ast.AST) -> bool:
 
 
 def _is_sys_path_guard_if(node: ast.AST) -> bool:
-    """Return True iff `node` is `if _SRC_PATH not in sys.path: ...`."""
     if not isinstance(node, ast.If):
         return False
     test = node.test
@@ -132,12 +96,6 @@ def _is_sys_path_guard_if(node: ast.AST) -> bool:
 
 
 def _simulate_shim(fake_sys_path: list[str], src_path: str) -> list[str]:
-    """Pure-Python simulation of the shim's `if _SRC_PATH not in sys.path:
-    sys.path.insert(0, _SRC_PATH)` block. Returns the new list.
-
-    Used by the idempotency test instead of `exec()` so the
-    security-reminder hook does not flag the file.
-    """
     new_path = list(fake_sys_path)
     if src_path not in new_path:
         new_path.insert(0, src_path)
@@ -146,17 +104,6 @@ def _simulate_shim(fake_sys_path: list[str], src_path: str) -> list[str]:
 
 @pytest.mark.parametrize("script", BENCH_SCRIPTS_NEEDING_SHIM)
 def test_bench_script_has_shim_before_iai_import(script: str) -> None:
-    """The shim's `_SRC_PATH = ...` and `if _SRC_PATH not in sys.path:`
-    nodes must both appear at module level, BEFORE the first top-level
-    `iai_mcp` / `bench.*` import. If no such top-level import exists
-    (the script imports `iai_mcp` lazily from inside a function), the
-    shim must still be present at module level - top-of-file placement
-    is then trivially correct since lazy imports run later.
-
-    There must also exist at least one `iai_mcp` / `bench.*` import
-    SOMEWHERE in the file (top-level or nested); otherwise the script
-    has no business being on `BENCH_SCRIPTS_NEEDING_SHIM`.
-    """
     path = BENCH_DIR / script
     assert path.exists(), f"bench script missing: {path}"
     tree = ast.parse(path.read_text())
@@ -179,7 +126,6 @@ def test_bench_script_has_shim_before_iai_import(script: str) -> None:
         f"{script}: no `if _SRC_PATH not in sys.path:` block found at module level"
     )
 
-    # At least one iai_mcp / bench import must exist somewhere in the file.
     has_any_import = any(_imports_iai_or_bench(n) for n in ast.walk(tree))
     assert has_any_import, (
         f"{script}: no iai_mcp / bench import found anywhere in file "
@@ -187,7 +133,6 @@ def test_bench_script_has_shim_before_iai_import(script: str) -> None:
         f"fix the list or the file)"
     )
 
-    # If there IS a top-level import, the shim must come before it.
     if first_toplevel_import_idx is not None:
         assert src_path_idx < first_toplevel_import_idx, (
             f"{script}: `_SRC_PATH` assign at body[{src_path_idx}] must come BEFORE "
@@ -201,10 +146,6 @@ def test_bench_script_has_shim_before_iai_import(script: str) -> None:
 
 @pytest.mark.parametrize("script", BENCH_SCRIPTS_NO_SHIM)
 def test_skip_list_bench_scripts_have_no_shim(script: str) -> None:
-    """Regression: the no-op scripts (zero iai_mcp imports) MUST NOT
-    carry the shim. If they ever start importing iai_mcp, this test
-    should fail loudly so the inventory gets updated.
-    """
     path = BENCH_DIR / script
     assert path.exists(), f"skip-list bench script missing: {path}"
     src = path.read_text()
@@ -212,7 +153,6 @@ def test_skip_list_bench_scripts_have_no_shim(script: str) -> None:
         f"{script}: skip-list script unexpectedly carries the shim - "
         f"either drop the shim or move the script to BENCH_SCRIPTS_NEEDING_SHIM"
     )
-    # Belt-and-braces: confirm no actual iai_mcp import.
     tree = ast.parse(src)
     for node in ast.walk(tree):
         assert not _imports_iai_or_bench(node), (
@@ -222,40 +162,20 @@ def test_skip_list_bench_scripts_have_no_shim(script: str) -> None:
 
 
 def test_shim_block_idempotency_in_same_process() -> None:
-    """Simulating the shim block twice against a snapshot of `sys.path`
-    must be a strict no-op the second time. We use a pure-Python
-    simulation (`_simulate_shim`) rather than the actual `exec()` of
-    shim source, since the latter is identical in behaviour but trips
-    project security tooling that pattern-matches `exec(` literals.
-
-    Three scenarios:
-      1. shim against a path that does NOT yet contain _SRC_PATH: one insert.
-      2. second shim against the result of (1): no change.
-      3. shim against a path that ALREADY contains _SRC_PATH: no change.
-    """
     src_path = str(BENCH_DIR.parent / "src")
-    # Scenario 1: not present -> insert once.
     fresh = ["/some/other/path", "/usr/lib/python3.11"]
     after_first = _simulate_shim(fresh, src_path)
     assert after_first[0] == src_path
     assert len(after_first) == len(fresh) + 1
-    # Scenario 2: re-apply against the result -> idempotent.
     after_second = _simulate_shim(after_first, src_path)
     assert after_second == after_first
     assert len(after_second) == len(after_first)
-    # Scenario 3: already present, anywhere in the list -> no insert.
     pre_populated = ["/foo", src_path, "/bar"]
     after_third = _simulate_shim(pre_populated, src_path)
     assert after_third == pre_populated
 
 
 def test_authoritative_script_lists_match_filesystem() -> None:
-    """The union of `BENCH_SCRIPTS_NEEDING_SHIM` and `BENCH_SCRIPTS_NO_SHIM`
-    must equal every top-level `*.py` in `bench/` (excluding `__init__.py`).
-
-    Catches drift if a new bench script lands without being added to one
-    of the two lists - fail loudly so the next plan classifies it.
-    """
     on_disk = {
         p.name
         for p in BENCH_DIR.iterdir()
@@ -273,15 +193,12 @@ def test_authoritative_script_lists_match_filesystem() -> None:
         f"authoritative lists reference scripts not on disk: "
         f"{sorted(extra_in_lists)} - drop the stale entries."
     )
-    # Disjointness: a script cannot be in both lists.
     overlap = set(BENCH_SCRIPTS_NEEDING_SHIM) & set(BENCH_SCRIPTS_NO_SHIM)
     assert not overlap, (
         f"scripts appear in both lists: {sorted(overlap)} - pick one."
     )
 
 
-# Scripts with pre-existing import bugs revealed by the shim. Empty after the
-# IGRAPH_THRESHOLD import correction; kept here for future entries.
 _SLOW_XFAIL: dict[str, str] = {}
 
 
@@ -301,13 +218,6 @@ _SLOW_XFAIL: dict[str, str] = {}
     ],
 )
 def test_shim_resolves_to_worktree(script: str) -> None:
-    """End-to-end: spawn the shimmed script with `--help` from `cwd=/tmp`
-    with a sanitised env (no `PYTHONPATH`). It must exit 0 - proving the
-    shim resolved `iai_mcp.*` to this worktree without external help.
-
-    Opt-in via `pytest --runslow`. Skipped by default (subprocess-heavy,
-    ~3s per script).
-    """
     path = BENCH_DIR / script
     env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
     result = subprocess.run(

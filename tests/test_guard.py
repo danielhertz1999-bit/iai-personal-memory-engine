@@ -1,20 +1,9 @@
-"""Tests for the LLM guard (BudgetLedger + RateLimitLedger + should_call_llm).
-
-Exercises:
-- BudgetLedger daily/monthly caps + rollover
-- RateLimitLedger cooldown window
-- should_call_llm 7-step ladder ordering
-- Persistence across store reopen
-"""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
-
-
-# ------------------------------------------------------------- BudgetLedger
 
 
 def test_budget_ledger_daily_cap_enforced(tmp_path):
@@ -29,7 +18,6 @@ def test_budget_ledger_daily_cap_enforced(tmp_path):
 
     bl.record_spend(0.08)
     ok, _ = bl.can_spend(0.03)
-    # 0.08 + 0.03 = 0.11 > 0.10 -> NOT ok
     ok2, reason = bl.can_spend(0.03)
     assert ok2 is False
     assert "daily" in reason.lower()
@@ -47,7 +35,6 @@ def test_budget_ledger_daily_allows_under_cap(tmp_path):
 
 
 def test_budget_ledger_monthly_cap_enforced(tmp_path):
-    """Daily small spends accumulate to monthly cap."""
     from iai_mcp.guard import BudgetLedger
     from iai_mcp.store import MemoryStore
 
@@ -55,7 +42,6 @@ def test_budget_ledger_monthly_cap_enforced(tmp_path):
     bl = BudgetLedger(store, daily_usd_cap=10.0, monthly_usd_cap=0.20)
     bl.record_spend(0.15)
     ok, reason = bl.can_spend(0.10)
-    # 0.15 + 0.10 = 0.25 > 0.20 -> NOT ok, but reason is monthly (daily cap 10.0 is fine)
     assert ok is False
     assert "monthly" in reason.lower()
 
@@ -84,7 +70,6 @@ def test_budget_ledger_monthly_used(tmp_path):
 
 
 def test_budget_ledger_persists_across_reopen(tmp_path):
-    """Ledger-backed by the store -> survives store close/reopen (repudiation-resistance check)."""
     from iai_mcp.guard import BudgetLedger
     from iai_mcp.store import MemoryStore
 
@@ -95,9 +80,6 @@ def test_budget_ledger_persists_across_reopen(tmp_path):
     store2 = MemoryStore(path=tmp_path)
     bl = BudgetLedger(store2)
     assert abs(bl.daily_used() - 0.05) < 1e-5
-
-
-# ----------------------------------------------------------- RateLimitLedger
 
 
 def test_ratelimit_ledger_no_history_not_in_cooldown(tmp_path):
@@ -131,11 +113,7 @@ def test_ratelimit_ledger_persists_across_reopen(tmp_path):
     assert RateLimitLedger(store2).in_cooldown() is True
 
 
-# -------------------------------------------------- should_call_llm ladder
-
-
 def test_should_call_llm_tier_0_fallback_llm_disabled(tmp_path):
-    """Step 1: llm_enabled=False -> (False, 'sleep.llm_enabled=false')."""
     from iai_mcp.guard import BudgetLedger, RateLimitLedger, should_call_llm
     from iai_mcp.store import MemoryStore
 
@@ -148,7 +126,6 @@ def test_should_call_llm_tier_0_fallback_llm_disabled(tmp_path):
 
 
 def test_should_call_llm_no_api_key(tmp_path):
-    """Step 2: no api key -> (False, 'no api key')."""
     from iai_mcp.guard import BudgetLedger, RateLimitLedger, should_call_llm
     from iai_mcp.store import MemoryStore
 
@@ -161,7 +138,6 @@ def test_should_call_llm_no_api_key(tmp_path):
 
 
 def test_should_call_llm_daily_cap_hit(tmp_path):
-    """Step 3: daily cap exhausted -> (False,... daily cap...)."""
     from iai_mcp.guard import BudgetLedger, RateLimitLedger, should_call_llm
     from iai_mcp.store import MemoryStore
 
@@ -177,7 +153,6 @@ def test_should_call_llm_daily_cap_hit(tmp_path):
 
 
 def test_should_call_llm_monthly_cap_hit(tmp_path):
-    """Step 4: daily ok, monthly cap exhausted."""
     from iai_mcp.guard import BudgetLedger, RateLimitLedger, should_call_llm
     from iai_mcp.store import MemoryStore
 
@@ -193,7 +168,6 @@ def test_should_call_llm_monthly_cap_hit(tmp_path):
 
 
 def test_should_call_llm_in_cooldown(tmp_path):
-    """Step 5: budget ok, but rate limiter in cooldown."""
     from iai_mcp.guard import BudgetLedger, RateLimitLedger, should_call_llm
     from iai_mcp.store import MemoryStore
 
@@ -207,7 +181,6 @@ def test_should_call_llm_in_cooldown(tmp_path):
 
 
 def test_should_call_llm_all_green(tmp_path):
-    """All 7 steps pass -> (True, 'ok')."""
     from iai_mcp.guard import BudgetLedger, RateLimitLedger, should_call_llm
     from iai_mcp.store import MemoryStore
 
@@ -220,36 +193,32 @@ def test_should_call_llm_all_green(tmp_path):
 
 
 def test_should_call_llm_ordering_llm_enabled_first(tmp_path):
-    """Ladder ordering: llm_enabled takes precedence over budget+cooldown+apikey."""
     from iai_mcp.guard import BudgetLedger, RateLimitLedger, should_call_llm
     from iai_mcp.store import MemoryStore
 
     store = MemoryStore(path=tmp_path)
     bl = BudgetLedger(store, daily_usd_cap=0.01)
-    bl.record_spend(0.02)  # over cap
+    bl.record_spend(0.02)
     rl = RateLimitLedger(store)
-    rl.record_429()        # in cooldown
+    rl.record_429()
 
-    # llm_enabled=False short-circuits BEFORE cap + cooldown checks
     ok, reason = should_call_llm(bl, rl, llm_enabled=False, has_api_key=False)
     assert ok is False
     assert "llm_enabled" in reason
 
 
 def test_should_call_llm_ordering_cap_before_cooldown(tmp_path):
-    """With llm_enabled+api_key, budget cap check precedes cooldown."""
     from iai_mcp.guard import BudgetLedger, RateLimitLedger, should_call_llm
     from iai_mcp.store import MemoryStore
 
     store = MemoryStore(path=tmp_path)
     bl = BudgetLedger(store, daily_usd_cap=0.01)
-    bl.record_spend(0.02)  # over cap
+    bl.record_spend(0.02)
     rl = RateLimitLedger(store)
-    rl.record_429()        # also in cooldown
+    rl.record_429()
 
     ok, reason = should_call_llm(
         bl, rl, llm_enabled=True, has_api_key=True, estimated_usd=0.001
     )
     assert ok is False
-    # "daily" message means cap was checked before cooldown
     assert "daily" in reason.lower()

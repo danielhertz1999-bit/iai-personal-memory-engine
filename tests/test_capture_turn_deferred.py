@@ -1,14 +1,3 @@
-"""Per-turn deferred capture CLI: line-count offset semantics + atomic state.
-
-Contract:
-- First call writes header + one event line to {session_id}.live.jsonl.
-- Subsequent calls append event lines only; no header rewrite.
-- Offset persisted as a LINE COUNT (not byte offset) via temp+rename.
-- Transcript truncation/rotation resets offset to 0.
-- Missing transcript = no-op (exit 0, no files created).
-- Invalid roles skipped silently.
-- Max 200 NEW turns processed per call.
-"""
 from __future__ import annotations
 
 import argparse
@@ -38,7 +27,6 @@ def _build_args(session_id: str, transcript_path: Path, max_turns: int = 200) ->
 
 
 def test_first_call_writes_header_and_one_event(tmp_path, monkeypatch):
-    """First invocation creates {sid}.live.jsonl with header + one event."""
     monkeypatch.setenv("HOME", str(tmp_path))
     from iai_mcp.cli import cmd_capture_turn_deferred
 
@@ -63,7 +51,6 @@ def test_first_call_writes_header_and_one_event(tmp_path, monkeypatch):
 
 
 def test_second_call_appends_only_new_events(tmp_path, monkeypatch):
-    """Second call with grown transcript appends one event; header unchanged."""
     monkeypatch.setenv("HOME", str(tmp_path))
     from iai_mcp.cli import cmd_capture_turn_deferred
 
@@ -89,7 +76,6 @@ def test_second_call_appends_only_new_events(tmp_path, monkeypatch):
 
 
 def test_offset_persisted_atomically_as_line_count(tmp_path, monkeypatch):
-    """Offset state stores integer line count; parses back to int."""
     monkeypatch.setenv("HOME", str(tmp_path))
     from iai_mcp.cli import cmd_capture_turn_deferred
 
@@ -110,7 +96,6 @@ def test_offset_persisted_atomically_as_line_count(tmp_path, monkeypatch):
 
 
 def test_offset_resets_on_truncation(tmp_path, monkeypatch):
-    """Pre-seeded offset > transcript line count resets to 0; all lines reprocessed."""
     monkeypatch.setenv("HOME", str(tmp_path))
     from iai_mcp.cli import cmd_capture_turn_deferred
 
@@ -133,7 +118,6 @@ def test_offset_resets_on_truncation(tmp_path, monkeypatch):
 
 
 def test_missing_transcript_no_op(tmp_path, monkeypatch):
-    """Missing transcript path = exit 0, no files written."""
     monkeypatch.setenv("HOME", str(tmp_path))
     from iai_mcp.cli import cmd_capture_turn_deferred
 
@@ -147,7 +131,6 @@ def test_missing_transcript_no_op(tmp_path, monkeypatch):
 
 
 def test_invalid_role_lines_skipped(tmp_path, monkeypatch):
-    """Lines with role not in {user, assistant} are silently skipped."""
     monkeypatch.setenv("HOME", str(tmp_path))
     from iai_mcp.cli import cmd_capture_turn_deferred
 
@@ -169,7 +152,6 @@ def test_invalid_role_lines_skipped(tmp_path, monkeypatch):
 
 
 def test_max_turns_per_call_cap(tmp_path, monkeypatch):
-    """Single invocation processes at most max_turns_per_call NEW turns."""
     monkeypatch.setenv("HOME", str(tmp_path))
     from iai_mcp.cli import cmd_capture_turn_deferred
 

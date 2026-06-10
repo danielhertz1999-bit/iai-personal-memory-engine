@@ -1,6 +1,3 @@
-"""First-turn auto-recall hook in core.dispatch that fires
-exactly once per session and injects a scoped recall into the response.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -40,15 +37,12 @@ def _seed_one_record(store: MemoryStore, text: str = "reference content") -> Non
 
 
 def test_first_turn_fires_exactly_once(tmp_path, monkeypatch):
-    """first dispatch injects first_turn_recall; second dispatch does not."""
-    # Patch daemon_state to emulate first-turn-pending for session s1 exactly once.
     pending = {"s1": True}
 
     def _load_state():
         return {"first_turn_pending": dict(pending)}
 
     def _save_state(state):
-        # Update the outer dict state per what the test sets.
         fresh = state.get("first_turn_pending", {})
         pending.clear()
         pending.update(fresh)
@@ -74,7 +68,6 @@ def test_first_turn_fires_exactly_once(tmp_path, monkeypatch):
 
 
 def test_first_turn_budget_capped_at_400(tmp_path, monkeypatch):
-    """first_turn_recall budget_tokens ≤ 400."""
     pending = {"s2": True}
     monkeypatch.setattr(
         "iai_mcp.daemon_state.load_state",
@@ -99,7 +92,6 @@ def test_first_turn_budget_capped_at_400(tmp_path, monkeypatch):
 
 
 def test_daemon_unreachable_falls_back_silently(tmp_path, monkeypatch):
-    """silent-fail: daemon_state read error must not break dispatch."""
     def _boom():
         raise RuntimeError("synthetic daemon_state failure")
 
@@ -108,19 +100,16 @@ def test_daemon_unreachable_falls_back_silently(tmp_path, monkeypatch):
     store = MemoryStore(path=tmp_path)
     _seed_one_record(store)
 
-    # Must not raise.
     resp = core.dispatch(store, "memory_recall", {
         "cue": "X",
         "session_id": "s3",
         "cue_embedding": [0.1] * EMBED_DIM,
     })
-    # Normal response shape preserved; first_turn_recall absent.
     assert "hits" in resp
     assert "first_turn_recall" not in resp
 
 
 def test_first_turn_emits_event(tmp_path, monkeypatch):
-    """first_turn hook writes kind=first_turn_recall event."""
     from iai_mcp.events import query_events
 
     pending = {"s4": True}
@@ -147,7 +136,6 @@ def test_first_turn_emits_event(tmp_path, monkeypatch):
 
 
 def test_input_length_clamp_2000(tmp_path, monkeypatch):
-    """V5 security: first-turn cue clamped to 2000 chars before recall."""
     pending = {"s5": True}
     monkeypatch.setattr(
         "iai_mcp.daemon_state.load_state",
@@ -161,17 +149,15 @@ def test_input_length_clamp_2000(tmp_path, monkeypatch):
     store = MemoryStore(path=tmp_path)
     _seed_one_record(store)
 
-    # Huge cue — should be clamped by the hook.
     huge_cue = "X" * 5000
 
-    # Wrap retrieve.recall to capture the cue_text arg.
     seen_cues: list[str] = []
     from iai_mcp import retrieve as _retrieve
     orig = _retrieve.recall
 
     def _spy(*args, **kwargs):
         cue = kwargs.get("cue_text", "")
-        if "first-turn" not in cue[:20]:  # avoid capturing the outer dispatch
+        if "first-turn" not in cue[:20]:
             seen_cues.append(cue)
         return orig(*args, **kwargs)
 
@@ -183,8 +169,6 @@ def test_input_length_clamp_2000(tmp_path, monkeypatch):
         "cue_embedding": [0.1] * EMBED_DIM,
     })
 
-    # The hook must have called recall with a clamped cue — any cue longer than
-    # 2000 chars indicates the clamp failed.
     assert any(len(c) <= 2000 for c in seen_cues), (
         f"no clamped cue observed; len spread: {[len(c) for c in seen_cues]}"
     )

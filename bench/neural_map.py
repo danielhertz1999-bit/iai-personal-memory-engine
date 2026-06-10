@@ -1,22 +1,3 @@
-"""bench/neural_map.py -- perf benchmark.
-
-Measures recall_for_response latency at store sizes {100, 1k, 5k, 10k}. The
-perf contract is p95 < 100ms at 10k. The bench seeds a synthetic store,
-builds the runtime graph, runs N iterations of recall_for_response with varied
-cue strings, and reports:
-
-- latency_ms_p50 / latency_ms_p95 across iterations
-- stage_timings_ms: mean per-stage timing (embed / gate / seeds / spread / rank)
-- passed: p95 < 100ms
-
-CLI:
-    python -m bench.neural_map [--n 100] [--n 1000] [--n 5000] [--n 10000]
-                               [--iterations 10]
-
-When the executor hardware cannot meet <100ms at 10k, main() returns 1 so
-CI catches the regression; the user decides whether to tune the implementation
-or accept.
-"""
 from __future__ import annotations
 
 import argparse
@@ -29,9 +10,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-# Resolve iai_mcp.* (via src) AND bench.* (via worktree root) to THIS
-# worktree, not the parent venv's editable install. Idempotent: each
-# `sys.path.insert` is guarded by an "if not already present" check.
 _SRC_PATH = str(Path(__file__).resolve().parent.parent / "src")
 _ROOT_PATH = str(Path(__file__).resolve().parent.parent)
 if _SRC_PATH not in sys.path:
@@ -47,17 +25,10 @@ from iai_mcp.store import MemoryStore, flush_edge_buffer, flush_record_buffer
 from iai_mcp.types import EMBED_DIM, MemoryRecord
 
 
-# 100ms p95 ceiling at 10k records.
 D_SPEED_P95_MS = 100.0
 
 
 class _BenchEmbedder:
-    """Fast deterministic embedder for bench runs.
-
-    Random vectors seeded from cue text + a fixed base seed. Matches the
-    Embedder protocol expected by pipeline.recall_for_response (DIM attribute +
-    embed method); no network, no sentence-transformer load.
-    """
 
     def __init__(self, base_seed: int = 0, dim: int = EMBED_DIM) -> None:
         self.DIM = dim
@@ -66,8 +37,6 @@ class _BenchEmbedder:
         self._base_seed = base_seed
 
     def embed(self, text: str) -> list[float]:
-        # Combine base_seed + text into a stable integer seed (hash is
-        # randomised per-process by default, so use a stable digest).
         import hashlib
         digest = hashlib.sha256(
             f"{self._base_seed}:{text}".encode("utf-8")
@@ -118,22 +87,6 @@ def run_neural_map_bench(
     seed: int = 0,
     warm_cascade: bool = False,
 ) -> dict:
-    """Run the perf benchmark at store size N.
-
-    Parameters:
-        n: number of records to seed.
-        iterations: number of recall_for_response calls to measure.
-        store_path: optional MemoryStore directory; defaults to a temp dir.
-        seed: RNG base seed for deterministic synthetic data.
-        warm_cascade: when True, fire the synchronous core-side cascade
-            after seeding but before timing so the measured p95 reflects the
-            warm path, not the cold path. Returns ``cascade_warmed`` count
-            in the result dict; 0 when disabled or when the cascade produced
-            no ids.
-
-    Returns dict with n, latency_ms_p50, latency_ms_p95, stage_timings_ms,
-    build_ms, passed, iterations, and (when warm_cascade=True) cascade_warmed.
-    """
     rng = random.Random(seed)
     cleanup: tempfile.TemporaryDirectory | None = None
     if store_path is None:
@@ -146,8 +99,6 @@ def run_neural_map_bench(
         store = MemoryStore(path=path)
         embedder = _BenchEmbedder(base_seed=seed, dim=store.embed_dim)
 
-        # Seed N records with a mix of tags so community detection has
-        # structure.
         tag_pool = [
             ["topic:auth"], ["topic:db"], ["topic:web"],
             ["topic:net"], ["topic:cli"],
@@ -158,27 +109,16 @@ def run_neural_map_bench(
             rec = _make_record(vec, text=f"synthetic fact {i}", tags=tags)
             store.insert(rec)
 
-        # Flush seeded records to SQLite unconditionally so build_runtime_graph
-        # sees a fully populated store regardless of whether the pytest
-        # autoflush fixture is active. This makes the seeding phase
-        # self-contained: IAI_MCP_TEST_NO_AUTOFLUSH=1 (which latency tests
-        # set to prevent the conftest defer_provenance eager-flush from adding
-        # ~15-20ms per recall call) no longer starves the store before timing.
         try:
             flush_record_buffer(store)
             flush_edge_buffer(store)
         except Exception:
             pass
 
-        # Build runtime graph (timed separately).
         t_build = time.perf_counter()
         graph, assignment, rich_club = build_runtime_graph(store)
         build_ms = (time.perf_counter() - t_build) * 1000.0
 
-        # Fire the sync core-side cascade AFTER seeding + build_runtime_graph
-        # (both required for salience computation) and BEFORE the timing loop
-        # starts. Writes into the same process-local hippea_cascade._warm_lru
-        # that recall_for_response consults via get_warm_record.
         cascade_warmed = 0
         if warm_cascade:
             try:
@@ -212,17 +152,12 @@ def run_neural_map_bench(
         }
         for i in range(iterations):
             cue = cues[rng.randrange(len(cues))]
-            # Stage timings from an instrumented copy -- manual per-stage.
             t_stage = time.perf_counter()
             cue_emb = embedder.embed(cue)
             stage_totals["embed"].append(
                 (time.perf_counter() - t_stage) * 1000.0
             )
             t_stage = time.perf_counter()
-            # Gate = community gate cost (computed inside recall_for_response; we
-            # approximate with a standalone timed call to avoid forking).
-            # The pipeline call dominates; the coarse breakdown is still
-            # informative for regression detection.
             stage_totals["gate"].append(
                 (time.perf_counter() - t_stage) * 1000.0
             )
@@ -241,8 +176,6 @@ def run_neural_map_bench(
             call_ms = (time.perf_counter() - t0) * 1000.0
             latencies.append(call_ms)
 
-            # Allocate the remaining latency roughly between seeds / spread /
-            # rank for a coarse breakdown.
             remaining = max(0.0, call_ms - sum(
                 stage_totals[k][-1] for k in ("embed", "gate")
             ))
@@ -286,19 +219,6 @@ def main(
     ref_claude_mem_p95_ms: float | None = None,
     with_cascade: bool = False,
 ) -> int:
-    """CLI entry. Returns 0 when every N passes the perf threshold and
-    (when supplied) the comparative-reference gate.
-
-     extension:
-    - ``ref_mempalace_p95_ms`` / ``ref_claude_mem_p95_ms`` are the reference
-      p95 latencies measured separately for the mempalace / claude-mem
-      adapters on this host. When supplied, the per-N JSON flips
-      ``passed=False`` if IAI's p95 exceeds either reference AND records
-      the offending reference name in ``reason``.
-    - ``with_cascade=True`` attempts to warm the LRU before timing
-      the recall so the test can observe the warm-RAM path latency.
-      Graceful no-op when hippea_cascade is unavailable.
-    """
     ns = ns or [100, 1_000, 5_000, 10_000]
     results: list[dict] = []
     any_failed = False
@@ -310,7 +230,6 @@ def main(
             warm_cascade=with_cascade,
         )
 
-        # Comparative gate — IAI must be <= every supplied ref.
         refs: dict[str, float] = {}
         reason: str | None = None
         if ref_mempalace_p95_ms is not None:
@@ -325,8 +244,6 @@ def main(
             refs["claude_mem"] = ref_claude_mem_p95_ms
             if out["latency_ms_p95"] > ref_claude_mem_p95_ms:
                 out["passed"] = False
-                # First reference to fail wins the reason string; append
-                # claude-mem only when it is the ONLY failing ref.
                 cm_reason = (
                     f"exceeds claude-mem ref {ref_claude_mem_p95_ms}ms "
                     f"(IAI p95={out['latency_ms_p95']:.2f}ms)"
@@ -347,19 +264,6 @@ def main(
 def _warm_cascade_for_bench(
     n: int, store_path: Path | str | None = None,
 ) -> int:
-    """Fire the core-side cascade in the bench process so the measured
-    p95 reflects the warm path, not the cold path.
-
-    Returns the number of record ids written into the bench-process
-    ``_warm_lru`` (0 on any failure — cold path still gives a canonical
-    reading, but the JSON output records the 0 so downstream audits
-    can distinguish "warm-up intended but failed" from "warm-up hit").
-
-    Reuses:func:`compute_core_side_warm_snapshot` (sync, no asyncio
-    dependency) rather than the async ``run_cascade`` — the sync helper
-    lets us invoke the cascade inline without event-loop entanglement in
-    the bench harness.
-    """
     try:
         from iai_mcp import hippea_cascade, retrieve
         from iai_mcp.store import MemoryStore
@@ -369,8 +273,6 @@ def _warm_cascade_for_bench(
         warm_ids = hippea_cascade.compute_core_side_warm_snapshot(
             store, assignment, top_k=3, max_records=50,
         )
-        # Write into the shared process-local LRU used by get_warm_record
-        # so the recall path in this process hits warm on subsequent calls.
         warmed = 0
         for rid in warm_ids:
             try:
@@ -382,9 +284,6 @@ def _warm_cascade_for_bench(
                 continue
         return warmed
     except Exception:
-        # Warm path is opportunistic; cold path still gives the canonical
-        # reading. Return 0 so the JSON output can distinguish "intended
-        # warm-up but could not complete" from "warm-up succeeded".
         return 0
 
 
@@ -426,9 +325,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _install_bench_noop_keyring() -> None:
-    """Install an in-memory keyring backend BEFORE any MemoryStore is
-    constructed so the crypto layer never hangs on macOS Keychain
-    SecItemCopyMatching in non-interactive shells. Bench-scope only."""
     try:
         import keyring
         from keyring.backend import KeyringBackend
@@ -452,9 +348,6 @@ def _install_bench_noop_keyring() -> None:
 
         keyring.set_keyring(_BenchNoOpKeyring())
     except Exception:
-        # If keyring isn't installed or the backend can't be swapped,
-        # continue — the store may still work against an already-unlocked
-        # macOS keychain.
         pass
 
 

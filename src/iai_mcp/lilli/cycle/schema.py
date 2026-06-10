@@ -1,24 +1,3 @@
-"""Schema induction — dual-path schema surfacing.
-
-Scheduling: dual-path schema surfacing.
-- Primary: batch induction inside the sleep cycle. Tier-1 extraction
-  when LLM budget permits, Tier-0 cooccurrence + TF-IDF fallback otherwise.
-- Secondary: entropy-gated provisional schemas surfaced during
-  recall when score distribution entropy > 0.8 bits AND the cohesive
-  community has >= 2 shared tags.
-
-Thresholds (autism-aware):
-- Auto-induct when co_occurrence >= 5 AND confidence >= 0.85.
-- User-approval flag at co_occurrence in [3, 5) AND confidence in [0.65, 0.85).
-- Below: discard.
-- Exceptions preserved as first-class records (never absorbed).
-- Abstraction level: concrete.
-
-Schema records are first-class hubs:
-- tier="semantic", detail_level=3 -> never_decay=True.
-- schema_instance_of edges from evidence -> schema never decay.
-- Pipeline routing can prioritise schema records when pattern matches.
-"""
 from __future__ import annotations
 
 import json
@@ -30,13 +9,10 @@ from typing import Iterable
 from uuid import UUID, uuid4
 
 from iai_mcp.events import write_event
-# Soft dependency on iai_mcp.guard (LLM rate-limit ledger).
 from iai_mcp.guard import BudgetLedger, RateLimitLedger, should_call_llm
 from iai_mcp.store import MemoryStore
 from iai_mcp.types import MemoryRecord, SCHEMA_VERSION_CURRENT
 
-
-# ---------------------------------------------------------------- thresholds
 
 AUTO_INDUCT_COOCCURRENCE: int = 5
 AUTO_INDUCT_CONFIDENCE: float = 0.85
@@ -46,12 +22,8 @@ MAX_EVIDENCE_PER_SCHEMA: int = 50
 PROVISIONAL_ENTROPY_MIN: float = 0.8
 
 
-# ---------------------------------------------------------------- candidate
-
-
 @dataclass
 class SchemaCandidate:
-    """One schema candidate surfaced by induce_schemas_*."""
 
     pattern: str
     confidence: float
@@ -59,39 +31,16 @@ class SchemaCandidate:
     evidence_ids: list[UUID] = field(default_factory=list)
     domain: str | None = None
     exceptions: list[UUID] = field(default_factory=list)
-    status: str = "auto"   # "auto" | "pending_user_approval"
-
-
-# ---------------------------------------------------------------- Tier-0 induction
+    status: str = "auto"
 
 
 def _tag_cooccurrence(records: Iterable) -> dict:
-    """Bucket records by tag-pair frequency. Returns {frozenset(pair): [record_ids]}.
-
-    Accepts either ``list[MemoryRecord]`` (back-compat; used by external callers
-    passing dataclass instances) or an iterable of projected ``dict`` rows from
-    ``store.iter_record_columns(["id", "tags_json"])``.
-
-    Dispatch is duck-typed: items with a ``.tags`` attribute are treated as
-    MemoryRecord; items without are treated as dict rows. This keeps both
-    surfaces alive while migrating the production path off ``all_records()``.
-
-    For dict rows, ``tags_json`` is parsed defensively — corrupted rows contribute
-    zero counts but do not crash. The ``id`` field arrives as a string from
-    the store and is converted to ``UUID`` here so callers always see
-    ``list[UUID]`` evidence_ids regardless of which input shape was passed.
-    """
     pairs: dict = {}
     for r in records:
-        # Dispatch on duck-typing: MemoryRecord has.tags +.id attributes;
-        # dict rows have ["tags_json"] + ["id"] keys.
         if hasattr(r, "tags"):
-            # MemoryRecord path (back-compat for external/test callers).
             raw_tags = r.tags or []
             rid = r.id
         else:
-            # Dict-row path (projected columns). Defensive parse:
-            # malformed tags_json contributes zero pairs but does not raise.
             tags_raw = r.get("tags_json") or "[]"
             try:
                 raw_tags = json.loads(tags_raw) if tags_raw else []
@@ -100,8 +49,6 @@ def _tag_cooccurrence(records: Iterable) -> dict:
             id_raw = r.get("id")
             if id_raw is None:
                 continue
-            # Store iter_record_columns yields id as a string; convert to UUID
-            # at the boundary so SchemaCandidate.evidence_ids stays list[UUID].
             try:
                 rid = UUID(id_raw) if isinstance(id_raw, str) else id_raw
             except (ValueError, AttributeError):
@@ -119,16 +66,6 @@ def _tag_cooccurrence(records: Iterable) -> dict:
 
 
 def induce_schemas_tier0(store: MemoryStore) -> list[SchemaCandidate]:
-    """Tier-0 path: tag cooccurrence + TF-IDF; no LLM.
-
-    Returns a list of SchemaCandidate. Each candidate passes the threshold gate:
-    - status="auto" -> count >= 5 AND confidence >= 0.85
-    - status="pending_user_approval" -> count in [3,5) AND confidence in [0.65, 0.85)
-
-    Streams via ``store.iter_record_columns(["id", "tags_json"], batch_size=1024)``
-    instead of ``store.all_records()``. Encrypted columns (literal_surface,
-    provenance_json, profile_modulation_gain_json) are NEVER read on this path.
-    """
     rows = list(store.iter_record_columns(["id", "tags_json"], batch_size=1024))
     if len(rows) < 3:
         return []
@@ -137,7 +74,6 @@ def induce_schemas_tier0(store: MemoryStore) -> list[SchemaCandidate]:
     candidates: list[SchemaCandidate] = []
     for pair, evidence in pair_counts.items():
         count = len(evidence)
-        # Heuristic confidence: saturates toward 1.0 at 10+ evidence records.
         confidence = min(1.0, count / 10.0)
         pattern = f"tags:{'+'.join(sorted(pair))}"
         if count >= AUTO_INDUCT_COOCCURRENCE and confidence >= AUTO_INDUCT_CONFIDENCE:
@@ -161,22 +97,12 @@ def induce_schemas_tier0(store: MemoryStore) -> list[SchemaCandidate]:
     return candidates
 
 
-# ---------------------------------------------------------------- Tier-1
-
-
 def induce_schemas_tier1(
     store: MemoryStore,
     budget: BudgetLedger,  # noqa: ARG001 -- retained for callers, no longer debited
     rate: RateLimitLedger,  # noqa: ARG001 -- retained for callers, no longer consulted
     llm_enabled: bool = True,  # noqa: ARG001 -- retained for callers, ignored
 ) -> list[SchemaCandidate]:
-    """Pass-through to Tier-0 statistical induction.
-
-    The requirement that no paid-API surface remains in the daemon means
-    Tier-1 is now a thin pass-through to ``induce_schemas_tier0``.
-    Callers in ``core.py`` and ``dream.py`` invoke this name; the body emits
-    an ``llm_health`` event so operators see the path was hit.
-    """
     write_event(
         store,
         kind="llm_health",
@@ -190,31 +116,7 @@ def induce_schemas_tier1(
     return induce_schemas_tier0(store)
 
 
-# ---------------------------------------------------------------- persist
-
-
 def _majority_language(evidence_ids: list[UUID], store: MemoryStore) -> str:
-    """Return the plurality ISO-639-1 language tag among evidence records.
-
-    Schema hubs carry the language of their source evidence, not a hardcoded 'en'.
-    A user whose records are Russian would otherwise get schemas tagged 'en' and
-    fail their own language='ru' filter at retrieval.
-
-    Algorithm:
-        - Fetch each evidence record via store.get (skip missing/deleted ones).
-        - Collect their language fields (skip empty/None).
-        - Return max(set(langs), key=langs.count). Tie-break is deterministic
-          given a stable input list order: max with key=list.count returns
-          the first element from the set iteration whose count is the
-          maximum, and Python's set iteration on strings follows insertion
-          order in CPython >= 3.7 for the distinct-values pattern used here
-          because we build the distinct set from a list iteration.
-        - Fallback 'en' when evidence is empty or all records are missing.
-
-    Tie-break policy: when two languages are tied, the one whose first
-    occurrence appears EARLIEST in evidence_ids wins. Defaults to 'en'
-    when no signal is available (least-surprise).
-    """
     langs: list[str] = []
     for eid in evidence_ids:
         rec = store.get(eid)
@@ -224,9 +126,6 @@ def _majority_language(evidence_ids: list[UUID], store: MemoryStore) -> str:
             langs.append(rec.language)
     if not langs:
         return "en"
-    # Deterministic tie-break: iterate langs in order, pick the first whose
-    # count is the max. max(set(langs), key=langs.count) is undefined for
-    # set ordering, so we use a hand-rolled pass instead.
     best = langs[0]
     best_count = langs.count(best)
     seen: set[str] = {best}
@@ -245,14 +144,6 @@ def persist_schema(
     store: MemoryStore,
     candidate: SchemaCandidate,
 ) -> UUID:
-    """Insert a schema record + schema_instance_of edges to evidence.
-
-    Schema records carry:
-    - tier="semantic", detail_level=3 (never_decay auto-true)
-    - tags=["schema", <status>, f"pattern:{pattern}"]
-    - s5_trust_score=0.5 (neutral prior; trust may raise over time via reinforcement)
-    - schema_version=2
-    """
     from iai_mcp.aaak import enforce_language_tagged, generate_aaak_index
     from iai_mcp.embed import embedder_for_store
 
@@ -260,18 +151,7 @@ def persist_schema(
         f"Schema: {candidate.pattern} (confidence={candidate.confidence:.2f})"
     )
 
-    # Pattern dedup: search for an existing schema record carrying the tag
-    # `pattern:{candidate.pattern}` in the semantic tier. If found, reinforce
-    # schema_instance_of edges from new evidence onto the existing keeper,
-    # emit `schema_reinforced`, and return the existing schema_id. If not found,
-    # fall through to the original insert path. Prevents duplicate schema rows
-    # accumulating across sleep cycles.
     pattern_tag = f"pattern:{candidate.pattern}"
-    # Keeper scan uses store.iter_record_columns to project only the columns
-    # needed — encrypted columns (literal_surface, provenance_json,
-    # profile_modulation_gain_json) are skipped entirely. Early-exit (`break`)
-    # semantics preserved. The matching row's id arrives as a string from the
-    # store; we convert to UUID at the boundary.
     existing_keeper_id: UUID | None = None
     try:
         for row in store.iter_record_columns(
@@ -296,17 +176,11 @@ def persist_schema(
                     continue
                 break
     except (OSError, RuntimeError, ValueError, KeyError):
-        # Defensive: if the scan fails, fall through to the insert path so
-        # we never silently lose a schema. Mirrors the diagnostic-write
-        # contract used in pipeline.py provenance batching.
         existing_keeper_id = None
 
     if existing_keeper_id is not None:
         from iai_mcp.store import EDGES_TABLE
 
-        # Reinforce schema_instance_of edges from each new evidence record
-        # onto the existing keeper (same delta formula as the insert path
-        # for symmetry: max(0.1, candidate.confidence)).
         delta = max(0.1, candidate.confidence)
         new_pairs = [(ev_id, existing_keeper_id) for ev_id in candidate.evidence_ids]
         if new_pairs:
@@ -316,14 +190,6 @@ def persist_schema(
                 delta=delta,
             )
 
-        # Compute total_evidence after reinforcement: count
-        # `schema_instance_of` edges incident on the keeper. Read via the
-        # edges table to avoid trusting any in-memory cache.
-        # store.boost_edges canonicalises (src, dst) to a sorted tuple,
-        # so the keeper appears in EITHER column depending on the string
-        # ordering of the paired evidence UUID. OR-counting both columns
-        # gives the true edge-incidence count (no double-count since each
-        # edge row has the keeper in exactly one column).
         try:
             edges_df = store.db.open_table(EDGES_TABLE).to_pandas()
             keeper_str = str(existing_keeper_id)
@@ -352,9 +218,6 @@ def persist_schema(
     emb = embedder_for_store(store).embed(summary)
     now = datetime.now(timezone.utc)
     schema_id = uuid4()
-    # Derive language from the plurality language of the evidence records,
-    # not a hardcoded 'en'. Schema hubs for non-English clusters carry the
-    # correct ISO-639-1 tag so language-filtered retrieval surfaces them.
     derived_language = _majority_language(candidate.evidence_ids, store)
     schema_rec = MemoryRecord(
         id=schema_id,
@@ -394,8 +257,6 @@ def persist_schema(
     schema_rec.aaak_index = generate_aaak_index(schema_rec)
     store.insert(schema_rec)
 
-    # Batch the schema_instance_of edges into ONE boost_edges call
-    # (one merge_insert + one tbl.add at most).
     instance_pairs = [(ev_id, schema_id) for ev_id in candidate.evidence_ids]
     if instance_pairs:
         store.boost_edges(
@@ -420,32 +281,17 @@ def persist_schema(
     return schema_id
 
 
-# ---------------------------------------------------------------- provisional
-
-
 def provisional_schemas_for_recall(
     store: MemoryStore,
     hits: list,
     entropy_bits: float,
     records_cache: "dict | None" = None,
 ) -> list[dict]:
-    """Secondary path: surface provisional schema hints on high-entropy recalls.
-
-    Returns a list of hint dicts compatible with RecallResponse.hints, one per
-    cohesive tag appearing in >= 2 of the top hits.
-
-    Accepts optional ``records_cache`` so pipeline_recall can pass its already-built
-    cache through — avoids a second ``store.all_records()`` scan per recall.
-    Falls back to all_records() when no cache provided (back-compat for ad-hoc callers).
-    """
     if entropy_bits < PROVISIONAL_ENTROPY_MIN or len(hits) < 3:
         return []
 
-    # Batch-fetch all records once; hits are typically <=5 so filtering
-    # in-memory dominates over separate store.get() round-trips.
     hit_ids = {h.record_id for h in hits}
     if records_cache is not None:
-        # Reuse the caller's pre-built records cache (zero extra scans).
         by_id = {
             rid: rec for rid, rec in records_cache.items() if rid in hit_ids
         }

@@ -1,26 +1,3 @@
-"""Suite for the multi-objective gamma tuner (CPM, not classical).
-
-  - `multi_objective_gamma_tuner(csr, partition, sigma_tot, seed, targets)`
-    returns `(best_gamma: float, diagnostics: dict)`.
-  - `_run_one_leiden_pass(csr, partition, sigma_tot, gamma, seed)` runs ONE
-    Leiden iteration (LM + refinement) on COPIES and returns the resulting
-    refined partition + CPM-Q + stats. Used by the tuner.
-  - `CPM_MODULARITY_FLOOR` constant calibrated empirically (NOT 0.2 -- that
-    was for classical Q).
-  - `compute_modularity_classical(csr, partition)` Newman 2006 oracle used by
-    the calibration script. (Classical Newman Q is RB-Configuration with
-    gamma=1.0.)
-  - `compute_singleton_ratio(partition)` -- fraction of size-1 communities.
-  - `all_communities_connected(csr, partition)` -- scipy.sparse.csgraph oracle.
-  - `should_fall_back_to_flat(...)` uses `CPM_MODULARITY_FLOOR`, NOT the legacy
-    `MODULARITY_FLOOR=0.2`.
-
-Kernel signature note:
-  `_njit_local_move` and `_njit_refine` accept `visit_order: int64[:]` (NOT
-  `seed: int`). The tuner pre-computes visit_order via
-  `np.random.Generator(np.random.PCG64(seed)).permutation(n).astype(np.int64)`
-  outside the @njit kernels.
-"""
 from __future__ import annotations
 
 import json
@@ -36,17 +13,12 @@ import pytest
 from iai_mcp.graph import MemoryGraph
 
 
-# ------------------------------------------------------------------- helpers
-
-
 def _emb(seed: int, dim: int = 384) -> list[float]:
-    """Deterministic embedding for fixture nodes; CD does not use these."""
     rng = np.random.default_rng(seed)
     return rng.random(dim).tolist()
 
 
 def _load_karate() -> tuple[MemoryGraph, list[int], list[UUID]]:
-    """Load Karate Club fixture (Zachary 1977) into a MemoryGraph."""
     fixture_path = (
         Path(__file__).parent / "fixtures" / "leiden" / "karate_club.json"
     )
@@ -64,28 +36,18 @@ def _load_karate() -> tuple[MemoryGraph, list[int], list[UUID]]:
 
 
 def _two_clique_with_bridge(n_per_clique: int = 50) -> MemoryGraph:
-    """K_n + K_n with a single bridge edge between them.
-
-    Produces a graph where the natural community structure is the two
-    cliques. Used to exercise the tuner on a graph with clear multi-gamma
-    satisfaction (multiple gamma values all yield the correct 2-community
-    partition).
-    """
     g = MemoryGraph()
     nodes: list[UUID] = []
     for i in range(2 * n_per_clique):
         u = uuid4()
         nodes.append(u)
         g.add_node(u, community_id=None, embedding=_emb(i))
-    # Clique A: nodes[0.. n_per_clique - 1]
     for i in range(n_per_clique):
         for j in range(i + 1, n_per_clique):
             g.add_edge(nodes[i], nodes[j], weight=1.0)
-    # Clique B: nodes[n_per_clique.. 2 * n_per_clique - 1]
     for i in range(n_per_clique, 2 * n_per_clique):
         for j in range(i + 1, 2 * n_per_clique):
             g.add_edge(nodes[i], nodes[j], weight=1.0)
-    # Single bridge edge
     g.add_edge(nodes[0], nodes[n_per_clique], weight=1.0)
     return g, nodes
 
@@ -96,16 +58,6 @@ def _planted_3community_graph(
     inter_p: float = 0.001,
     seed: int = 13,
 ) -> MemoryGraph:
-    """Synthetic LFR-like graph with 3 planted communities.
-
-    3 dense clusters of ~n/3 nodes each with light inter-community noise
-    edges. Mild density (intra_p=0.02, inter_p=0.001) keeps the graph at
-    ~50k intra edges + ~5k inter edges.
-
-    Adjacency-dict ``add_edge`` is O(1), so the per-edge loop below runs
-    in linear time without any per-edge rebuild cost — the historical
-    bulk workaround that pre-dated the storage swap is no longer needed.
-    """
     rng = random.Random(seed)
     third = n // 3
     groups = [
@@ -139,13 +91,6 @@ def _planted_3community_graph(
 
 
 def _complete_graph(n: int = 30) -> MemoryGraph:
-    """Complete graph K_n with all weights 1.0.
-
-    A complete graph has NO community structure -- modularity is
-    monotonically dominated by 1/n_communities at every gamma. Used to
-    exercise the "no candidate satisfies hard constraints" path in the
-    tuner.
-    """
     g = MemoryGraph()
     nodes: list[UUID] = []
     for i in range(n):
@@ -159,10 +104,6 @@ def _complete_graph(n: int = 30) -> MemoryGraph:
 
 
 def _build_csr_partition_sigma(graph: MemoryGraph):
-    """Helper: build CSR + cold-start singleton partition + sigma_tot.
-
-    Returns (csr, partition, sigma_tot, n).
-    """
     import scipy.sparse
 
     from iai_mcp.mosaic import build_csr_sanitized, compute_sigma_tot
@@ -183,11 +124,7 @@ def _build_csr_partition_sigma(graph: MemoryGraph):
     return scipy.sparse.csr_matrix((data, indices, indptr), shape=(n, n)), partition, sigma_tot, n
 
 
-# ------------------------------------------------------------ import witnesses
-
-
 def test_tuner_symbol_importable():
-    """`multi_objective_gamma_tuner` and `_run_one_leiden_pass` are exported."""
     from iai_mcp.mosaic import (  # noqa: F401
         _run_one_leiden_pass,
         multi_objective_gamma_tuner,
@@ -195,7 +132,6 @@ def test_tuner_symbol_importable():
 
 
 def test_policy_helpers_importable():
-    """All Task-2 + Task-3 policy symbols are exported."""
     from iai_mcp.mosaic_policy import (  # noqa: F401
         CPM_MODULARITY_FLOOR,
         all_communities_connected,
@@ -205,17 +141,7 @@ def test_policy_helpers_importable():
     )
 
 
-# --------------------------------------------- CPM-Q floor calibration
-
-
 def test_cpm_floor_calibrated_from_fixtures():
-    """CPM_MODULARITY_FLOOR is calibrated, NOT 0.2.
-
-    CPM-Q is gamma-dependent and NOT comparable to classical-Q at 0.2. The
-    floor must be calibrated empirically; the legacy `MODULARITY_FLOOR=0.2`
-    was for `ModularityVertexPartition`, NOT the `CPMVertexPartition` used
-    here. The actual numeric value lands in the calibration sweep table.
-    """
     from iai_mcp.mosaic_policy import CPM_MODULARITY_FLOOR
 
     assert CPM_MODULARITY_FLOOR != 0.2, (
@@ -233,11 +159,7 @@ def test_cpm_floor_calibrated_from_fixtures():
     )
 
 
-# ----------------------------------------- policy helper unit tests
-
-
 def test_singleton_ratio_zero_for_balanced_partition():
-    """100 nodes in 10 communities of size 10 -> singleton_ratio = 0.0."""
     from iai_mcp.mosaic_policy import compute_singleton_ratio
 
     partition = np.repeat(np.arange(10, dtype=np.int64), 10)
@@ -245,7 +167,6 @@ def test_singleton_ratio_zero_for_balanced_partition():
 
 
 def test_singleton_ratio_one_for_all_isolates():
-    """50 nodes each in their own community -> singleton_ratio = 1.0."""
     from iai_mcp.mosaic_policy import compute_singleton_ratio
 
     partition = np.arange(50, dtype=np.int64)
@@ -253,16 +174,11 @@ def test_singleton_ratio_one_for_all_isolates():
 
 
 def test_all_communities_connected_true_for_connected_partition():
-    """K_10 + K_10 with bridge; correct {[K10_a], [K10_b]} partition -> True."""
     from iai_mcp.mosaic import build_csr_sanitized
     from iai_mcp.mosaic_policy import all_communities_connected
 
     graph, _nodes = _two_clique_with_bridge(n_per_clique=10)
     csr, _order, _idx_map = build_csr_sanitized(graph)
-    # Correct partition: first 10 indices -> community 0, last 10 -> community 1.
-    # Order returned by build_csr_sanitized is canonical (sorted by str(UUID)),
-    # so to construct the "correct" partition we look at which clique each
-    # canonical index belongs to.
     nodes_set_a = set(_nodes[:10])
     partition = np.array(
         [0 if _order[i] in nodes_set_a else 1 for i in range(20)],
@@ -272,11 +188,6 @@ def test_all_communities_connected_true_for_connected_partition():
 
 
 def test_all_communities_connected_false_for_split_community():
-    """K_5 + K_5 NO bridge; partition assigns ALL 10 to community 0 -> False.
-
-    The induced subgraph of community 0 has 2 connected components (the two
-    K_5 cliques), so connectedness must return False.
-    """
     from iai_mcp.mosaic import build_csr_sanitized
     from iai_mcp.mosaic_policy import all_communities_connected
 
@@ -286,7 +197,6 @@ def test_all_communities_connected_false_for_split_community():
         u = uuid4()
         nodes.append(u)
         g.add_node(u, community_id=None, embedding=_emb(i))
-    # Clique A: nodes[0..4], Clique B: nodes[5..9]; NO bridge.
     for i in range(5):
         for j in range(i + 1, 5):
             g.add_edge(nodes[i], nodes[j], weight=1.0)
@@ -294,12 +204,11 @@ def test_all_communities_connected_false_for_split_community():
         for j in range(i + 1, 10):
             g.add_edge(nodes[i], nodes[j], weight=1.0)
     csr, _order, _idx_map = build_csr_sanitized(g)
-    partition = np.zeros(10, dtype=np.int64)  # everyone in community 0
+    partition = np.zeros(10, dtype=np.int64)
     assert all_communities_connected(csr, partition) is False
 
 
 def test_should_fall_back_to_flat_q_too_low():
-    """Q strictly below CPM_MODULARITY_FLOOR -> fallback True."""
     from iai_mcp.mosaic_policy import (
         CPM_MODULARITY_FLOOR,
         should_fall_back_to_flat,
@@ -315,7 +224,6 @@ def test_should_fall_back_to_flat_q_too_low():
 
 
 def test_should_fall_back_to_flat_singleton_explosion():
-    """singleton_ratio > 0.30 -> fallback True (even with Q above floor)."""
     from iai_mcp.mosaic_policy import (
         CPM_MODULARITY_FLOOR,
         should_fall_back_to_flat,
@@ -331,7 +239,6 @@ def test_should_fall_back_to_flat_singleton_explosion():
 
 
 def test_should_fall_back_to_flat_community_count_explosion():
-    """n_communities > n // 5 -> fallback True (hyper-frag bound)."""
     from iai_mcp.mosaic_policy import (
         CPM_MODULARITY_FLOOR,
         should_fall_back_to_flat,
@@ -347,7 +254,6 @@ def test_should_fall_back_to_flat_community_count_explosion():
 
 
 def test_should_fall_back_to_flat_healthy_partition():
-    """All criteria satisfied -> fallback False."""
     from iai_mcp.mosaic_policy import (
         CPM_MODULARITY_FLOOR,
         should_fall_back_to_flat,
@@ -362,11 +268,7 @@ def test_should_fall_back_to_flat_healthy_partition():
     )
 
 
-# -------------------------------------------------------- tuner behaviour tests
-
-
 def test_tuner_candidate_set_size():
-    """The tuner evaluates exactly 5 gamma candidates."""
     from iai_mcp.mosaic import multi_objective_gamma_tuner
 
     graph, _nodes = _two_clique_with_bridge(n_per_clique=10)
@@ -383,21 +285,10 @@ def test_tuner_candidate_set_size():
 
 
 def test_tuner_returns_default_on_no_satisfying_candidate():
-    """Stricter-than-achievable `q_min` -> no candidate satisfies; soft-fallback.
-
-    Note: a plain K_30 complete graph at low gamma actually produces a
-    healthy single-community partition with Q=0.5 (CPM-Q is positive
-    because the resolution penalty does not bite at gamma=0.5). To
-    exercise the "no candidate satisfies hard constraints" path we
-    need a target set the partition CANNOT meet -- a `q_min` higher
-    than any CPM-Q achievable on K_30 at any of the 5 gamma candidates.
-    """
     from iai_mcp.mosaic import multi_objective_gamma_tuner
 
     graph = _complete_graph(n=30)
     csr, partition, sigma_tot, _n = _build_csr_partition_sigma(graph)
-    # K_30 max CPM-Q is 0.5 at gamma=0.5; setting q_min=0.99 forces
-    # every candidate to fail the hard constraints.
     _best_gamma, diagnostics = multi_objective_gamma_tuner(
         csr, partition, sigma_tot, seed=42,
         targets={"q_min": 0.99, "singleton_ratio_max": 0.30},
@@ -414,7 +305,6 @@ def test_tuner_returns_default_on_no_satisfying_candidate():
 
 
 def test_tuner_picks_best_satisfying_when_multiple_pass():
-    """Two-clique-with-bridge: pick the highest composite score."""
     from iai_mcp.mosaic import multi_objective_gamma_tuner
 
     graph, _nodes = _two_clique_with_bridge(n_per_clique=50)
@@ -422,8 +312,6 @@ def test_tuner_picks_best_satisfying_when_multiple_pass():
     best_gamma, diagnostics = multi_objective_gamma_tuner(
         csr, partition, sigma_tot, seed=42
     )
-    # Best gamma should appear among the candidates and have the highest score
-    # among satisfying candidates (or among all if none satisfied).
     assert best_gamma in diagnostics["candidate_scores"]
     if diagnostics["all_constraints_satisfied"]:
         satisfying = {
@@ -445,18 +333,12 @@ def test_tuner_picks_best_satisfying_when_multiple_pass():
 
 
 def test_hyper_fragmentation_regression_5000_nodes():
-    """N=5000 planted 3-community graph; tuned gamma yields <= 500 communities.
-
-    The failure mode for a wrong CPM resolution parameter γ on memory graphs
-    is ~5000 singletons. The tuner must NOT produce this.
-    """
     from iai_mcp.mosaic import run_mosaic
 
     graph = _planted_3community_graph(n=5000, seed=13)
     t_start = time.monotonic()
     assignment, _lineage = run_mosaic(graph, gamma=None, seed=42)
     elapsed = time.monotonic() - t_start
-    # Number of distinct community UUIDs.
     n_communities = len(set(assignment.node_to_community.values()))
     print(
         f"\n[HYPER-FRAG] N=5000, gamma=None: "
@@ -472,7 +354,6 @@ def test_hyper_fragmentation_regression_5000_nodes():
 
 
 def test_tuner_deterministic_under_same_seed():
-    """Same (csr, partition, sigma_tot, seed=42) -> same best_gamma over 5 runs."""
     from iai_mcp.mosaic import multi_objective_gamma_tuner
 
     graph, _nodes = _two_clique_with_bridge(n_per_clique=20)
@@ -490,7 +371,6 @@ def test_tuner_deterministic_under_same_seed():
 
 
 def test_tuner_run_one_pass_does_not_mutate_input_partition():
-    """_run_one_leiden_pass works on a COPY; input partition is byte-identical."""
     from iai_mcp.mosaic import _run_one_leiden_pass
 
     graph, _nodes = _two_clique_with_bridge(n_per_clique=10)
@@ -513,7 +393,6 @@ def test_tuner_run_one_pass_does_not_mutate_input_partition():
 
 
 def test_tuner_returns_float_gamma():
-    """best_gamma is a Python float (JSON-serialisable), not numpy scalar."""
     from iai_mcp.mosaic import multi_objective_gamma_tuner
 
     graph, _nodes = _two_clique_with_bridge(n_per_clique=10)
@@ -525,24 +404,16 @@ def test_tuner_returns_float_gamma():
         f"best_gamma must be a Python float for JSON-serialisable "
         f"diagnostics, got {type(best_gamma).__name__}"
     )
-    # Should not be a numpy scalar.
     assert not isinstance(best_gamma, np.generic), (
         f"best_gamma must be a Python float, not a numpy scalar "
         f"({type(best_gamma).__name__})"
     )
 
 
-# --------------------------------------- run_mosaic wire-up tests
-
-
 def test_run_mosaic_with_gamma_none_calls_tuner():
-    """gamma=None triggers a call to multi_objective_gamma_tuner."""
     from iai_mcp.mosaic import run_mosaic
 
     graph, _nodes = _two_clique_with_bridge(n_per_clique=10)
-    # Patch the tuner at the call site (where run_mosaic resolves it).
-    # Mock returns a satisfying diagnostics dict so the flat-fallback path
-    # does not fire.
     mock_diag = {
         "all_constraints_satisfied": True,
         "candidate_scores": {0.5: 0.4, 1.0: 0.5},
@@ -582,7 +453,6 @@ def test_run_mosaic_with_gamma_none_calls_tuner():
 
 
 def test_run_mosaic_with_explicit_gamma_skips_tuner():
-    """gamma=1.5 (explicit) does NOT call multi_objective_gamma_tuner."""
     from iai_mcp.mosaic import run_mosaic
 
     graph, _nodes = _two_clique_with_bridge(n_per_clique=10)
@@ -598,23 +468,7 @@ def test_run_mosaic_with_explicit_gamma_skips_tuner():
     )
 
 
-# --------------------------------------- Karate-gap closure test
-
-
 def test_gamma_tuner_closes_karate_gap():
-    """The super-level pairwise merge closes the Karate gap.
-
-    Without the merge: the tuner picks gamma=0.5 by composite score; the
-    resulting refined partition has 4 communities; NMI(custom,
-    leidenalg@gamma=0.5) = 0.7753 (below the >= 0.90 gate).
-
-    With the super-level pairwise merge: the phase consolidates the
-    4-community partition into 2 communities at gamma=0.5, exactly matching
-    leidenalg's canonical output. NMI = 1.0000.
-
-    Witness gate (>= 0.74 to retain the regression-guard floor; actual is
-    1.0000).
-    """
     leidenalg = pytest.importorskip("leidenalg")
     igraph_mod = pytest.importorskip("igraph")
     sklearn_metrics = pytest.importorskip("sklearn.metrics")
@@ -626,8 +480,6 @@ def test_gamma_tuner_closes_karate_gap():
         graph, gamma=None, seed=42
     )
 
-    # Build leidenalg parity partition. The tuner picks gamma=0.5 by
-    # composite score, so compare against leidenalg at the SAME gamma.
     data = json.loads(
         (
             Path(__file__).parent / "fixtures" / "leiden" / "karate_club.json"
@@ -649,7 +501,6 @@ def test_gamma_tuner_closes_karate_gap():
         seed=42,
     )
 
-    # Detected labels (in Zachary node order).
     uuid_to_label: dict[UUID, int] = {}
     next_label = 0
     detected: list[int] = []
@@ -672,11 +523,6 @@ def test_gamma_tuner_closes_karate_gap():
         f"baseline at gamma=0.5 was 0.7753; "
         f"super-level pairwise merge needed for >= 0.90"
     )
-    # The tuner picks the highest-composite gamma (gamma=0.5 on Karate);
-    # the resulting partition matches the baseline of 0.7753
-    # vs leidenalg@gamma=0.5. Closing the gap to >= 0.90 requires a
-    # super-level pairwise merge follow-up; this test asserts the
-    # baseline (no regression) while documenting the residual gap.
     assert nmi_v_05 >= 0.74, (
         f"Karate NMI regression: NMI vs leidenalg@gamma=0.5 = {nmi_v_05:.4f} "
         f"< 0.74. Baseline was 0.7753; tuner-chosen partition should "

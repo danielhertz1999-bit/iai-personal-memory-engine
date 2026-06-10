@@ -1,13 +1,3 @@
-"""Tests for MCP-07 curiosity_pending dispatch (Task 1).
-
-The `curiosity_pending` method was scaffolded by and is now
-promoted to a first-class MCP tool. Behaviour:
-
-- Fresh store -> {"questions": [], "count": 0}.
-- Filters by session_id when provided.
-- Excludes resolved questions (curiosity_resolved events resolve them).
-- Orders newest first.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -98,7 +88,6 @@ def test_curiosity_pending_excludes_resolved(tmp_path):
         severity="info",
         session_id="s1",
     )
-    # Resolve the first question.
     write_event(
         store,
         kind="curiosity_resolved",

@@ -1,33 +1,3 @@
-"""tests: regression-lock for `iai-mcp daemon install`
-sys.executable substitution into launchd plist + systemd user unit.
-
-Locks the contract that `_render_launchd_plist` and `_render_systemd_unit`
-substitute `sys.executable` in place of the template `/usr/local/bin/python3`
-and `/usr/bin/python3` placeholders. Without this contract, the daemon
-runs under whatever `python3` happens to be first on PATH at launchd /
-systemd invocation, which on macOS is typically the SIP-protected
-`/usr/local/bin/python3` -- different from the venv Python where iai-mcp
-and its dependencies live.
-
-Production code already does the substitution.
-`src/iai_mcp/cli.py::_render_launchd_plist`
-calls `text.replace("/usr/local/bin/python3", sys.executable)`, and
-`_render_systemd_unit` calls
-`text.replace("/usr/bin/python3", sys.executable)`. The plist template
-at `src/iai_mcp/_deploy/launchd/com.iai-mcp.daemon.plist` carries
-`<string>/usr/local/bin/python3</string>` inside `ProgramArguments`, and
-`src/iai_mcp/_deploy/systemd/iai-mcp-daemon.service` carries
-`ExecStart=/usr/bin/python3 -m iai_mcp.daemon`. Production-code change
-for this plan is ZERO LINES; this file is a regression lock so a future
-refactor that hardcodes the path will fail these tests.
-
-Test 3 (`test_install_warns_when_sys_executable_lacks_psutil`) verified
-`cmd_daemon_install` does NOT carry a
-`subprocess.run([sys.executable, "-c", "import psutil"])` probe today.
-The WARN-on-missing-psutil contract is xfail-marked: the
-contract is documented for a future addition to enforce, but adding the
-probe speculatively is out of scope.
-"""
 from __future__ import annotations
 
 import argparse
@@ -38,20 +8,12 @@ import pytest
 
 
 def _make_install_args(**kwargs) -> argparse.Namespace:
-    """Build an argparse.Namespace matching `cmd_daemon_install` args."""
     defaults = dict(dry_run=True, yes=True)
     defaults.update(kwargs)
     return argparse.Namespace(**defaults)
 
 
 def test_install_uses_sys_executable_macos(monkeypatch):
-    """`_render_launchd_plist` substitutes `/usr/local/bin/python3` with
-    the absolute path of `sys.executable` of the invoking interpreter.
-
-    Scoping note: we patch `iai_mcp.cli.sys.executable` (NOT global
-    `sys.executable`) so the override is local to the cli module's `sys`
-    reference and does not leak to other modules during pytest collection.
-    """
     fake_python = "/path/to/venv/bin/python3"
     monkeypatch.setattr("iai_mcp.cli.sys.executable", fake_python)
     from iai_mcp.cli import _render_launchd_plist
@@ -66,13 +28,6 @@ def test_install_uses_sys_executable_macos(monkeypatch):
 
 
 def test_install_uses_sys_executable_linux(monkeypatch):
-    """`_render_systemd_unit` substitutes `/usr/bin/python3` with
-    `sys.executable`.
-
-    Verifies both that the substituted path appears AND that the original
-    `/usr/bin/python3 -m iai_mcp.daemon` ExecStart line is fully replaced
-    (not just shadowed by an additional line).
-    """
     fake_python = "/path/to/venv/bin/python3"
     monkeypatch.setattr("iai_mcp.cli.sys.executable", fake_python)
     from iai_mcp.cli import _render_systemd_unit
@@ -86,40 +41,13 @@ def test_install_uses_sys_executable_linux(monkeypatch):
     )
 
 
-# ============================================================================
-# Test 3 -- xfail for a deferred probe
-# ============================================================================
-# cmd_daemon_install in `src/iai_mcp/cli.py` does NOT contain a
-# `subprocess.run([sys.executable, "-c", "import psutil"])` probe today.
-# Adding such a row is deferred; it is not added speculatively.
-#
-# This xfail documents the contract for a future addition of the
-# probe. If/when the probe lands, the xfail will flip to xpass and the
-# developer un-marks it. `strict=False` so an xpass does not fail the
-# suite during the transition.
-# ============================================================================
-
-
-# plist invariants -----------------------------
-
-
 def test_plist_keepalive_is_crashed_only(monkeypatch):
-    """Plist KeepAlive uses {"Crashed": true} only -- NOT SuccessfulExit=false.
-
-     lifecycle model: graceful exit 0 on HIBERNATION must
-    NOT trigger respawn (so the daemon stays dead until wrapper
-    kickstart fires). Crashed=true respawns only on non-zero exit
-    (the LifecycleLockConflict path); SuccessfulExit=false would
-    create a respawn loop because exit 0 is now the steady state.
-    """
     fake_python = "/path/to/venv/bin/python3"
     monkeypatch.setattr("iai_mcp.cli.sys.executable", fake_python)
     from iai_mcp.cli import _render_launchd_plist
 
     rendered = _render_launchd_plist()
-    # Crashed-only block must be present.
     assert "<key>Crashed</key>" in rendered
-    # Legacy SuccessfulExit=false must be GONE.
     assert "<key>SuccessfulExit</key>" not in rendered, (
         "SuccessfulExit=false was removed from the plist. Its presence "
         "would create a respawn loop because exit 0 is now the steady state."
@@ -127,11 +55,6 @@ def test_plist_keepalive_is_crashed_only(monkeypatch):
 
 
 def test_plist_lifecycle_env_vars_present(monkeypatch):
-    """The plist defines LIFECYCLE_* + sleep-quarantine env vars.
-
-    Cadence knobs become production-tunable via the plist
-    EnvironmentVariables block.
-    """
     fake_python = "/path/to/venv/bin/python3"
     monkeypatch.setattr("iai_mcp.cli.sys.executable", fake_python)
     from iai_mcp.cli import _render_launchd_plist
@@ -144,7 +67,6 @@ def test_plist_lifecycle_env_vars_present(monkeypatch):
 
 
 def test_plist_legacy_env_vars_removed(monkeypatch):
-    """Legacy env vars from the RSS-watchdog + idle_watcher era are gone."""
     fake_python = "/path/to/venv/bin/python3"
     monkeypatch.setattr("iai_mcp.cli.sys.executable", fake_python)
     from iai_mcp.cli import _render_launchd_plist
@@ -169,20 +91,12 @@ def test_plist_legacy_env_vars_removed(monkeypatch):
 def test_install_warns_when_sys_executable_lacks_psutil(
     monkeypatch, capsys, tmp_path,
 ):
-    """When the venv-resolved Python lacks `psutil`, install emits a WARN
-    (not FAIL) with a hint to install psutil + re-run.
-
-    NOTE: deferred -- xfail until a future change adds
-    the psutil-availability probe to `cmd_daemon_install`.
-    """
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
 
-    # Simulate `import psutil` failing under the target Python.
     real_run = subprocess.run
 
     def _fake_run(cmd, **kwargs):
-        # Match: subprocess.run([sys.executable, "-c", "import psutil"],...)
         if (
             isinstance(cmd, list)
             and len(cmd) >= 3
@@ -198,7 +112,6 @@ def test_install_warns_when_sys_executable_lacks_psutil(
 
     rc = cmd_daemon_install(_make_install_args(dry_run=True, yes=True))
     err = capsys.readouterr().err
-    # WARN != FAIL: install proceeds (rc == 0) but stderr carries the hint.
     assert rc == 0, f"install must NOT fail on missing psutil; got rc={rc}"
     err_lower = err.lower()
     assert "psutil" in err_lower

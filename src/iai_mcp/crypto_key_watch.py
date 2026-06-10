@@ -1,4 +1,3 @@
-"""Boot-time detection of ``.crypto.key`` file rotation for audit events."""
 
 from __future__ import annotations
 
@@ -22,7 +21,6 @@ def _key_path(store: "MemoryStore") -> Path:
 
 
 def sync_crypto_key_watcher_to_disk(store: "MemoryStore") -> None:
-    """Persist watcher state matching the current key file (no event)."""
     kp = _key_path(store)
     if not kp.is_file():
         return
@@ -37,11 +35,6 @@ def sync_crypto_key_watcher_to_disk(store: "MemoryStore") -> None:
 
 
 def check_crypto_key_file_rotation_event(store: "MemoryStore") -> None:
-    """Emit ``crypto_key_rotated`` when ``.crypto.key`` mtime/size changed since last persist.
-
-    First run (no watcher file): writes baseline only — no event (cannot
-    distinguish "first install" from "rotation" without prior state).
-    """
     from iai_mcp.events import write_event
 
     kp = _key_path(store)

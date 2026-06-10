@@ -1,4 +1,3 @@
-// Smoke for the bank-recall fallback path on socket-dead memory_recall.
 
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
@@ -24,8 +23,6 @@ describe("runBankFallback", () => {
       proc.stdout = stdout;
       proc.stderr = new EventEmitter();
       proc.kill = () => {};
-      // Emit payload + close on the next tick so the await chain has a
-      // chance to attach its listeners first.
       setImmediate(() => {
         stdout.emit(
           "data",
@@ -95,13 +92,6 @@ describe("runBankFallback", () => {
   });
 });
 
-// Wiring-layer regression guard: when BOTH the bridge call AND the direct-recall
-// subcommand fail, invokeTool must pass BANK_FALLBACK_LIMIT as --limit to the
-// bank-recall subprocess regardless of what the caller supplies in args.budget_tokens.
-//
-// Updated for the new fallthrough chain (direct-store FIRST, bank LAST):
-// the mockSpawnFn makes the direct-recall spawn fail (exit 1) so the
-// budget-vs-limit guard is still valid for the LAST-RESORT bank path.
 describe("invokeTool memory_recall budget-vs-limit decoupling", () => {
   it(
     "invokeTool budget-vs-limit decoupling: when direct-store + bridge both fail, bank receives limit=BANK_FALLBACK_LIMIT (20), NOT budget_tokens",
@@ -128,11 +118,8 @@ describe("invokeTool memory_recall budget-vs-limit decoupling", () => {
 
         setImmediate(() => {
           if (callIndex === 0) {
-            // First spawn: direct-recall CLI — make it fail (exit 1)
-            // so the fallback chain continues to bank.
             proc.emit("close", 1);
           } else {
-            // Second spawn: bank-recall — return a valid payload.
             stdout.emit(
               "data",
               JSON.stringify({
@@ -157,7 +144,6 @@ describe("invokeTool memory_recall budget-vs-limit decoupling", () => {
         call: async () => { throw new Error("socket dead"); },
       } as unknown as PythonCoreBridge;
 
-      // Ensure the fallback branch is not disabled in this test environment.
       const prevFallback = process.env["IAI_MCP_BANK_FALLBACK"];
       delete process.env["IAI_MCP_BANK_FALLBACK"];
       try {
@@ -173,10 +159,8 @@ describe("invokeTool memory_recall budget-vs-limit decoupling", () => {
         }
       }
 
-      // Two spawns expected: [0] direct-recall (fails), [1] bank-recall.
       assert.ok(spawnCalls.length >= 2, `expected at least 2 spawns; got ${spawnCalls.length}`);
 
-      // The bank-recall spawn must have --limit BANK_FALLBACK_LIMIT (20), NOT 9999.
       const bankArgs = spawnCalls[1].args;
       const limitIdx = bankArgs.indexOf("--limit");
       assert.ok(limitIdx >= 0, "--limit flag must be present in bank-recall argv");

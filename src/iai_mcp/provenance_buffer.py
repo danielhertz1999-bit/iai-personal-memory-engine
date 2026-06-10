@@ -1,4 +1,3 @@
-"""Deferred provenance buffer — hot-path writes go to JSONL, flushed by daemon WAKE handler."""
 from __future__ import annotations
 
 import json
@@ -22,12 +21,6 @@ def defer_provenance(
     store: MemoryStore,
     entries: list[tuple[UUID, str, str]],
 ) -> None:
-    """Append provenance entries to the deferred buffer file.
-
-    Each entry is (record_id, cue, session_id). Written as one JSONL line
-    per entry. Cost: ~0.1ms for 20 entries (sequential file append, no
-    encryption, no database write).
-    """
     if not entries:
         return
     path = _buffer_path(store)
@@ -45,14 +38,6 @@ def defer_provenance(
 
 
 def flush_deferred_provenance(store: MemoryStore) -> int:
-    """Drain the .deferred-provenance.jsonl buffer into the store.
-
-    Called by the daemon WAKE handler.
-    Reads all pending entries, writes them via append_provenance_batch
-    (with AES encryption + merge_insert), then truncates the file.
-
-    Returns the number of entries flushed.
-    """
     path = _buffer_path(store)
     if not path.exists():
         return 0

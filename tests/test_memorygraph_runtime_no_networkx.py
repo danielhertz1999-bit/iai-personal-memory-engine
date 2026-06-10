@@ -1,11 +1,3 @@
-"""Runtime invariant: ``MemoryGraph`` must not trigger ``networkx`` import.
-
-Evicts ``networkx`` from the runtime dependency surface. ``MemoryGraph()`` plus a
-full public-API exercise must complete without ``'networkx' in sys.modules``.
-``networkx==3.3`` remains in ``[dev]`` extras for differential-parity oracle tests
-(consumed by ``tests/conftest.py::_nx_graph_to_memory_graph`` adapter); this test
-verifies the eviction at the production-import level.
-"""
 
 from __future__ import annotations
 
@@ -19,9 +11,6 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _purge_networkx_from_sys_modules():
-    # Pre-test: drop any pre-loaded ``networkx`` modules so the assertions below
-    # reflect the post-import state of THIS test, not contamination from
-    # an earlier fixture/test in the suite.
     for mod in [
         m for m in list(sys.modules) if m == "networkx" or m.startswith("networkx.")
     ]:
@@ -87,7 +76,6 @@ def test_memorygraph_full_api_does_not_load_networkx():
 
 
 def test_no_networkx_lazy_import_in_graph_module():
-    """Lexical complement: no ``import networkx`` lines in graph.py source."""
     repo_root = Path(__file__).resolve().parents[1]
     result = subprocess.run(
         [
@@ -101,7 +89,6 @@ def test_no_networkx_lazy_import_in_graph_module():
         capture_output=True,
         text=True,
     )
-    # ``git grep`` exits non-zero (1) on no-match. ANY match (exit 0) is a failure.
     assert result.returncode != 0, (
         f"Found networkx imports in src/iai_mcp/graph.py:\n{result.stdout}"
     )

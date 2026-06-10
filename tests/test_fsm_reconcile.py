@@ -1,8 +1,3 @@
-"""FSM consolidation tests.
-
-Verifies that fsm_reconcile auto-corrects legacy state to match canonical,
-handles interrupted transitions, and crash-between-writes scenarios.
-"""
 from __future__ import annotations
 
 import json

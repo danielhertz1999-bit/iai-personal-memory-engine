@@ -1,8 +1,3 @@
-"""Tests for MCP-08 schema_list dispatch (Task 1).
-
-schema_list returns induced schemas with confidence + evidence + status.
-Supports domain + confidence_min filters.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -136,7 +131,6 @@ def test_schema_list_filter_confidence_min(tmp_path):
 
 
 def test_schema_list_shape_has_exceptions_count(tmp_path):
-    """Schema entries always carry an exceptions_count key (0 when no exceptions)."""
     from iai_mcp.schema import SchemaCandidate, persist_schema
 
     store = MemoryStore(path=tmp_path)

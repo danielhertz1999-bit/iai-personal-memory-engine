@@ -1,4 +1,3 @@
-"""Provenance deferral — buffer to JSONL, flush during SLEEP."""
 from __future__ import annotations
 
 import json
@@ -80,9 +79,6 @@ def test_flush_truncates_file(tmp_path):
 
 
 def test_bench_d_speed_still_green(tmp_path):
-    # Load-robust in-gate perf guard: skip on a busy host (wall-clock latency
-    # is then noise) and assert best-of-N min p95 (rejects a single transient
-    # outlier). bench/neural_map.py thresholds unchanged.
     from bench.neural_map import run_neural_map_bench, D_SPEED_P95_MS
 
     from _perf_helpers import best_of_n, skip_if_loaded

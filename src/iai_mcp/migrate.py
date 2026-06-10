@@ -1,52 +1,3 @@
-"""Schema migration helpers (v1 → v2 → v3 → v4) + encryption backfill +
-TEM factorization (v3 → v4 column rename + structure_hv fill).
-
-v1 -> v2 (legacy schema upgrade):
-  One-time batch migration that re-embeds every legacy record with the
-  configured embedder (bge-small-en-v1.5, 384d, English-only; IAI_MCP_EMBED_DIM
-  overrides for test hermeticity or dry-runs), backfills the v2 fields with
-  their defaults, sets `language="en"` on rows whose tag is empty (English-Only
-  Brain invariant — Claude translates inbound text on the way in), and marks
-  each record schema_version=2.
-
-v2 -> v3 (data upgrade):
-  In-place AES-256-GCM encryption of literal_surface / provenance_json /
-  profile_modulation_gain_json on the records table, and data_json on the
-  events table. Runs lazily via `migrate_encryption_v2_to_v3(store)` and
-  is idempotent (skips rows that already carry the iai:enc:v1: prefix).
-
-v3 -> v4 (TEM factorization):
-  Renames column `hd_vector_json` to `structure_hv`
-  (pa.binary(), packed D=10000 BSC bits = 1250 bytes per row). For stores
-  created on the new schema, the column name is already correct; the
-  migration backfills any row whose `structure_hv` is still empty bytes
-  via `tem.bind_structure(record)`, and bumps schema_version from 3 to 4.
-  Idempotent: rows already at v4 with a populated `structure_hv` are skipped.
-
-Invariants preserved:
-- literal_surface is byte-for-byte preserved through ALL migrations.
-- Provenance entries preserved.
-- All flags (detail_level, pinned, never_merge, never_decay, etc.) unchanged.
-- Tags list unchanged.
-- Every WHERE/DELETE predicate routes through store._uuid_literal so
-  injection content cannot ride a poisoned UUID.
-
-Idempotent: records that are already schema_version=2 are skipped by v1->v2.
-Records whose sensitive columns already start with iai:enc:v1: are skipped
-by v2->v3. Records that are already schema_version=4 with a non-empty
-structure_hv are skipped by v3->v4.
-
-Resumable: each record is committed individually via delete + insert. If the
-process crashes mid-batch, re-running picks up where it left off.
-
-Emits events of kind='migration_v1_to_v2', 'migration_v2_to_v3', and
-'migration_v3_to_v4'.
-
-CLI wrappers:
-  iai-mcp migrate --from=1 --to=2 [--dry-run] # (v1 -> v2)
-  iai-mcp migrate --from=2 --to=3 [--dry-run] # (encryption)
-  iai-mcp migrate --from=3 --to=4 [--dry-run] # (TEM factorization)
-"""
 from __future__ import annotations
 
 import json
@@ -82,22 +33,13 @@ from iai_mcp.types import (
 log = logging.getLogger(__name__)
 
 
-# Crash-safe reembed migration constants.
-# `STAGING_TABLE` receives re-embedded rows during the four-phase flow
-# (stage -> validate -> atomic swap -> deferred cleanup). `OLD_TABLE_PREFIX`
-# is the timestamp-suffixed name of the rolled-aside original records table
-# after a successful swap. `PROGRESS_FILE` lets `--resume` pick up at the
-# last successfully-staged row index after a crash.
 STAGING_TABLE = "records_v_new"
 OLD_TABLE_PREFIX = "records_old_"
 PROGRESS_FILE = "migration_progress.json"
-# Prior-key AES recovery: disjoint from reembed staging so
-# detect_partial_migration taxonomy stays unchanged.
 CRYPTO_RECOVER_STAGING = "records_crypto_recover_stage"
 
 
 def _db_table_names_set(db) -> set[str]:
-    """LanceDB 0.30+ list_tables() paginated response vs legacy list."""
     res = db.list_tables()
     if hasattr(res, "tables"):
         return set(res.tables)
@@ -110,26 +52,6 @@ def migrate_v1_to_v2(
     dry_run: bool = False,
     progress: Optional[Callable[[int, int], None]] = None,
 ) -> dict:
-    """Re-embed + language-tag + default-backfill every v1 record.
-
-    Parameters
-    ----------
-    store:
-        Open MemoryStore. Migration rewrites in-place via delete+insert per record.
-    embedder:
-        Embedder instance; defaults to Embedder() (bge-small-en-v1.5, 384d).
-        The store's records table schema must match the embedder's DIM; if they
-        differ, the caller is responsible for using the appropriate embedder (e.g.
-        legacy 1024d stores require a re-embed migration back to 384d before the
-        native Rust embedder can be used).
-    dry_run:
-        If True, counts what would be migrated without mutating the store.
-    progress:
-        Optional callable(idx, total) invoked before each record migration
-        so CLI / external tooling can render a progress bar.
-
-    Returns a dict with records_migrated / skipped / duration_sec / previous_model / new_model.
-    """
     t0 = time.time()
     if embedder is not None:
         emb = embedder
@@ -149,24 +71,18 @@ def migrate_v1_to_v2(
             except (TypeError, ValueError):
                 pass
 
-        # English-Only Brain invariant: rows with an empty language tag get
-        # "en" on migration. Claude does the translation on the way in, so
-        # the brain never needs to guess the language of stored text.
         new_lang = record.language if (record.language and record.language.strip()) else "en"
 
         if dry_run:
             migrated += 1
             continue
 
-        # Re-embed with the configured model. If the embedder's DIM differs
-        # from the store's current schema, insert will raise; callers on
-        # legacy 1024d stores must pass a matching model_key.
         new_embedding = emb.embed(record.literal_surface)
 
         updated = MemoryRecord(
             id=record.id,
             tier=record.tier,
-            literal_surface=record.literal_surface,       #: verbatim preserved
+            literal_surface=record.literal_surface,
             aaak_index=record.aaak_index,
             embedding=new_embedding,
             structure_hv=record.structure_hv,
@@ -188,10 +104,6 @@ def migrate_v1_to_v2(
             profile_modulation_gain={},
             schema_version=SCHEMA_VERSION_CURRENT,
         )
-        # Delete old v1 row, insert new v2 row (LanceDB MVCC-safe).
-        # fix: route record.id through _uuid_literal so the
-        # DELETE predicate cannot carry SQL injection content, matching the
-        # pattern already used in store.append_provenance / boost_edges.
         tbl = store.db.open_table(RECORDS_TABLE)
         tbl.delete(f"id = '{_uuid_literal(record.id)}'")
         store.insert(updated)
@@ -199,8 +111,6 @@ def migrate_v1_to_v2(
 
     duration_sec = time.time() - t0
 
-    # Emit a single migration event even on dry-run so audit trails record
-    # the planned scope (severity=info).
     if not dry_run and migrated > 0:
         write_event(
             store,
@@ -222,15 +132,6 @@ def migrate_v1_to_v2(
 
 
 def _records_schema_at_dim(dim: int) -> pa.Schema:
-    """Build the records-table Arrow schema at an explicit embedding dim.
-
-    Mirrors `MemoryStore._ensure_tables` lines 249-281 byte-for-byte except
-    for the `embedding` column's `list_size=dim`. Inlined here because the
-    staged-swap reembed migration needs to create `records_v_new` at a
-    DIFFERENT dim from the live store's `_embed_dim` — `store._ensure_tables`
-    is not parameterised on dim. file-disjoint
-    constraint forbids store.py changes; inlining is the conservative path.
-    """
     return pa.schema(
         [
             ("id", pa.string()),
@@ -270,22 +171,10 @@ def _records_schema_at_dim(dim: int) -> pa.Schema:
 
 
 def _progress_path(store: MemoryStore) -> Path:
-    """Resolve the on-disk path of `migration_progress.json` for this store.
-
-    Sits next to the LanceDB tables under `store.root` (the IAI root —
-    parent of the `lancedb/` subdir, same convention as `daemon_state.py`
-    and `cleanup_schema_duplicates`).
-    """
     return Path(store.root) / PROGRESS_FILE
 
 
 def _progress_read(store: MemoryStore) -> dict:
-    """Self-healing reader for `migration_progress.json`.
-
-    Returns `{}` on missing or malformed file — mirrors
-    `daemon_state.load_state` lines 41-49 verbatim. Callers MUST tolerate an
-    empty dict as "no checkpoint, start from row 0".
-    """
     path = _progress_path(store)
     if not path.exists():
         return {}
@@ -296,13 +185,6 @@ def _progress_read(store: MemoryStore) -> dict:
 
 
 def _progress_write(store: MemoryStore, state: dict) -> None:
-    """Atomic write for `migration_progress.json`.
-
-    Verbatim copy of `daemon_state.save_state`'s tempfile + fsync +
-    os.replace pattern — the project canon for atomic on-disk mutation.
-    `os.replace` (not `os.rename`) for cross-platform safety on Windows;
-    preferred even on POSIX.
-    """
     target = _progress_path(store)
     target.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(
@@ -327,14 +209,12 @@ def _progress_write(store: MemoryStore, state: dict) -> None:
 
 
 def _progress_clear(store: MemoryStore) -> None:
-    """Drop the progress checkpoint if present. Idempotent."""
     path = _progress_path(store)
     try:
         path.unlink()
     except FileNotFoundError:
         pass
     except OSError:
-        # Permission errors / odd FS states — don't crash the migration.
         pass
 
 
@@ -344,28 +224,13 @@ def _stage_record_to_table(
     rec: MemoryRecord,
     new_embedding: list[float],
 ) -> None:
-    """Append one re-embedded record to the staging table.
-
-    Mirrors `store.insert`'s sync write path (the legacy branch) but targets
-    an arbitrary table object instead of the hard-coded RECORDS_TABLE.
-    `store._to_row` handles AES-GCM encryption of
-    `literal_surface` / `provenance_json` / `profile_modulation_gain_json`
-    with `AAD = _uuid_literal(record.id)`, so a record written through this
-    helper round-trips through `store.get` after the atomic swap (same key,
-    same AAD).
-
-    `tem.bind_structure` is invoked when `structure_hv` is empty — preserves
-    the autopoietic write-time fill from `store.insert` line 519-521 so a
-    re-embedded record never lands in the staging table without a
-    structural fingerprint.
-    """
     if not rec.structure_hv:
         from iai_mcp.tem import bind_structure
         rec.structure_hv = bind_structure(rec)
     new_rec = MemoryRecord(
         id=rec.id,
         tier=rec.tier,
-        literal_surface=rec.literal_surface,  # verbatim
+        literal_surface=rec.literal_surface,
         aaak_index=rec.aaak_index,
         embedding=new_embedding,
         structure_hv=rec.structure_hv,
@@ -403,19 +268,6 @@ def _stage_loop(
     already_staged_ids: Optional[set[str]] = None,
     progress: Optional[Callable[[int, int], None]] = None,
 ) -> tuple[int, list[str]]:
-    """Run the per-row stage step over the source iterator.
-
-    Re-embeds each source record under `target_embedder`, writes the new
-    row to `target_tbl`, and atomically updates `migration_progress.json`
-    after each successful row so a crash leaves the checkpoint pointing at
-    the last successfully-staged record. Per-row exceptions are caught
-    + structured-logged + counted (best-effort migration); KeyboardInterrupt
-    and SystemExit propagate untouched so the caller sees the kill while the
-    live records table is left intact.
-
-    Returns `(staged_count, failures)`. `failures` is the list of
-    record-id strings whose re-embedding raised a recoverable exception.
-    """
     staged_count = 0
     failures: list[str] = []
     staged_ids: list[str] = list(already_staged_ids or [])
@@ -425,7 +277,6 @@ def _stage_loop(
     for rec in source_iter:
         rec_id_str = str(rec.id)
         if rec_id_str in skipped_set:
-            # Already in the staging table from a prior run.
             continue
         if progress is not None:
             try:
@@ -436,10 +287,6 @@ def _stage_loop(
             new_embedding = target_embedder.embed(rec.literal_surface)
             _stage_record_to_table(store, target_tbl, rec, new_embedding)
         except (KeyboardInterrupt, SystemExit):
-            # Mid-flight kill: do not swallow. Records is intact;
-            # records_v_new holds the partial set; progress file points
-            # at the last successfully-staged row. The boot detector or
-            # CLI rollback handles the cleanup.
             raise
         except (OSError, ValueError, RuntimeError) as exc:
             log.warning(
@@ -455,7 +302,6 @@ def _stage_loop(
 
         staged_count += 1
         staged_ids.append(rec_id_str)
-        # Atomic checkpoint write — every successful row.
         _progress_write(
             store,
             {
@@ -476,33 +322,15 @@ def _stage_loop(
 
 
 def _lancedb_root(db) -> Path:
-    """Resolve the on-disk root of the LanceDB connection.
-
-    Tables live as `<name>.lance` directories under this root. Used by the
-    filesystem-level atomic-swap fallback (LanceDB 0.30.2 OSS does NOT
-    implement `db.rename_table` — calling it raises `NotImplementedError:
-    rename_table is not supported in LanceDB OSS` despite the method
-    existing on the connection object). The fallback uses `os.replace` on
-    the table directories — POSIX `rename(2)` semantics on the same
-    filesystem give us the atomicity LanceDB OSS withholds.
-    """
     return Path(db.uri)
 
 
 def _swap_tables_filesystem(db, *, source: str, dest: str) -> None:
-    """Rename ``source`` table to ``dest``.
-
-    For HippoDB (SQLite): uses ``ALTER TABLE RENAME TO`` — atomic within the
-    SQLite connection's WAL lock.
-
-    For LanceDB: uses ``os.replace`` on the ``.lance`` directory (POSIX
-    atomic rename on the same filesystem).
-    """
     from iai_mcp.hippo import HippoDB
 
     if isinstance(db, HippoDB):
         db._conn.execute(  # nosemgrep
-            f"ALTER TABLE [{source}] RENAME TO [{dest}]"  # nosemgrep
+            f"ALTER TABLE [{source}] RENAME TO [{dest}]"
         )
         return
     root = _lancedb_root(db)
@@ -521,17 +349,6 @@ def _validate_and_swap(
     failures: list[str],
     duration_sec: float,
 ) -> dict:
-    """(validate) + (atomic swap) + event emit.
-
-    Refuses to swap if staged < orig * 0.99 (gross-mismatch guard).
-    Emits `migration_reembed` BEFORE the rename so a crash mid-rename still
-    leaves an audit trail. Swap uses filesystem-level `os.replace` on the
-    table directories under `db.uri` (LanceDB 0.30.2 OSS raises
-    `NotImplementedError` on `db.rename_table` despite exposing the
-    method — verified at runtime against the pinned version). After the
-    swap, `_embed_dim` is refreshed to target_dim so subsequent inserts
-    pass the dim check.
-    """
     orig = store.db.open_table(RECORDS_TABLE).count_rows()
     staged = store.db.open_table(STAGING_TABLE).count_rows()
     if orig > 0 and staged < orig * 0.99:
@@ -550,8 +367,6 @@ def _validate_and_swap(
             f"manually or run `iai-mcp migrate --rollback`."
         )
 
-    # Emit BEFORE rename so the audit trail survives a mid-rename crash;
-    # the rollback path is then triggered by the boot detector.
     try:
         write_event(
             store,
@@ -569,22 +384,13 @@ def _validate_and_swap(
     except (OSError, ValueError, RuntimeError) as exc:
         log.error("migration_reembed event write failed: %s", exc)
 
-    # — atomic swap via filesystem-level os.replace on the table
-    # directories (LanceDB OSS doesn't implement rename_table — see
-    # _swap_tables_filesystem docstring for evidence).
     ts = int(time.time())
     old_name = f"{OLD_TABLE_PREFIX}{ts}"
-    # Step 1: records -> records_old_<ts> (slot is empty after, so step 2 is safe).
     _swap_tables_filesystem(store.db, source=RECORDS_TABLE, dest=old_name)
-    # Step 2: records_v_new -> records.
     _swap_tables_filesystem(store.db, source=STAGING_TABLE, dest=RECORDS_TABLE)
 
-    # Refresh the in-memory dim binding so subsequent store.insert calls
-    # against the swapped table pass the dim check in store.
     store._embed_dim = target_dim
 
-    # Drop the progress checkpoint — cleanup is handled at next
-    # boot's detect_partial_migration -> needs_cleanup branch.
     _progress_clear(store)
 
     return {
@@ -604,76 +410,13 @@ def migrate_reembed_to_current_dim(
     dry_run: bool = False,
     progress: Optional[Callable[[int, int], None]] = None,
 ) -> dict:
-    """Crash-safe re-embed migration (four-phase flow).
-
-    Four-phase flow: stage -> validate -> atomic swap -> deferred cleanup.
-    A KeyboardInterrupt, kill, or power loss mid-flight leaves the original
-    `records` table untouched; the boot-time detector
-    (`detect_partial_migration`) refuses to advertise daemon-ready and
-    surfaces a remediation prompt.
-
-    Stage:
-      - Drop any pre-existing `records_v_new` (defensive — should not
-        normally exist; the boot detector catches a real partial state).
-      - Create `records_v_new` at the post-migration schema (target_dim).
-      - Stream rows from the live `records` table; re-embed each via
-        `target_embedder.embed`; insert into `records_v_new` via the same
-        AES-GCM-applying `_to_row` path as `store.insert`.
-      - On every successful row, atomically update `migration_progress.json`
-        with the row index + record id (resume anchor).
-      - Per-row embed exceptions are logged + counted; KeyboardInterrupt /
-        SystemExit propagates untouched.
-
-     (validate):
-      - `staged >= orig * 0.99` gate (allow up to 1% per-row failure).
-      - Gross mismatch (< 99%) raises RuntimeError; both tables remain
-        intact for inspection or `iai-mcp migrate --rollback`.
-
-     (atomic swap):
-      - LanceDB `db.rename_table(records, records_old_<ts>)` then
-        `db.rename_table(records_v_new, records)`. Cross-platform safe —
-        no filesystem-level `os.rename` (project convention prefers
-        `os.replace`; LanceDB owns the table-rename atomicity here).
-      - Emit `migration_reembed` BEFORE rename so audit trail survives
-        a mid-rename crash.
-      - Refresh `store._embed_dim = target_dim`.
-      - Drop `migration_progress.json`.
-
-     (deferred cleanup):
-      - `records_old_<ts>` is RETAINED. Next boot's
-        `detect_partial_migration` returns `needs_cleanup` and the daemon
-        drops it before advertising ready. Gives the operator a one-cycle
-        manual rollback window.
-
-    Idempotency: same-dim same-model returns `no_op=True` without
-    touching the store (preserves the legacy line-244-250 contract used
-    by `tests/test_migrate_reembed_to_current_dim.py`).
-
-    Preserves (+ full record fidelity):
-      - `literal_surface` byte-for-byte (re-embedded but content unchanged).
-      - `structure_hv` (TEM factorization independent of content embedding).
-      - All flags, tags, language, schema_version, provenance,
-        s5_trust_score, profile_modulation_gain, timestamps.
-
-    Emits `kind='migration_reembed'` on success (data: source_dim,
-    target_dim, updated, duration_sec, target_model_key, failures) AND
-    on idempotent no-op runs (data.no_op = True).
-
-    Parameters mirror the legacy signature for source-compat:
-    `dry_run` short-circuits with a `would_update` count; `progress` is an
-    optional callable invoked at each row before embedding.
-    """
     t0 = time.time()
 
     source_dim = int(store.embed_dim)
     target_dim = int(target_embedder.DIM)
     started_at_iso = datetime.now(timezone.utc).isoformat()
 
-    # — idempotency / dry-run / no-op fast paths.
-    # Match the legacy contract at line 244-260 so the existing
-    # tests/test_migrate_reembed_to_current_dim.py suite remains green.
     if source_dim == target_dim:
-        # Emit a no-op event so case 5 (idempotency rerun) is witnessable.
         try:
             write_event(
                 store,
@@ -692,9 +435,6 @@ def migrate_reembed_to_current_dim(
             )
         except (OSError, ValueError, RuntimeError) as exc:
             log.error("migration_reembed no-op event write failed: %s", exc)
-        # `total` matches the legacy signature so the existing
-        # test_reembed_idempotent_same_dim_no_op assertion holds:
-        # `result["skipped"] == 2 or result.get("no_op") is True`.
         return {
             "source_dim": source_dim,
             "target_dim": target_dim,
@@ -712,10 +452,6 @@ def migrate_reembed_to_current_dim(
             "duration_sec": time.time() - t0,
         }
 
-    # — stage.
-    # Defensive drop of any pre-existing staging table. A real partial
-    # state is caught by `detect_partial_migration` at boot; if we got
-    # here cleanly the staging table should not exist.
     if STAGING_TABLE in set(store.db.table_names()):
         store.db.drop_table(STAGING_TABLE)
     target_tbl = store.db.create_table(
@@ -735,7 +471,6 @@ def migrate_reembed_to_current_dim(
         progress=progress,
     )
 
-    # (validate) + (atomic swap) + (deferred cleanup).
     duration_sec = time.time() - t0
     return _validate_and_swap(
         store,
@@ -748,38 +483,7 @@ def migrate_reembed_to_current_dim(
     )
 
 
-# ---------------------------------------------------------------------------
-#: boot-time partial-migration detector + rollback /
-# resume entry points. The detector runs at daemon boot BEFORE ready-state
-# advertisement (see daemon.py main() — the wire-up makes the rollback
-# handler actually fire, closing the V2-07 anti-pattern of declared-but-
-# unwired knobs).
-# ---------------------------------------------------------------------------
-
-
 def detect_partial_migration(db) -> dict:
-    """Inspect the LanceDB store for evidence of a crashed reembed migration.
-
-    Returns a dict with `state` in:
-      - "clean": no partial-migration tables present.
-      - "needs_rollback": records_v_new present alongside records (mid-stage
-        crash; original records intact, staging partial — recover by
-        dropping staging or resuming).
-      - "needs_cleanup": records_old_<ts> present alongside fresh records;
-        successful swap from a prior boot — drop the old table.
-      - "partial_swap_inconsistent": records_v_new present without records
-        AND without any records_old_<ts> (catastrophic mid-swap state;
-        manual recovery required).
-      - "needs_rollback" (variant): records_v_new + records_old_<ts> both
-        present, records absent — swap interrupted between renames; the
-        old table is the rollback anchor.
-      - "unknown": defensive default for shapes we didn't enumerate.
-
-    Caller (daemon boot OR CLI subcommand) interprets state and acts. The
-    pure-inspection contract (no side effects) lets boot-time integration
-    bail out cleanly via `raise SystemExit(2)` while leaving the store
-    untouched for operator inspection.
-    """
     names = set(db.table_names())
     has_records = RECORDS_TABLE in names
     has_staging = STAGING_TABLE in names
@@ -840,7 +544,6 @@ def _decrypt_field_try_keys(
     record_id: UUID,
     keys: list[bytes],
 ) -> str:
-    """Decrypt iai:enc:v1: field; try each key in order until one succeeds."""
     from cryptography.exceptions import InvalidTag
 
     from iai_mcp.crypto import decrypt_field
@@ -867,7 +570,6 @@ def _memory_record_from_raw_row_multikey(
     row: dict,
     keys: list[bytes],
 ) -> MemoryRecord:
-    """Build MemoryRecord from a Lance row dict; decrypt with key fallbacks."""
     import pandas as pd
 
     from uuid import UUID as _UUID
@@ -966,27 +668,6 @@ def migrate_crypto_recover_prior_key(
     *,
     dry_run: bool = False,
 ) -> dict:
-    """Re-encrypt all records under the current file key using a prior AES key.
-
-    Use when ``.crypto.key`` was rotated or replaced while rows still carry
-    ciphertext from the old key (InvalidTag under the live key). Stages into
-    ``records_crypto_recover_stage``, validates full row count, atomically
-    swaps ``records`` aside (``records_old_<ts>``), promotes staging to
-    ``records`` — same filesystem-rename pattern as reembed migration.
-
-    Preconditions:
-        - ``detect_partial_migration`` state is ``clean`` or ``needs_cleanup``
-          (no in-flight ``records_v_new`` reembed).
-        - ``prior_key`` is 32 raw bytes (same format as ``.crypto.key``).
-
-    Idempotent: if every row decrypts with the **current** key alone, returns
-    ``{"no_op": True,...}`` without creating staging or swapping.
-
-    Returns
-    -------
-    dict
-        ``no_op``, ``records_staged``, ``duration_sec``, ``dry_run``, ``old_table`` (if any).
-    """
     from cryptography.exceptions import InvalidTag
 
     from iai_mcp.crypto import KEY_BYTES
@@ -1108,12 +789,6 @@ REDACT_UNDECRYPTABLE_MARKER = "<REDACTED: pre-2026-04-30 key rotation>"
 
 
 def migrate_redact_undecryptable_records(store: MemoryStore) -> dict:
-    """Replace literal_surface that cannot decrypt with ``REDACT_UNDECRYPTABLE_MARKER``.
-
-    Preserves embeddings, tier, tags, provenance column bytes (best-effort:
-    provenance_json is left unchanged — only literal_surface is redacted per
-    mandate). Emits ``crypto_redaction`` per changed row. Idempotent.
-    """
     from cryptography.exceptions import InvalidTag
 
     tbl = store.db.open_table(RECORDS_TABLE)
@@ -1135,7 +810,6 @@ def migrate_redact_undecryptable_records(store: MemoryStore) -> dict:
         except (InvalidTag, ValueError):
             plain = None
         if plain is not None:
-            # Already decryptable (includes idempotent prior redaction).
             skipped_ok += 1
             continue
         prov_raw = str(r.get("provenance_json") or "[]")
@@ -1185,31 +859,12 @@ def migrate_redact_undecryptable_records(store: MemoryStore) -> dict:
 
 
 def _rollback(db, store: MemoryStore) -> int:
-    """Roll back a partial reembed migration..
-
-    Behaviour by state (per `detect_partial_migration` taxonomy):
-      - records present + records_v_new present (mid-stage crash):
-        DROP records_v_new; records is intact, no rename needed.
-      - records absent + records_old_<ts> present (mid-swap crash variant):
-        Rename records_old_<newest_ts> -> records; drop records_v_new if
-        present.
-      - records present + records_old_<ts> present (deferred-cleanup state):
-        Drop records_old_<ts> (treats rollback as "discard old snapshot"
-        when the new table is already in place).
-      - clean: no-op, return 0.
-
-    Drops `migration_progress.json` if present.
-
-    Returns 0 on success, 1 on user-correctable error (e.g. nothing to roll
-    back to), 2 on unrecoverable.
-    """
     names = set(db.table_names())
     has_records = RECORDS_TABLE in names
     has_staging = STAGING_TABLE in names
     old_tables = sorted(n for n in names if n.startswith(OLD_TABLE_PREFIX))
 
     try:
-        # Mid-stage crash: drop the partial staging.
         if has_staging and has_records:
             db.drop_table(STAGING_TABLE)
             _progress_clear(store)
@@ -1219,15 +874,11 @@ def _rollback(db, store: MemoryStore) -> int:
             )
             return 0
 
-        # Mid-swap crash: restore from the newest old table.
         if not has_records and old_tables:
             newest_old = old_tables[-1]
             if has_staging:
                 db.drop_table(STAGING_TABLE)
-            # Filesystem-level rename: records_old_<ts>.lance -> records.lance.
             _swap_tables_filesystem(db, source=newest_old, dest=RECORDS_TABLE)
-            # Refresh embed_dim from the restored table's schema
-            # (mirrors store._ensure_tables lines 285-296).
             try:
                 tbl = db.open_table(RECORDS_TABLE)
                 emb_field = tbl.schema.field("embedding")
@@ -1246,9 +897,6 @@ def _rollback(db, store: MemoryStore) -> int:
             )
             return 0
 
-        # Deferred-cleanup state: discard the old snapshot at the user's
-        # request (rollback semantics here treat "discard old after
-        # successful swap" as a valid operator action).
         if has_records and old_tables and not has_staging:
             for old in old_tables:
                 try:
@@ -1261,12 +909,10 @@ def _rollback(db, store: MemoryStore) -> int:
             _progress_clear(store)
             return 0
 
-        # Clean state: nothing to roll back.
         if has_records and not has_staging and not old_tables:
             _progress_clear(store)
             return 0
 
-        # Catastrophic: records absent + no old table to restore.
         log.error(
             "migrate_reembed_rollback_unrecoverable",
             extra={
@@ -1285,16 +931,6 @@ def _rollback(db, store: MemoryStore) -> int:
 
 
 def _resume(db, store: MemoryStore, target_embedder) -> int:
-    """Resume a partial reembed migration from `migration_progress.json`.
-
-    Reads the checkpoint to recover `staged_ids` and `target_dim`. Continues
-    the staging loop over rows in the live `records` table that are NOT
-    already in `staged_ids`. After staging completes, runs (validate)
-    and (atomic swap), then drops the progress file.
-
-    Returns 0 on success, 1 on user-correctable error (no progress file,
-    target_dim mismatch with the embedder), 2 on unrecoverable.
-    """
     progress_state = _progress_read(store)
     if not progress_state:
         log.error(
@@ -1321,8 +957,6 @@ def _resume(db, store: MemoryStore, target_embedder) -> int:
         return 2
 
     if STAGING_TABLE not in names:
-        # Staging table was dropped (or never created). Re-create it at
-        # the target dim and re-stage everything.
         target_tbl = db.create_table(
             STAGING_TABLE, schema=_records_schema_at_dim(target_dim)
         )
@@ -1352,8 +986,6 @@ def _resume(db, store: MemoryStore, target_embedder) -> int:
             already_staged_ids=already_staged,
         )
     except (KeyboardInterrupt, SystemExit):
-        # Re-kill mid-resume: progress file is up-to-date; another --resume
-        # picks up where this one left off.
         raise
     except (OSError, ValueError, RuntimeError) as exc:
         log.error(
@@ -1362,8 +994,6 @@ def _resume(db, store: MemoryStore, target_embedder) -> int:
         )
         return 2
 
-    # Combine prior-run staged count with this run's staged count for the
-    # event payload — total updated rows is what the user/audit cares about.
     total_staged = len(already_staged) + staged_count
 
     duration_sec = time.time() - t0
@@ -1386,21 +1016,11 @@ def _resume(db, store: MemoryStore, target_embedder) -> int:
     return 0
 
 
-# ---------------------------------------------------------------------------
-#: v2 -> v3 encryption migration
-# ---------------------------------------------------------------------------
-
-
 def _encrypt_or_passthrough(
     store: MemoryStore,
     record_id: UUID,
     value: str,
 ) -> tuple[str, bool]:
-    """Encrypt `value` if it is plaintext; pass through if already encrypted.
-
-    Returns (new_value, was_encrypted_now). `was_encrypted_now` is True only
-    when the value flipped from plaintext to ciphertext on this call.
-    """
     if is_encrypted(value):
         return value, False
     ad = _uuid_literal(record_id).encode("ascii")
@@ -1413,31 +1033,6 @@ def migrate_encryption_v2_to_v3(
     dry_run: bool = False,
     progress: Optional[Callable[[int, int], None]] = None,
 ) -> dict:
-    """One-shot encryption migration for (SEC-ENCRYPTION-AT-REST).
-
-    Scans both the records table and the events table; anything whose
-    sensitive column currently lives as plaintext is re-encrypted in place.
-    Idempotent: rows already carrying the iai:enc:v1: prefix are left alone.
-
-    Records columns re-encrypted:
-    - literal_surface (user content)
-    - provenance_json (session cues + quotes)
-    - profile_modulation_gain_json (learned per-user data)
-
-    Events columns re-encrypted:
-    - data_json (may contain quoted user content in some event kinds)
-
-    Parameters
-    ----------
-    store: open MemoryStore (encryption key auto-loaded from keyring).
-    dry_run: when True, count migrable rows without writing.
-    progress: optional callback(idx, total) for CLI / external progress UIs.
-
-    Returns a dict with record and event migration counts plus duration.
-
-     preserved: encryption is lossless; decrypt + get() returns the
-    exact same string bytes the caller originally stored.
-    """
     t0 = time.time()
     result = {
         "records_migrated": 0,
@@ -1447,7 +1042,6 @@ def migrate_encryption_v2_to_v3(
         "duration_sec": 0.0,
     }
 
-    # ----- records table sweep -----
     records_tbl = store.db.open_table(RECORDS_TABLE)
     records_df = records_tbl.to_pandas()
     result["records_scanned"] = int(len(records_df))
@@ -1473,7 +1067,7 @@ def migrate_encryption_v2_to_v3(
             not is_encrypted(v) for v in (literal_raw, prov_raw, gain_raw)
         )
         if not any_plaintext:
-            continue  # Row fully encrypted already -- skip (idempotent).
+            continue
 
         if dry_run:
             result["records_migrated"] += 1
@@ -1509,8 +1103,6 @@ def migrate_encryption_v2_to_v3(
         try:
             records_tbl.merge_insert("id").when_matched_update_all().execute(update_tbl)
         except (OSError, ValueError, AttributeError, RuntimeError, sqlite3.IntegrityError) as exc:
-            # Fallback: per-id tbl.update when merge_insert is unavailable.
-            # IntegrityError can fire from partial-column UPSERT on NOT NULL columns.
             log.error("merge_insert fallback triggered: %s", exc)
             for u in records_updates:
                 try:
@@ -1528,7 +1120,6 @@ def migrate_encryption_v2_to_v3(
                 except (OSError, ValueError, RuntimeError):
                     continue
 
-    # ----- events table sweep -----
     events_tbl = store.db.open_table(EVENTS_TABLE)
     events_df = events_tbl.to_pandas()
     result["events_scanned"] = int(len(events_df))
@@ -1559,7 +1150,6 @@ def migrate_encryption_v2_to_v3(
 
     result["duration_sec"] = time.time() - t0
 
-    # ----- emit audit event -----
     if not dry_run and (
         result["records_migrated"] > 0 or result["events_migrated"] > 0
     ):
@@ -1585,55 +1175,11 @@ def migrate_encryption_v2_to_v3(
     return result
 
 
-# ---------------------------------------------------------------------------
-#: v3 -> v4 TEM factorization migration
-# ---------------------------------------------------------------------------
-
-
 def migrate_hd_vector_to_structure_hv_v3_to_v4(
     store: MemoryStore,
     dry_run: bool = False,
     progress: Optional[Callable[[int, int], None]] = None,
 ) -> dict:
-    """Rename `hd_vector_json` (pa.string()) -> `structure_hv`
-    (pa.binary()) and backfill every record with a freshly-bound
-    structural hypervector via tem.bind_structure().
-
-    Idempotency contract:
-        Rows that satisfy BOTH (a) schema_version >= 4 AND (b) non-empty
-        structure_hv are skipped. Any row failing either condition is migrated.
-
-     / SQL-injection guard (carried over from 02-06 lesson):
-        every WHERE / DELETE predicate routes through store._uuid_literal so
-        a poisoned UUID cannot inject SQL content.
-
-    Resumability:
-        Each record is delete+insert'd individually; a crash mid-batch leaves
-        a partially-migrated store that the next run picks up cleanly.
-
-    :
-        literal_surface is preserved byte-for-byte. The migration only touches
-        structure_hv + schema_version on each row.
-
-    LanceDB schema-rename note:
-        For stores created on the new schema (the typical case after this plan
-        ships) the column already exists as `structure_hv` (pa.binary()). For
-        legacy stores still on the old `hd_vector_json` (pa.string()) schema,
-        the rebuild is implicit -- store.insert() writes through the new
-        schema, so the delete+insert per-row migration produces a fully-renamed
-        table after one full sweep.
-
-    Parameters
-    ----------
-    store: open MemoryStore.
-    dry_run: when True, count migrable rows without writing.
-    progress: optional callback(idx, total) for CLI / external progress UIs.
-
-    Returns
-    -------
-    dict with keys: processed, updated, skipped, duration_ms,
-                    column_renamed_from, column_renamed_to.
-    """
     t0 = time.time()
     result: dict = {
         "processed": 0,
@@ -1644,23 +1190,16 @@ def migrate_hd_vector_to_structure_hv_v3_to_v4(
         "column_renamed_to": "structure_hv",
     }
 
-    # We use store.all_records() so the read path normalises legacy v3 rows
-    # (with the old `hd_vector_json` column) into MemoryRecord instances with
-    # an empty structure_hv -- giving the migration a uniform write surface.
     all_records = store.all_records()
     total = len(all_records)
     result["processed"] = total
 
-    # Lazy import: importing tem.py at module top
-    # would create a load-time cycle (migrate.py is imported by cli.py which
-    # is imported by sometimes-called CLI tooling -- keep it lazy).
     from iai_mcp.tem import bind_structure
     from iai_mcp.types import (
         SCHEMA_VERSION_V4,
         STRUCTURE_HV_BYTES,
     )
 
-    # Per-row delete+insert in the manner of migrate_v1_to_v2 (-safe).
     tbl = store.db.open_table(RECORDS_TABLE)
     for idx, record in enumerate(all_records):
         if progress is not None:
@@ -1669,7 +1208,6 @@ def migrate_hd_vector_to_structure_hv_v3_to_v4(
             except (TypeError, ValueError):
                 pass
 
-        # Idempotency: already at v4 with a populated structure_hv -> skip.
         already_v4 = record.schema_version >= SCHEMA_VERSION_V4
         has_full_hv = (
             isinstance(record.structure_hv, (bytes, bytearray))
@@ -1683,27 +1221,19 @@ def migrate_hd_vector_to_structure_hv_v3_to_v4(
             result["updated"] += 1
             continue
 
-        # Compute the canonical structure_hv if this row hasn't got one yet.
-        #: only structure_hv + schema_version mutate; literal_surface
-        # and every other field flow through unchanged.
         if not has_full_hv:
             record.structure_hv = bind_structure(record)
         record.schema_version = SCHEMA_VERSION_V4
 
-        # guarded delete + insert. The _uuid_literal call sanitises the
-        # UUID before it enters the WHERE predicate -- a poisoned UUID would
-        # raise ValueError on canonical-form check, never reaching LanceDB.
         try:
             tbl.delete(f"id = '{_uuid_literal(record.id)}'")
         except (OSError, ValueError, RuntimeError):
-            # Diagnostic-only: a missing row still gets re-inserted below.
             pass
         store.insert(record)
         result["updated"] += 1
 
     result["duration_ms"] = (time.time() - t0) * 1000.0
 
-    # Audit-event emission per the established convention (no-op on dry_run).
     if not dry_run and (result["updated"] > 0 or result["skipped"] > 0):
         write_event(
             store,
@@ -1722,28 +1252,13 @@ def migrate_hd_vector_to_structure_hv_v3_to_v4(
     return result
 
 
-# ---------------------------------------------------------------------------
-# V4 → V5: add codec metadata boundary columns (hv_tier, structure_hv_payload)
-# ---------------------------------------------------------------------------
-
-
 def _migrate_add_hv_tier_columns(conn: sqlite3.Connection) -> dict:
-    """Idempotently add `hv_tier` and `structure_hv_payload` to the records table.
-
-    Safe to call on stores already at V5 (columns already present — each
-    ALTER TABLE is wrapped in a try/except that silences the
-    OperationalError: "duplicate column name" from SQLite).
-
-    Returns a dict with keys:
-        hv_tier_added: bool — True iff the column was absent and added.
-        structure_hv_payload_added: bool — ditto.
-    """
     result = {"hv_tier_added": False, "structure_hv_payload_added": False}
 
     try:
         conn.execute(
             "ALTER TABLE records ADD COLUMN hv_tier TEXT NOT NULL DEFAULT 'bsc'"
-        )  # nosemgrep
+        )
         result["hv_tier_added"] = True
     except sqlite3.OperationalError as exc:
         if "duplicate column name" not in str(exc).lower():
@@ -1752,7 +1267,7 @@ def _migrate_add_hv_tier_columns(conn: sqlite3.Connection) -> dict:
     try:
         conn.execute(
             "ALTER TABLE records ADD COLUMN structure_hv_payload BLOB NOT NULL DEFAULT x''"
-        )  # nosemgrep
+        )
         result["structure_hv_payload_added"] = True
     except sqlite3.OperationalError as exc:
         if "duplicate column name" not in str(exc).lower():
@@ -1765,39 +1280,15 @@ def migrate_codec_metadata_v4_to_v5(
     store: "MemoryStore",
     dry_run: bool = False,
 ) -> dict:
-    """Add codec metadata boundary columns (hv_tier, structure_hv_payload) to records.
-
-    Idempotency contract:
-        Stores already at V5 (columns present) are a no-op. Each ALTER TABLE
-        silences "duplicate column name" so this function is safe to call
-        repeatedly and after partial runs.
-
-    Schema change only:
-        Existing rows receive DEFAULT values ('bsc' / empty BLOB) automatically
-        via the DEFAULT clauses. No row-level data rewrite is required.
-
-    Parameters
-    ----------
-    store:
-        Open MemoryStore instance.
-    dry_run:
-        When True, inspect column presence and return a diff summary without
-        modifying the database.
-
-    Returns
-    -------
-    dict with keys: dry_run, hv_tier_added, structure_hv_payload_added.
-    """
     from iai_mcp.hippo import HippoDB
 
     db = store.db
     if not isinstance(db, HippoDB):
         return {"dry_run": dry_run, "hv_tier_added": False, "structure_hv_payload_added": False, "note": "non-hippo backend; skipped"}
 
-    # Check current column presence via PRAGMA.
     existing = {
         row["name"]
-        for row in db._conn.execute("PRAGMA table_info(records)").fetchall()  # nosemgrep
+        for row in db._conn.execute("PRAGMA table_info(records)").fetchall()
     }
     needs_hv_tier = "hv_tier" not in existing
     needs_payload = "structure_hv_payload" not in existing
@@ -1814,53 +1305,12 @@ def migrate_codec_metadata_v4_to_v5(
     return result
 
 
-# ---------------------------------------------------------------------------
-# cleanup migration for accumulated schema duplicates
-# ---------------------------------------------------------------------------
-
-
 def cleanup_schema_duplicates(
     store: MemoryStore,
     *,
     apply: bool = False,
     store_path: "Path | None" = None,
 ) -> dict:
-    """Group semantic schema records by `pattern:*` tag; keep oldest; soft-delete the rest.
-
-    A one-shot reversible cleanup of duplicates that accumulated in the
-    production store before `persist_schema` was made idempotent.
-    NOT a schema_version v-bump — this is a maintenance op that runs on
-    demand, never automatically. Mandates dry-run default + snapshot before
-    write + soft-delete via tier rename + idempotency.
-
-    Parameters
-    ----------
-    store: MemoryStore
-        Open store (connected to the LanceDB directory under inspection).
-    apply: bool
-        False (default) -- dry-run, mutate nothing, return diff summary.
-        True -- snapshot the LanceDB tables dir, reinforce edges, soft-delete
-        duplicates by renaming their tier to "semantic_pruned" + flipping
-        pinned/never_decay to False.
-    store_path: Path | None
-        IAI root directory (the path passed to MemoryStore(); contains the
-        `lancedb/` subdir with the actual tables). When None, falls back to
-        `store.root`. Snapshot lands at
-        `store.root / f"lancedb-pre-cleanup-{ts}"` (sibling of `lancedb/`);
-        recovery is `mv lancedb-pre-cleanup-{ts} lancedb`.
-
-    Returns
-    -------
-    dict
-        {
-            "mode": "dry-run" | "apply",
-            "groups": int, # patterns with N>1 duplicates
-            "keepers": int, # one per group
-            "pruned": int, # cumulative duplicates soft-deleted
-            "edges_reinforced": int, # incoming schema_instance_of edges redirected
-            "snapshot_dir": str | None, # set only on apply
-        }
-    """
     import shutil
     from pathlib import Path
     from datetime import datetime, timezone
@@ -1868,14 +1318,10 @@ def cleanup_schema_duplicates(
     from iai_mcp.store import EDGES_TABLE
     from iai_mcp.types import SEMANTIC_PRUNED_TIER
 
-    # --- 1. Discover pattern groups: tier='semantic' AND tag matches pattern:*
     groups: dict[str, list[MemoryRecord]] = {}
     try:
         all_records = store.all_records()
     except (OSError, ValueError, RuntimeError) as exc:
-        # Diagnostic-only: a read failure leaves the store untouched and
-        # returns an empty summary instead of raising. Operators see the
-        # empty result and can investigate.
         log.error("schema cleanup all_records read failed: %s", exc)
         return {
             "mode": "apply" if apply else "dry-run",
@@ -1898,10 +1344,8 @@ def cleanup_schema_duplicates(
         pattern = pattern_tag.split(":", 1)[1]
         groups.setdefault(pattern, []).append(rec)
 
-    # Single-record groups are not duplicates -- nothing to do.
     dup_groups = {p: recs for p, recs in groups.items() if len(recs) > 1}
 
-    # --- 2. Select keepers (oldest first per pattern) + identify duplicates
     keepers: list[MemoryRecord] = []
     duplicates: list[MemoryRecord] = []
     for pattern, recs in dup_groups.items():
@@ -1909,16 +1353,11 @@ def cleanup_schema_duplicates(
         keepers.append(recs_sorted[0])
         duplicates.extend(recs_sorted[1:])
 
-    # --- 3. Plan edge redirects: count incoming schema_instance_of edges
-    # to duplicates so the dry-run can report what would be reinforced.
     edges_to_reinforce = 0
     try:
         edges_df = store.db.open_table(EDGES_TABLE).to_pandas()
         dup_id_strs = {str(d.id) for d in duplicates}
         if dup_id_strs and "edge_type" in edges_df.columns:
-            # boost_edges canonicalises (src, dst) to a sorted tuple, so the
-            # duplicate appears in EITHER column. OR-count both columns —
-            # each row has the dup in exactly one column, no double-count.
             mask = (
                 (edges_df["edge_type"] == "schema_instance_of")
                 & (
@@ -1934,13 +1373,6 @@ def cleanup_schema_duplicates(
     snapshot_dir: str | None = None
 
     if apply and (keepers or duplicates):
-        # --- 4. Snapshot the LanceDB tables dir BEFORE any write.
-        # store.root is the IAI root (contains lancedb/ subdir + state files).
-        # The snapshot is a sibling of the storage dir, prefixed
-        # `lancedb-pre-cleanup-{ts}` (naming kept for backward compatibility).
-        # Source preference: lancedb/ (legacy), then hippo/ (current), then
-        # the full iai root as last-resort fallback so the operator always
-        # has a rollback copy.
         iai_root = Path(store_path) if store_path is not None else Path(store.root)
         src_lancedb = iai_root / "lancedb"
         src_hippo = iai_root / "hippo"
@@ -1955,7 +1387,6 @@ def cleanup_schema_duplicates(
         shutil.copytree(snapshot_source, snap)
         snapshot_dir = str(snap)
 
-        # --- 5. Build keeper lookup by pattern for the redirect step.
         keeper_by_pattern: dict[str, MemoryRecord] = {}
         for k in keepers:
             kp = next(
@@ -1965,10 +1396,6 @@ def cleanup_schema_duplicates(
             if kp and ":" in kp:
                 keeper_by_pattern[kp.split(":", 1)[1]] = k
 
-        # --- 6. Redirect edges: copy incoming schema_instance_of edges from
-        # each duplicate onto its keeper BEFORE the duplicate's tier is renamed.
-        # Edge reinforcement failure must NOT block the tier rename — the
-        # operator can re-run cleanup to complete edge consolidation.
         try:
             edges_df = store.db.open_table(EDGES_TABLE).to_pandas()
             for dup in duplicates:
@@ -1992,13 +1419,10 @@ def cleanup_schema_duplicates(
                     continue
                 pairs: list[tuple[UUID, UUID]] = []
                 for _, row in incoming.iterrows():
-                    # Determine the OTHER side of the edge (the evidence node)
-                    # — it's whichever column does NOT carry the duplicate's id.
                     other_str = (
                         row["src"] if row["dst"] == dup_str else row["dst"]
                     )
                     if other_str == dup_str:
-                        # Self-edge sanity guard.
                         continue
                     try:
                         other_id = UUID(str(other_str))
@@ -2012,13 +1436,8 @@ def cleanup_schema_duplicates(
                         delta=0.1,
                     )
         except (OSError, ValueError, RuntimeError) as exc:
-            # Diagnostic: see comment at section header.
             log.error("schema cleanup edge reinforce failed: %s", exc)
 
-        # --- 7. Soft-delete via tier rename: delete + re-insert each duplicate
-        # with tier=semantic_pruned, pinned=False, never_decay=False.
-        # Other fields preserved (literal_surface, embedding, provenance, etc.)
-        # for reverse-migration recoverability.
         for dup in duplicates:
             try:
                 store.delete(dup.id)
@@ -2031,11 +1450,11 @@ def cleanup_schema_duplicates(
                     community_id=dup.community_id,
                     centrality=dup.centrality,
                     detail_level=dup.detail_level,
-                    pinned=False,                 #: pruned rows are unpinned
+                    pinned=False,
                     stability=dup.stability,
                     difficulty=dup.difficulty,
                     last_reviewed=dup.last_reviewed,
-                    never_decay=False,            #: pruned rows can decay
+                    never_decay=False,
                     never_merge=dup.never_merge,
                     provenance=dup.provenance,
                     created_at=dup.created_at,
@@ -2049,11 +1468,8 @@ def cleanup_schema_duplicates(
                 )
                 store.insert(pruned_rec)
             except (OSError, ValueError, RuntimeError):
-                # Per-record continuation: a single failed soft-delete must
-                # not abort the rest of the batch. Operator can re-run.
                 continue
 
-    # --- 8. Emit summary event + return summary dict
     summary: dict = {
         "mode": "apply" if apply else "dry-run",
         "groups": len(dup_groups),
@@ -2071,7 +1487,5 @@ def cleanup_schema_duplicates(
             source_ids=[k.id for k in keepers[:5]] if keepers else None,
         )
     except (OSError, ValueError, RuntimeError) as exc:
-        # Diagnostic-only: an event-write failure must not invalidate the
-        # cleanup itself.
         log.error("schema_cleanup_run event write failed: %s", exc)
     return summary

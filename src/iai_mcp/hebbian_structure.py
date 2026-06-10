@@ -1,4 +1,3 @@
-"""Back-compat shim -- Hebbian structure ops have moved to iai_mcp.lilli.ops.hebbian."""
 from __future__ import annotations
 
 from iai_mcp.lilli.ops.hebbian import (

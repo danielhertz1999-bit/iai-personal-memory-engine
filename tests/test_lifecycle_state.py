@@ -1,10 +1,3 @@
-"""lifecycle_state typed schema tests.
-
-Covers the round-trip, atomic-replace crash safety, and schema-validation
-self-heal behaviour of `lifecycle_state.{load_state,save_state}`. Mirrors
-the test layout of `test_daemon_state.py` since the
-persistence pattern is identical.
-"""
 from __future__ import annotations
 
 import json
@@ -24,40 +17,26 @@ from iai_mcp.lifecycle_state import (
 )
 
 
-# ---------------------------------------------------------------------------
-# default_state shape
-# ---------------------------------------------------------------------------
-
 def test_default_state_is_wake_with_shadow_run_disabled():
-    """shadow_run flipped to False by
-    default. HIBERNATION transitions now actually exit the daemon.
-    """
     record = default_state()
     assert record["current_state"] == "WAKE"
     assert record["shadow_run"] is False
     assert record["wrapper_event_seq"] == 0
     assert record["sleep_cycle_progress"] is None
     assert record["quarantine"] is None
-    # Timestamps parse as UTC ISO-8601.
     parsed = datetime.fromisoformat(record["since_ts"])
     assert parsed.tzinfo is not None
 
 
 def test_default_state_uses_lifecycle_state_enum_value():
-    """Defensive: future enum renames must not desync the default."""
     assert default_state()["current_state"] == LifecycleState.WAKE.value
 
-
-# ---------------------------------------------------------------------------
-# load_state self-heal
-# ---------------------------------------------------------------------------
 
 def test_load_state_returns_default_when_file_absent(tmp_path):
     target = tmp_path / "lifecycle_state.json"
     assert not target.exists()
     record = load_state(target)
     assert record["current_state"] == "WAKE"
-    # default_state did NOT write to disk; load is read-only.
     assert not target.exists()
 
 
@@ -66,8 +45,6 @@ def test_load_state_returns_default_on_malformed_json(tmp_path):
     target.write_text("{not valid json at all")
     record = load_state(target)
     assert record["current_state"] == "WAKE"
-    # Malformed file is left in place (no auto-delete) so the operator
-    # can inspect it; save_state will overwrite on the next persist.
     assert target.exists()
 
 
@@ -81,7 +58,7 @@ def test_load_state_returns_default_on_invalid_schema(tmp_path):
 def test_load_state_returns_default_on_wrong_state_value(tmp_path):
     target = tmp_path / "lifecycle_state.json"
     target.write_text(json.dumps({
-        "current_state": "AWAKE",  # not a LifecycleState member
+        "current_state": "AWAKE",
         "since_ts": "2026-05-02T00:00:00+00:00",
         "last_activity_ts": "2026-05-02T00:00:00+00:00",
         "wrapper_event_seq": 0,
@@ -92,10 +69,6 @@ def test_load_state_returns_default_on_wrong_state_value(tmp_path):
     record = load_state(target)
     assert record["current_state"] == "WAKE"
 
-
-# ---------------------------------------------------------------------------
-# save_state round trip
-# ---------------------------------------------------------------------------
 
 def test_save_then_load_roundtrip(tmp_path):
     target = tmp_path / "lifecycle_state.json"
@@ -166,7 +139,6 @@ def test_save_state_rejects_invalid_record(tmp_path):
     }
     with pytest.raises(ValueError):
         save_state(bad, target)  # type: ignore[arg-type]
-    # File never created on validation failure.
     assert not target.exists()
 
 
@@ -185,21 +157,12 @@ def test_save_state_rejects_negative_seq(tmp_path):
         save_state(bad, target)  # type: ignore[arg-type]
 
 
-# ---------------------------------------------------------------------------
-# Atomic replace: simulated crash mid-write leaves the OLD file intact
-# ---------------------------------------------------------------------------
-
 def test_atomic_replace_old_file_survives_temp_orphan(tmp_path, monkeypatch):
-    """If os.replace is interrupted (simulated by raising), the old file
-    must still be intact and readable. Tempfile must be cleaned up.
-    """
     target = tmp_path / "lifecycle_state.json"
-    # Seed an existing valid record.
     initial = default_state()
     initial["wrapper_event_seq"] = 99
     save_state(initial, target)
 
-    # Force os.replace to fail mid-write.
     real_replace = os.replace
 
     def boom(src, dst):  # noqa: ARG001
@@ -212,30 +175,19 @@ def test_atomic_replace_old_file_survives_temp_orphan(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="simulated crash"):
         save_state(new_record, target)
 
-    # Restore os.replace so subsequent ops in this test can use it normally.
     monkeypatch.setattr(os, "replace", real_replace)
 
-    # Old file content unchanged.
     loaded = load_state(target)
     assert loaded["wrapper_event_seq"] == 99
 
-    # Temp file orphan was cleaned up.
     leftover = list(tmp_path.glob(".lifecycle_state.*.tmp"))
     assert leftover == []
 
 
-# ---------------------------------------------------------------------------
-# default path constant points at ~/.iai-mcp/lifecycle_state.json
-# ---------------------------------------------------------------------------
-
 def test_default_path_is_under_iai_mcp_home():
-    # Read the live module attribute, not the import-time binding: the autouse
-    # fixture redirects the default to a per-test .iai-mcp under the tmp HOME,
-    # and a name imported at module load would not track that setattr.
     import iai_mcp.lifecycle_state as _ls
 
     path = _ls.LIFECYCLE_STATE_PATH
     assert path.name == "lifecycle_state.json"
     assert path.parent.name == ".iai-mcp"
-    # Anchored under the (redirected) home, not /tmp or /var directly.
     assert path.is_relative_to(Path.home())

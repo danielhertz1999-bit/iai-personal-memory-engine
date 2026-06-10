@@ -1,4 +1,3 @@
-"""Tests for iai_mcp.community (bootstrap, stable UUIDs, /04)."""
 from __future__ import annotations
 
 import random
@@ -24,7 +23,6 @@ def _random_emb(seed: int) -> list[float]:
 
 
 def test_small_n_flat_single_community() -> None:
-    """N < SMALL_N_FLAT -> flat, single community."""
     g = MemoryGraph()
     for i in range(50):
         g.add_node(uuid4(), community_id=None, embedding=_random_emb(i))
@@ -35,7 +33,6 @@ def test_small_n_flat_single_community() -> None:
 
 
 def test_two_cliques_produce_multiple_communities() -> None:
-    """2 dense cliques of 150 nodes -> N=300, Leiden should find Q >= 0.2."""
     g = MemoryGraph()
     clique_a = [uuid4() for _ in range(150)]
     clique_b = [uuid4() for _ in range(150)]
@@ -54,7 +51,6 @@ def test_two_cliques_produce_multiple_communities() -> None:
 
 
 def test_stable_uuids_on_identical_rerun() -> None:
-    """identical graphs rerun with prior -> zero UUID churn."""
     g = MemoryGraph()
     clique_a = [uuid4() for _ in range(150)]
     clique_b = [uuid4() for _ in range(150)]
@@ -73,7 +69,6 @@ def test_stable_uuids_on_identical_rerun() -> None:
 
 
 def test_top_communities_capped_at_seven() -> None:
-    """MAX_TOP_COMMUNITIES = 7 enforced on level 1 output."""
     g = MemoryGraph()
     for i in range(SMALL_N_FLAT + 10):
         g.add_node(uuid4(), community_id=None, embedding=_random_emb(i))
@@ -86,7 +81,6 @@ def test_top_communities_capped_at_seven() -> None:
 
 
 def test_mid_regions_exposes_community_members() -> None:
-    """level 2: mid_regions maps community UUID -> member UUIDs."""
     g = MemoryGraph()
     nodes = [uuid4() for _ in range(50)]
     for i, n in enumerate(nodes):
@@ -97,12 +91,10 @@ def test_mid_regions_exposes_community_members() -> None:
 
 
 def test_needs_refresh_threshold() -> None:
-    """|Δ Q| > 0.05 -> refresh, else stable."""
     prior = CommunityAssignment(modularity=0.30)
-    assert needs_refresh(prior, 0.36) is True  # Δ = 0.06 > 0.05
-    assert needs_refresh(prior, 0.31) is False  # Δ = 0.01 < 0.05
-    assert needs_refresh(prior, 0.24) is True  # Δ = 0.06 > 0.05 (negative side)
-    # Boundary: Δ == 0.05 is NOT > 0.05 -> False (strict inequality).
+    assert needs_refresh(prior, 0.36) is True
+    assert needs_refresh(prior, 0.31) is False
+    assert needs_refresh(prior, 0.24) is True
     assert needs_refresh(prior, 0.35) is False
 
 
@@ -115,7 +107,6 @@ def test_empty_graph_returns_empty_assignment() -> None:
 
 
 def test_constants_exposed() -> None:
-    """Named constants are importable (verifies the grep acceptance criteria)."""
     assert SMALL_N_FLAT == 200
     assert MID_N_LEIDEN == 500
     assert MODULARITY_FLOOR == 0.2
@@ -125,9 +116,7 @@ def test_constants_exposed() -> None:
 
 
 def test_mid_n_non_modular_falls_back_to_flat() -> None:
-    """SMALL_N_FLAT <= N < MID_N_LEIDEN with Q < 0.2 -> flat fallback."""
     g = MemoryGraph()
-    # 250 nodes fully connected -> a clique, Leiden will produce Q ~ 0.0
     nodes = [uuid4() for _ in range(250)]
     for i, n in enumerate(nodes):
         g.add_node(n, community_id=None, embedding=_random_emb(i))
@@ -135,12 +124,10 @@ def test_mid_n_non_modular_falls_back_to_flat() -> None:
         for j in range(i + 1, 250):
             g.add_edge(nodes[i], nodes[j])
     a = detect_communities(g, prior=None)
-    # Fully-connected graph has no community structure -> fall back to flat.
     assert a.backend == "flat"
 
 
 def test_mid_regions_count_matches_community_count() -> None:
-    """mid_regions has exactly one entry per distinct community."""
     g = MemoryGraph()
     clique_a = [uuid4() for _ in range(150)]
     clique_b = [uuid4() for _ in range(150)]

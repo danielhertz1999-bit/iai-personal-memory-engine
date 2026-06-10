@@ -1,15 +1,3 @@
-"""Drain caps per-pass event count; residual stays as `.partial.jsonl`.
-
-Contract (MAX_DRAIN_EVENTS_PER_RUN = 5000):
-- File with >5000 events: first pass drains 5000, leftover lands in
-  `{basename}.partial.jsonl` (header preserved + unprocessed events).
-- Second pass drains the `.partial.jsonl` to completion.
-- Small files (<= cap) drain in one pass; no `.partial.jsonl` produced.
-- The partial file's first line is a valid header dict.
-
-`capture_turn` is monkeypatched to a no-op so the test exercises drain
-control flow, not embedder + store throughput.
-"""
 from __future__ import annotations
 
 import json
@@ -27,7 +15,6 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture
 def fast_drain_env(tmp_path, monkeypatch):
-    """HOME isolation + capture_turn no-op so the test is fast."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("PYTHON_KEYRING_BACKEND", "keyring.backends.fail.Keyring")
     monkeypatch.setenv("IAI_MCP_CRYPTO_PASSPHRASE", "test-cap-pass")
@@ -75,7 +62,6 @@ def _store():
 
 
 def test_partial_drain_at_5000(fast_drain_env):
-    """6000-event file leaves a 1000-event residual `.partial.jsonl` after one pass."""
     from iai_mcp.capture import MAX_DRAIN_EVENTS_PER_RUN, drain_deferred_captures
 
     assert MAX_DRAIN_EVENTS_PER_RUN == 5000
@@ -95,7 +81,6 @@ def test_partial_drain_at_5000(fast_drain_env):
 
 
 def test_second_pass_drains_remainder(fast_drain_env):
-    """Re-running drain on the residual finishes the job; dir ends empty of.jsonl."""
     from iai_mcp.capture import drain_deferred_captures
 
     deferred = fast_drain_env / ".iai-mcp" / ".deferred-captures"
@@ -113,7 +98,6 @@ def test_second_pass_drains_remainder(fast_drain_env):
 
 
 def test_cap_does_not_apply_to_small_files(fast_drain_env):
-    """A 100-event file drains in one pass; no partial file produced."""
     from iai_mcp.capture import drain_deferred_captures
 
     deferred = fast_drain_env / ".iai-mcp" / ".deferred-captures"
@@ -128,7 +112,6 @@ def test_cap_does_not_apply_to_small_files(fast_drain_env):
 
 
 def test_partial_file_has_valid_header(fast_drain_env):
-    """The produced `.partial.jsonl` first line is a valid header dict."""
     from iai_mcp.capture import drain_deferred_captures
 
     deferred = fast_drain_env / ".iai-mcp" / ".deferred-captures"

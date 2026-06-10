@@ -1,22 +1,3 @@
-"""Tests for 02- (persist_schema hardcodes language='en' --
- constitutional violation for multilingual users).
-
-Bug: every schema hub record was created with language='en' regardless of
-the language of the source cluster. A user storing Russian records saw
-schema hubs derived from their Russian clusters tagged as English, so
-language-filtered retrieval ('ru' filter) missed their own schemas.
-
-Fix (Task 2):
-    - Add helper _majority_language(evidence_ids, store) -> str. Tie-break
-      is deterministic (max with key=count on a stable input order).
-    - persist_schema derives language from the helper; fallback 'en' only
-      when evidence is empty or all evidence records are missing.
-
-Contract (native-language storage):
-    Records are stored in the language they were recorded in. This extends
-    to derived records (schema hubs). The design mandates 7+ language support;
-    hardcoded 'en' broke the contract silently.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -27,10 +8,6 @@ import pytest
 from iai_mcp.schema import SchemaCandidate, persist_schema
 from iai_mcp.store import MemoryStore
 from iai_mcp.types import EMBED_DIM, MemoryRecord
-
-
-# ---------------------------------------------------------------- helpers
-
 
 def _rec(*, language: str, text: str = "seed") -> MemoryRecord:
     now = datetime.now(timezone.utc)
@@ -56,13 +33,10 @@ def _rec(*, language: str, text: str = "seed") -> MemoryRecord:
         language=language,
     )
 
-
 def _seed_cluster(
     store: MemoryStore,
     lang_counts: dict[str, int],
 ) -> list[uuid4]:
-    """Insert N records per language. Returns the list of evidence ids in
-    INSERT ORDER (deterministic tie-break)."""
     evidence: list = []
     for lang, count in lang_counts.items():
         for i in range(count):
@@ -71,12 +45,7 @@ def _seed_cluster(
             evidence.append(r.id)
     return evidence
 
-
-# ================================================= core cases
-
-
 def test_persist_schema_derives_language_from_majority_evidence(tmp_path):
-    """5 ru + 2 en + 1 ja evidence -> schema.language == 'ru'."""
     store = MemoryStore(path=tmp_path)
     evidence = _seed_cluster(store, {"ru": 5, "en": 2, "ja": 1})
 
@@ -95,9 +64,7 @@ def test_persist_schema_derives_language_from_majority_evidence(tmp_path):
         f"persist_schema must read majority language from evidence, got {fresh.language!r}"
     )
 
-
 def test_persist_schema_fallback_en_on_empty_evidence(tmp_path):
-    """No evidence -> fallback to 'en' (default, safe)."""
     store = MemoryStore(path=tmp_path)
     cand = SchemaCandidate(
         pattern="tags:orphan",
@@ -111,11 +78,7 @@ def test_persist_schema_fallback_en_on_empty_evidence(tmp_path):
     assert fresh is not None
     assert fresh.language == "en"
 
-
 def test_persist_schema_tie_is_deterministic(tmp_path):
-    """3 ru + 3 en (tied) -> deterministic winner governed by input order.
-    max(..., key=list.count) with a list preserves first-seen-wins; 'ru'
-    inserted first wins the tie."""
     store = MemoryStore(path=tmp_path)
     evidence = _seed_cluster(store, {"ru": 3, "en": 3})
 
@@ -129,21 +92,13 @@ def test_persist_schema_tie_is_deterministic(tmp_path):
     schema_id = persist_schema(store, cand)
     fresh = store.get(schema_id)
     assert fresh is not None
-    # Tie-break: first distinct language in the evidence list wins.
-    # Seeded as {ru:3, en:3} in that order -> 'ru' appears first.
     assert fresh.language == "ru"
 
-
 def test_persist_schema_ignores_missing_evidence_records(tmp_path):
-    """evidence_ids can point to records that were deleted/never existed.
-    The helper must filter those out gracefully and use only the surviving
-    records' language values."""
     store = MemoryStore(path=tmp_path)
 
-    # Seed 2 real records in Japanese
     surviving = _seed_cluster(store, {"ja": 2})
 
-    # Add 3 phantom ids that were never inserted
     phantom_ids = [uuid4() for _ in range(3)]
 
     cand = SchemaCandidate(
@@ -156,15 +111,11 @@ def test_persist_schema_ignores_missing_evidence_records(tmp_path):
     schema_id = persist_schema(store, cand)
     fresh = store.get(schema_id)
     assert fresh is not None
-    # Only the 2 surviving Japanese records contribute -> 'ja'
     assert fresh.language == "ja", (
         f"persist_schema must ignore missing evidence records, got {fresh.language!r}"
     )
 
-
 def test_persist_schema_no_hardcoded_english(tmp_path):
-    """Structural guard: persist_schema source must not carry `language='en'`
-    hardcoded; it must route language through _majority_language."""
     import inspect
     from iai_mcp import schema as schema_mod
 

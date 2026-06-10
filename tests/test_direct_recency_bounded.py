@@ -1,17 +1,3 @@
-"""Daemon-down bounded recency reader tests.
-
-Tests for:
-  - direct_recency_rows_from_store(root, limit=K) returns at most K rows
-    using _DIRECT_RECENCY_SQL_LIMITED (pre-built constant, no string concat)
-  - direct_recency_rows_from_store(root) with no limit preserves the
-    unbounded full-result behaviour of the direct_recency consumer
-  - degraded_semantic_recall(root, cue, limit=K) fetches at most K rows from
-    SQL (not fetch-all-then-truncate)
-
-All tests are hermetic: HOME + IAI_MCP_STORE + IAI_DAEMON_SOCKET_PATH are
-monkeypatched to tmp_path. The live daemon is never touched.
-Generic 'User'/'user' test data only (no PII).
-"""
 from __future__ import annotations
 
 import json
@@ -30,10 +16,6 @@ from iai_mcp.hippo import (
     _DIRECT_RECENCY_SQL_LIMITED,
 )
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _random_vec(seed: int) -> list[float]:
     rng = np.random.default_rng(seed)
@@ -78,23 +60,13 @@ def store(tmp_path, monkeypatch):
     yield s
 
 
-# ---------------------------------------------------------------------------
-# _DIRECT_RECENCY_SQL_LIMITED constant shape
-# ---------------------------------------------------------------------------
-
 def test_limited_sql_constant_ends_with_limit_q():
-    """_DIRECT_RECENCY_SQL_LIMITED must end with ' LIMIT ?' (parameterized)."""
     assert _DIRECT_RECENCY_SQL_LIMITED.rstrip().endswith("LIMIT ?"), (
         f"_DIRECT_RECENCY_SQL_LIMITED must end with 'LIMIT ?': {_DIRECT_RECENCY_SQL_LIMITED!r}"
     )
 
 
-# ---------------------------------------------------------------------------
-# direct_recency_rows_from_store — bounded path
-# ---------------------------------------------------------------------------
-
 def test_direct_recency_rows_bounded_limit(store):
-    """direct_recency_rows_from_store(root, limit=K) returns at most K rows."""
     n = 20
     limit = 5
     for i in range(n):
@@ -109,7 +81,6 @@ def test_direct_recency_rows_bounded_limit(store):
 
 
 def test_direct_recency_rows_bounded_returns_rows(store):
-    """Bounded path returns the rows (not an empty list on error)."""
     for i in range(8):
         r = _make_rec(seed=100 + i)
         store.insert(r)
@@ -120,16 +91,7 @@ def test_direct_recency_rows_bounded_returns_rows(store):
     assert len(rows) <= 3, f"Must not exceed limit=3, got {len(rows)}"
 
 
-# ---------------------------------------------------------------------------
-# direct_recency_rows_from_store — unbounded consumer preserved
-# ---------------------------------------------------------------------------
-
 def test_direct_recency_rows_unbounded_consumer_unchanged(store):
-    """direct_recency_rows_from_store(root) with no limit returns ALL rows.
-
-    The direct_recency consumer calls with no limit and must keep its
-    full-result behaviour.
-    """
     n = 15
     for i in range(n):
         r = _make_rec(seed=200 + i)
@@ -148,16 +110,7 @@ def test_direct_recency_rows_unbounded_consumer_unchanged(store):
     )
 
 
-# ---------------------------------------------------------------------------
-# degraded_semantic_recall — bounded path
-# ---------------------------------------------------------------------------
-
 def test_degraded_semantic_recall_bounded(store):
-    """degraded_semantic_recall(root, cue, limit=K) returns at most K results.
-
-    The daemon-down degrade path must fetch at most limit rows from SQL
-    (not fetch-all-then-truncate in Python).
-    """
     from iai_mcp.hippo import degraded_semantic_recall
 
     n = 20
@@ -175,7 +128,6 @@ def test_degraded_semantic_recall_bounded(store):
 
 
 def test_degraded_semantic_recall_returns_degraded_flag(store):
-    """Results from degraded_semantic_recall carry _degraded=True."""
     from iai_mcp.hippo import degraded_semantic_recall
 
     for i in range(5):

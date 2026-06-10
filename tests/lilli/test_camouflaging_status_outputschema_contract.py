@@ -1,30 +1,3 @@
-"""Pin camouflaging_status outputSchema to the actual
-response shape.
-
-End-to-end sweep of all 12 MCP tools surfaced one wrong-name mismatch:
-
-  tools.ts declares | core.dispatch returns
-  --------------------- | ----------------------
-  detected | detected
-  formality_trend | trajectory_slope ← name mismatch
-  anomaly_score | current_mean ← name mismatch
-  camouflaging_relaxation | sample_count ← schema missing
-                        | camouflaging_relaxation
-
-Source of truth (no doubt):
-  - src/iai_mcp/camouflaging.py returns
-    {detected, trajectory_slope, current_mean, sample_count}
-  - src/iai_mcp/core.py injects camouflaging_relaxation onto
-    that dict.
-
-This test parses the camouflaging_status outputSchema block in
-tools.ts and asserts the declared property keys match the actual
-five-key response set. RED before the fix, GREEN after.
-
-Structural test — no daemon spawn, no socket. Re-uses the same
-regex/brace-balance convention as test_mcp_tools_description_quality.py
-to stay self-contained.
-"""
 from __future__ import annotations
 
 import re
@@ -41,9 +14,6 @@ EXPECTED_RESPONSE_KEYS = frozenset({
     "camouflaging_relaxation",
 })
 
-# Names tools.ts USED to declare that are NOT in the actual response.
-# Pinning these out keeps the regression from sneaking back via a copy-
-# paste from older planning docs.
 FORBIDDEN_KEYS = frozenset({
     "formality_trend",
     "anomaly_score",
@@ -51,14 +21,6 @@ FORBIDDEN_KEYS = frozenset({
 
 
 def _extract_camouflaging_status_outputschema(text: str) -> str:
-    """Return the slice of tools.ts that holds the camouflaging_status
-    outputSchema {... } block.
-
-    Strategy: locate the `camouflaging_status: {` opening, then within
-    that entry walk to `outputSchema: {`, then brace-balance to the
-    matching close. Returns the inner string between `{` and matching
-    `}` (exclusive).
-    """
     entry_marker = "camouflaging_status: {"
     entry_start = text.find(entry_marker)
     assert entry_start != -1, (
@@ -89,11 +51,6 @@ def _extract_camouflaging_status_outputschema(text: str) -> str:
 
 
 def _declared_property_keys(schema_body: str) -> set[str]:
-    """Pull top-level property names from `properties: {... }`.
-
-    Returns the set of bare identifiers (keys) declared one level
-    inside the `properties:` block. Skips nested objects.
-    """
     props_marker = "properties: {"
     props_start = schema_body.find(props_marker)
     assert props_start != -1, (
@@ -115,8 +72,6 @@ def _declared_property_keys(schema_body: str) -> set[str]:
     assert end is not None, "properties block in outputSchema not brace-balanced."
 
     body = schema_body[open_brace + 1:end]
-    # Match top-level keys only (depth==0 inside body). We treat each
-    # `<ident>: {` or `<ident>: <scalar>` at depth 0 as one declared key.
     keys: set[str] = set()
     depth = 0
     i = 0
@@ -146,9 +101,6 @@ def test_tools_ts_exists() -> None:
 
 
 def test_camouflaging_status_outputschema_matches_actual_response() -> None:
-    """The set of property keys declared in tools.ts MUST equal the
-    actual response shape from camouflaging.detect_camouflaging() +
-    core.py injection."""
     text = TOOLS_TS.read_text(encoding="utf-8")
     schema_body = _extract_camouflaging_status_outputschema(text)
     declared = _declared_property_keys(schema_body)
@@ -172,9 +124,6 @@ def test_camouflaging_status_outputschema_matches_actual_response() -> None:
 
 
 def test_camouflaging_status_outputschema_has_no_legacy_names() -> None:
-    """formality_trend and anomaly_score were the legacy names baked
-    into commit 8229af1 ("Glama TDQS lift"). They are NOT produced by
-    the Python side and must not appear in the published contract."""
     text = TOOLS_TS.read_text(encoding="utf-8")
     schema_body = _extract_camouflaging_status_outputschema(text)
     declared = _declared_property_keys(schema_body)

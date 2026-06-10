@@ -1,46 +1,4 @@
 #!/usr/bin/env python3
-"""One-shot migration: LanceDB ~/.iai-mcp/lancedb/ -> Hippo ~/.iai-mcp/hippo/.
-
-Stages:
-1. Pre-flight: refuse if iai_mcp.daemon is running (PID + cmdline match
-   AND socket-probe; either signal blocks). Also requires the optional
-   ``lancedb`` package -- install via ``pip install iai-mcp[migration]``.
-2. Backup: cp -a lancedb -> lancedb.pre-migrate-{ts} (APFS CoW; cheap).
-3. Stream copy: for each LanceDB table (records, edges, events,
-   budget_ledger, ratelimit_ledger), read rows in batches of 1000 and
-   INSERT OR IGNORE into HippoDB. Track (inserted, duplicates_skipped).
-   A fresh run (no --resume) fails if duplicates_skipped > 0.
-4. Rebuild hnsw: call hippo_db._rebuild_index_from_sqlite() so
-   records.hnsw is durable after the raw INSERT path bypasses HippoTable.add.
-   Verify by loading the.hnsw file into a fresh hnswlib.Index().
-5. Verify: per-record byte-strict embedding equality (tobytes equality,
-   NO np.allclose tolerance) + weight/blob/text equality for edges/events.
-   Abort on any mismatch and preserve the backup.
-6. Trash: mv lancedb -> ~/.Trash/lancedb-{ts}/. Backup also moves to Trash
-   on success. NEVER rm.
-
-Recovery: --rollback restores the backup over the failed lancedb tree and
-moves the failed hippo tree to ~/.Trash.
-
-Exit codes:
-  0 = success (or dry-run complete, or nothing-to-migrate)
-  1 = generic preflight failure
-  2 = daemon is alive
-  3 = hippo/ already exists (run --rollback first)
-  4 = verification mismatch
-  5 = duplicates on fresh run (pass --resume if intentional)
-  6 = lancedb package not installed (pip install iai-mcp[migration])
-  7 = --rollback: no.migrate-FAILED-*.json found (pass --rollback-ts)
-  8 = --rollback: backup path not found
-
-Usage:
-    python scripts/migrate_lance_to_hippo.py [--dry-run] [--resume]
-                                             [--rollback [--rollback-ts TS]]
-                                             [--store PATH]
-                                             [--log-file PATH]
-                                             [--batch-size N]
-                                             [--yes]
-"""
 from __future__ import annotations
 
 import argparse
@@ -57,31 +15,20 @@ from typing import Any
 
 import numpy as np
 
-# ---------------------------------------------------------------------------
-# Global log-file handle (set in main() if --log-file passed)
-# ---------------------------------------------------------------------------
 
-_log_fh: Any = None  # file object or None
+_log_fh: Any = None
 
 
 def tee_print(*args: Any, **kwargs: Any) -> None:
-    """Print to stdout and (if --log-file was given) to the log file."""
     print(*args, **kwargs)
     if _log_fh is not None:
-        # Mirror to log file; flush so tail -f works.
         file_kwargs = dict(kwargs)
         file_kwargs["file"] = _log_fh
         file_kwargs["flush"] = True
         print(*args, **file_kwargs)
 
 
-# ---------------------------------------------------------------------------
-# Lazy lancedb import
-# ---------------------------------------------------------------------------
-
-
 def _import_lancedb_or_die():
-    """Import lancedb; print a friendly hint and exit with code 6 if missing."""
     try:
         import lancedb  # noqa: F401
         return lancedb
@@ -96,18 +43,7 @@ def _import_lancedb_or_die():
         sys.exit(6)
 
 
-# ---------------------------------------------------------------------------
-# L-09: pre-flight daemon detection (cmdline + socket-probe)
-# ---------------------------------------------------------------------------
-
-
 def pre_flight_daemon_alive(store_root: Path) -> tuple[bool, str | None]:
-    """Check whether the daemon is alive via cmdline match OR socket probe.
-
-    Returns (alive: bool, reason: str | None).
-    Both checks must report "not alive" for the migration to proceed.
-    """
-    # Check 1 — psutil cmdline scan.
     try:
         import psutil
         for proc in psutil.process_iter(["pid", "cmdline"]):
@@ -118,10 +54,8 @@ def pre_flight_daemon_alive(store_root: Path) -> tuple[bool, str | None]:
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
     except ImportError:
-        # psutil absent: skip cmdline check, rely on socket probe only.
         pass
 
-    # Check 2 — socket probe.
     sock_path = store_root / ".daemon.sock"
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
@@ -129,25 +63,16 @@ def pre_flight_daemon_alive(store_root: Path) -> tuple[bool, str | None]:
             probe.connect(str(sock_path))
         return True, "daemon socket responding"
     except FileNotFoundError:
-        # Socket file absent; daemon not running.
         pass
     except ConnectionRefusedError:
-        # Stale socket file, no listener.
         pass
     except OSError:
-        # Any other OS-level error (socket closed between stat and connect, etc.)
         pass
 
     return False, None
 
 
-# ---------------------------------------------------------------------------
-# Backup
-# ---------------------------------------------------------------------------
-
-
 def backup_lancedb(store_root: Path, ts: str) -> Path:
-    """Copy lancedb/ to lancedb.pre-migrate-{ts} via cp -a (APFS CoW)."""
     source = store_root / "lancedb"
     dest = store_root / f"lancedb.pre-migrate-{ts}"
     if platform.system() == "Darwin":
@@ -159,25 +84,16 @@ def backup_lancedb(store_root: Path, ts: str) -> Path:
     return dest
 
 
-# ---------------------------------------------------------------------------
-# Trash helper
-# ---------------------------------------------------------------------------
-
-
 def move_to_trash(path: Path, label: str) -> Path:
-    """Move path to system Trash. NEVER uses rm / unlink / rmtree."""
     if platform.system() == "Darwin":
-        # Prefer 'trash' CLI (Homebrew) for correct macOS Trash semantics.
         if subprocess.run(["which", "trash"], capture_output=True).returncode == 0:
             subprocess.run(["trash", str(path)], check=True)
             return Path.home() / ".Trash" / path.name
-        # Fallback: move directly into ~/.Trash with a label suffix.
         dest = Path.home() / ".Trash" / label
         import shutil
         shutil.move(str(path), str(dest))
         return dest
     else:
-        # Linux: prefer 'gio trash', else move to ~/.local/share/Trash/files/
         if subprocess.run(["which", "gio"], capture_output=True).returncode == 0:
             subprocess.run(["gio", "trash", str(path)], check=True)
             return Path("~/.local/share/Trash/files") / label
@@ -188,11 +104,6 @@ def move_to_trash(path: Path, label: str) -> Path:
         return dest
 
 
-# ---------------------------------------------------------------------------
-# Failure JSON
-# ---------------------------------------------------------------------------
-
-
 def write_failure_json(
     store_root: Path,
     ts: str,
@@ -201,7 +112,6 @@ def write_failure_json(
     hnsw_result: dict | None = None,
     backup_path: Path | None = None,
 ) -> Path:
-    """Write a diagnostic failure JSON to store_root/.migrate-FAILED-{ts}.json."""
     fail_path = store_root / f".migrate-FAILED-{ts}.json"
     payload = {
         "ts": datetime.now(timezone.utc).isoformat(),
@@ -227,16 +137,7 @@ def write_failure_json(
     return fail_path
 
 
-# ---------------------------------------------------------------------------
-#: rollback
-# ---------------------------------------------------------------------------
-
-
 def rollback(store_root: Path, ts: str | None) -> dict:
-    """Restore lancedb backup and move failed hippo tree to Trash.
-
-    If ts is None, find the most recent.migrate-FAILED-*.json in store_root.
-    """
     if ts is None:
         failed_files = sorted(
             store_root.glob(".migrate-FAILED-*.json"),
@@ -265,33 +166,19 @@ def rollback(store_root: Path, ts: str | None) -> dict:
 
     now_ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
-    # Step A: move the failed hippo tree to Trash.
     if hippo_path.exists():
         move_to_trash(hippo_path, f"hippo-failed-{now_ts}")
         print(f"Moved failed hippo tree to Trash")
 
-    # Step B: if a (possibly half-broken) lancedb tree still exists,
-    # move it to Trash first so the backup restore is clean.
     if failed_lance.exists():
         move_to_trash(failed_lance, f"lancedb-mid-migrate-{now_ts}")
         print(f"Moved partial lancedb tree to Trash")
 
-    # Step C: rename the backup over the original location.
     os.rename(str(backup_path), str(failed_lance))
     print(f"Restored {backup_path} -> {failed_lance}")
 
     return {"action": "rollback", "ts": ts, "restored_to": str(failed_lance)}
 
-
-# ---------------------------------------------------------------------------
-# Stream copy
-# ---------------------------------------------------------------------------
-
-# Per-table column maps: (lancedb_col, hippo_col, transform)
-# "embed" = encode float list/array -> float32 bytes
-# "bytes" = direct bytes copy
-# "ts" = datetime/Timestamp -> isoformat string
-# "direct" = pass through as-is
 
 _RECORDS_COLS = [
     ("id", "id", "direct"),
@@ -368,19 +255,15 @@ _TABLE_COLS: dict[str, list] = {
 
 
 def _transform_value(val: Any, transform: str) -> Any:
-    """Apply a per-column transform to a LanceDB row value."""
     if val is None:
         return None
     if transform == "embed":
-        # Encode float list/array -> float32 bytes BLOB for SQLite.
         return np.array(val, dtype=np.float32).tobytes()
     if transform == "bytes":
-        # Direct bytes copy (structure_hv etc.).
         if isinstance(val, (bytes, bytearray, memoryview)):
             return bytes(val)
         return val
     if transform == "ts":
-        # LanceDB datetime/Timestamp -> ISO-8601 string.
         if hasattr(val, "isoformat"):
             return val.isoformat()
         try:
@@ -392,17 +275,15 @@ def _transform_value(val: Any, transform: str) -> Any:
         except (ImportError, TypeError, ValueError):
             pass
         return str(val) if val is not None else None
-    # "direct": pass through.
     return val
 
 
 def _build_insert_or_ignore(table_name: str, col_defs: list) -> tuple[str, list[str]]:
-    """Build an INSERT OR IGNORE statement and the column name list."""
     hippo_cols = [d[1] for d in col_defs]
     placeholders = ", ".join("?" for _ in hippo_cols)
     col_names = ", ".join(hippo_cols)
     sql = (
-        f"INSERT OR IGNORE INTO {table_name} ({col_names}) VALUES ({placeholders})"  # nosemgrep
+        f"INSERT OR IGNORE INTO {table_name} ({col_names}) VALUES ({placeholders})"
     )
     return sql, hippo_cols
 
@@ -414,18 +295,11 @@ def stream_copy_table(
     batch_size: int,
     dry_run: bool = False,
 ) -> tuple[int, int]:
-    """Stream-copy one LanceDB table into HippoDB via raw INSERT OR IGNORE.
-
-    Returns (inserted, duplicates_skipped).
-    Bypasses HippoTable.add intentionally — the hnsw index is rebuilt in a
-    separate post-copy step so that individual add_items calls are avoided.
-    """
     col_defs = _TABLE_COLS.get(table_name)
     if col_defs is None:
         tee_print(f"  {table_name}: skipped (no column map defined)")
         return 0, 0
 
-    # Determine which source columns actually exist in this LanceDB table.
     try:
         lance_tbl = lance_db.open_table(table_name)
     except Exception:  # noqa: BLE001
@@ -435,9 +309,8 @@ def stream_copy_table(
     try:
         source_schema_names = set(lance_tbl.schema.names)
     except Exception:  # noqa: BLE001
-        source_schema_names = None  # will attempt all columns
+        source_schema_names = None
 
-    # Filter col_defs to only columns present in source schema.
     if source_schema_names is not None:
         filtered_defs = [(s, h, t) for s, h, t in col_defs if s in source_schema_names]
         if not filtered_defs:
@@ -465,7 +338,7 @@ def stream_copy_table(
         duplicates_in_batch = 0
         try:
             for row_values in batch:
-                cursor = hippo_conn.execute(sql, row_values)  # nosemgrep
+                cursor = hippo_conn.execute(sql, row_values)
                 if cursor.rowcount == 1:
                     inserted_in_batch += 1
                 else:
@@ -477,13 +350,9 @@ def stream_copy_table(
         batch = []
         return inserted_in_batch, duplicates_in_batch
 
-    # Iterate via to_batches for memory efficiency.
-    # LanceDB 0.30.x: use to_arrow().to_batches(max_chunksize=N) because
-    # LanceTable.to_batches() is not available on all installed versions.
     try:
         arrow_table = lance_tbl.to_arrow()
         for record_batch in arrow_table.to_batches(max_chunksize=batch_size):
-            # Convert pyarrow RecordBatch to list of dicts.
             batch_dict = record_batch.to_pydict()
             n_rows = record_batch.num_rows
             for i in range(n_rows):
@@ -496,12 +365,10 @@ def stream_copy_table(
                     ins, dup = _flush_batch()
                     total_inserted += ins
                     total_duplicates += dup
-        # Flush remaining rows.
         ins, dup = _flush_batch()
         total_inserted += ins
         total_duplicates += dup
     except Exception as exc:
-        # Try to flush what we have before propagating.
         try:
             ins, dup = _flush_batch()
             total_inserted += ins
@@ -515,30 +382,13 @@ def stream_copy_table(
     return total_inserted, total_duplicates
 
 
-# ---------------------------------------------------------------------------
-# Rebuild and persist hnsw index
-# ---------------------------------------------------------------------------
-
-
 def rebuild_and_persist_hnsw(hippo_db: Any) -> dict:
-    """Rebuild the hnswlib records index from SQLite and persist atomically.
-
-    After stream_copy populates the records table via raw INSERT OR IGNORE,
-    the in-memory hnswlib index has zero entries (because the script bypassed
-    HippoTable.add). This function rebuilds the index from the stored
-    vector_blob BLOBs in SQLite and saves the result to
-    ~/.iai-mcp/hippo/records.hnsw.
-
-    Verifies the saved file is loadable by a fresh hnswlib.Index.
-    """
     result: dict = {"action": "rebuild_and_save"}
 
     with hippo_db._hnsw_lock:
         rebuild_info = hippo_db._rebuild_index_from_sqlite()
         result["rebuilt_count"] = rebuild_info.get("rebuilt_count", 0)
 
-    # _rebuild_index_from_sqlite calls _save_index_atomic internally.
-    # Verify the resulting file is loadable on a fresh instance.
     import hnswlib
 
     hnsw_path = hippo_db._hnsw_path
@@ -559,20 +409,9 @@ def rebuild_and_persist_hnsw(hippo_db: Any) -> dict:
     return result
 
 
-# ---------------------------------------------------------------------------
-# Byte-strict verification
-# ---------------------------------------------------------------------------
-
-
 def verify_record_parity(lance_db: Any, hippo_conn: sqlite3.Connection) -> list[dict]:
-    """Verify all rows in all tables between LanceDB source and HippoDB target.
-
-    Returns a flat list of mismatch dicts across all tables. Empty = PASS.
-    Embedding comparison is byte-strict (tobytes() equality, NOT np.allclose).
-    """
     mismatches: list[dict] = []
 
-    # --- records ---
     try:
         lance_tbl = lance_db.open_table("records")
         lance_df = lance_tbl.to_pandas()
@@ -594,7 +433,6 @@ def verify_record_parity(lance_db: Any, hippo_conn: sqlite3.Connection) -> list[
                 })
                 continue
 
-            # Byte-strict embedding comparison.
             lance_emb = lr.get("embedding")
             if lance_emb is not None:
                 lance_bytes = np.array(lance_emb, dtype=np.float32).tobytes()
@@ -607,7 +445,6 @@ def verify_record_parity(lance_db: Any, hippo_conn: sqlite3.Connection) -> list[
                         "hippo_first_bytes": hippo_bytes[:32].hex(),
                     })
 
-            # structure_hv: bytes-equal.
             lance_hv = lr.get("structure_hv")
             if lance_hv is not None:
                 lance_hv_b = bytes(lance_hv) if isinstance(lance_hv, (bytes, bytearray, memoryview)) else b""
@@ -619,7 +456,6 @@ def verify_record_parity(lance_db: Any, hippo_conn: sqlite3.Connection) -> list[
                         "reason": "bytes mismatch",
                     })
 
-            # Encrypted columns: ciphertext bytes-equal (no re-decryption).
             for col in ("literal_surface", "provenance_json", "profile_modulation_gain_json"):
                 lv = lr.get(col)
                 hv = hr[col]
@@ -637,7 +473,6 @@ def verify_record_parity(lance_db: Any, hippo_conn: sqlite3.Connection) -> list[
                         "reason": "ciphertext mismatch",
                     })
 
-    # --- edges ---
     try:
         lance_edges = lance_db.open_table("edges").to_pandas()
     except Exception:  # noqa: BLE001
@@ -658,7 +493,6 @@ def verify_record_parity(lance_db: Any, hippo_conn: sqlite3.Connection) -> list[
                     "field": "<row>", "reason": "missing in hippo",
                 })
                 continue
-            # weight: float tolerance is acceptable (computed quantity, not stored bytes).
             lw = float(lr.get("weight", 0.0) or 0.0)
             hw = float(hr["weight"] or 0.0)
             if abs(lw - hw) > 1e-6:
@@ -668,7 +502,6 @@ def verify_record_parity(lance_db: Any, hippo_conn: sqlite3.Connection) -> list[
                     "lance": lw, "hippo": hw,
                 })
 
-    # --- events ---
     try:
         lance_events = lance_db.open_table("events").to_pandas()
     except Exception:  # noqa: BLE001
@@ -688,7 +521,6 @@ def verify_record_parity(lance_db: Any, hippo_conn: sqlite3.Connection) -> list[
                     "field": "<row>", "reason": "missing in hippo",
                 })
                 continue
-            # data_json: ciphertext bytes-equal.
             ld = lr.get("data_json")
             hd = hr["data_json"]
             if (ld is None) != (hd is None):
@@ -701,7 +533,6 @@ def verify_record_parity(lance_db: Any, hippo_conn: sqlite3.Connection) -> list[
                     "table": "events", "id": eid, "field": "data_json",
                     "reason": "ciphertext mismatch",
                 })
-            # source_ids_json: string equality.
             ls = lr.get("source_ids_json")
             hs = hr["source_ids_json"]
             if (ls is None) != (hs is None):
@@ -715,7 +546,6 @@ def verify_record_parity(lance_db: Any, hippo_conn: sqlite3.Connection) -> list[
                     "reason": "string mismatch",
                 })
 
-    # --- budget_ledger ---
     try:
         lance_budget = lance_db.open_table("budget_ledger").to_pandas()
     except Exception:  # noqa: BLE001
@@ -729,7 +559,6 @@ def verify_record_parity(lance_db: Any, hippo_conn: sqlite3.Connection) -> list[
                 "reason": f"row count mismatch: lance={len(lance_budget)} hippo={len(hippo_budget)}",
             })
 
-    # --- ratelimit_ledger ---
     try:
         lance_ratelimit = lance_db.open_table("ratelimit_ledger").to_pandas()
     except Exception:  # noqa: BLE001
@@ -744,11 +573,6 @@ def verify_record_parity(lance_db: Any, hippo_conn: sqlite3.Connection) -> list[
             })
 
     return mismatches
-
-
-# ---------------------------------------------------------------------------
-# Argument parsing
-# ---------------------------------------------------------------------------
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -802,11 +626,6 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-# ---------------------------------------------------------------------------
-# main
-# ---------------------------------------------------------------------------
-
-
 def main() -> None:
     global _log_fh
 
@@ -815,7 +634,6 @@ def main() -> None:
 
     store_root = Path(args.store).expanduser().resolve()
 
-    # L-08: open log file if requested.
     if args.log_file:
         try:
             _log_fh = open(args.log_file, "a", buffering=1, encoding="utf-8")  # noqa: SIM115
@@ -823,7 +641,6 @@ def main() -> None:
             print(f"ERROR: cannot open log file {args.log_file}: {exc}", file=sys.stderr)
             sys.exit(1)
 
-    #: rollback path.
     if args.rollback:
         result = rollback(store_root, args.rollback_ts)
         tee_print(f"Rollback complete: {result}")
@@ -838,9 +655,6 @@ def main() -> None:
     exit_code = 0
 
     try:
-        # ------------------------------------------------------------------
-        # Pre-flight
-        # ------------------------------------------------------------------
         tee_print("=== pre-flight ===")
 
         alive, reason = pre_flight_daemon_alive(store_root)
@@ -871,12 +685,8 @@ def main() -> None:
         tee_print("  daemon check: ok")
         tee_print(f"  source: {lance_root}")
 
-        # Lazy lancedb import (after pre-flight so daemon check runs first).
         lancedb = _import_lancedb_or_die()
 
-        # ------------------------------------------------------------------
-        # Backup
-        # ------------------------------------------------------------------
         tee_print("=== backup ===")
         if not args.dry_run:
             backup_path = backup_lancedb(store_root, ts)
@@ -885,21 +695,14 @@ def main() -> None:
             tee_print(f"  dry-run: would backup to {backup_path}")
         stage_results["backup"] = "ok"
 
-        # ------------------------------------------------------------------
-        # Open source and target connections
-        # ------------------------------------------------------------------
         tee_print("=== opening stores ===")
         lance_db = lancedb.connect(str(lance_root))
         tee_print(f"  LanceDB: {lance_root}")
 
-        # HippoDB with crypto_key_provider=None so ciphertext is copied byte-for-byte.
         from iai_mcp.hippo import HippoDB
         hippo_db = HippoDB(path=store_root, crypto_key_provider=None)
         tee_print(f"  HippoDB: {hippo_root}")
 
-        # ------------------------------------------------------------------
-        # Stream copy
-        # ------------------------------------------------------------------
         tee_print("=== stream copy ===")
         tables_ordered = ["records", "edges", "events", "budget_ledger", "ratelimit_ledger"]
         per_table_counts: dict[str, dict] = {}
@@ -921,7 +724,6 @@ def main() -> None:
 
         stage_results["stream_copy"] = per_table_counts
 
-        #: fail on fresh-run duplicates.
         if total_duplicates > 0 and not args.resume:
             mismatch_rows = [{
                 "phase": "stream_copy",
@@ -940,9 +742,6 @@ def main() -> None:
             )
             sys.exit(5)
 
-        # ------------------------------------------------------------------
-        # Rebuild hnsw index after stream copy
-        # ------------------------------------------------------------------
         tee_print("=== hnsw rebuild ===")
         if not args.dry_run:
             hnsw_result = rebuild_and_persist_hnsw(hippo_db)
@@ -952,9 +751,6 @@ def main() -> None:
             hnsw_result = {"action": "dry_run_skipped"}
             stage_results["hnsw_rebuild"] = hnsw_result
 
-        # ------------------------------------------------------------------
-        # Verification
-        # ------------------------------------------------------------------
         tee_print("=== verification ===")
         if not args.dry_run:
             mismatches = verify_record_parity(lance_db, hippo_db._conn)
@@ -977,9 +773,6 @@ def main() -> None:
             tee_print("  dry-run: skipping verification")
             stage_results["verification"] = "dry_run_skipped"
 
-        # ------------------------------------------------------------------
-        # Dry-run fast exit
-        # ------------------------------------------------------------------
         if args.dry_run:
             tee_print("=== dry-run complete ===")
             tee_print(
@@ -989,9 +782,6 @@ def main() -> None:
             tee_print("No changes made to disk.")
             return
 
-        # ------------------------------------------------------------------
-        # Confirm before trash-move
-        # ------------------------------------------------------------------
         if not args.yes:
             tee_print("")
             tee_print(
@@ -1006,9 +796,6 @@ def main() -> None:
                 tee_print("Aborted by user.")
                 return
 
-        # ------------------------------------------------------------------
-        # Trash-move lancedb/ and the backup
-        # ------------------------------------------------------------------
         tee_print("=== trash lancedb sources ===")
         move_to_trash(lance_root, f"lancedb-final-{ts}")
         tee_print(f"  moved {lance_root} to Trash")
@@ -1019,7 +806,6 @@ def main() -> None:
 
         stage_results["trash"] = "ok"
 
-        # Close HippoDB cleanly (saves hnsw index one more time).
         hippo_db.close()
         hippo_db = None
 

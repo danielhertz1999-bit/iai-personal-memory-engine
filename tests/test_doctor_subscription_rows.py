@@ -1,7 +1,3 @@
-"""doctor rows for Claude subscription credentials + anthropic
-SDK absence. Validates check_o + check_p behavior under each documented
-status (PASS, WARN, FAIL).
-"""
 from __future__ import annotations
 
 import json
@@ -14,7 +10,6 @@ import pytest
 
 
 def _write_valid_creds(creds_path: Path, sub_type: str = "max") -> None:
-    """Write a credentials.json file with the modern claudeAiOauth schema."""
     expires_at_ms = int(
         (datetime.now(tz=timezone.utc) + timedelta(days=365)).timestamp() * 1000
     )
@@ -30,14 +25,7 @@ def _write_valid_creds(creds_path: Path, sub_type: str = "max") -> None:
     }))
 
 
-# ---------------------------------------------------------------------------
-# check_o — subscription credentials presence + validity
-# ---------------------------------------------------------------------------
-
-
 def test_check_o_pass_on_valid_subscription(tmp_path, monkeypatch):
-    """a valid subscription credentials.json with inference scope
-    flips check_o to PASS."""
     from iai_mcp import claude_cli
     from iai_mcp.doctor import check_o_subscription_credentials
 
@@ -53,8 +41,6 @@ def test_check_o_pass_on_valid_subscription(tmp_path, monkeypatch):
 
 
 def test_check_o_warn_when_credentials_missing(tmp_path, monkeypatch):
-    """missing credentials.json -> WARN (advisory, not FAIL).
-    Daemon falls back to Tier-0; no LLM critic, no nightly insight."""
     from iai_mcp import claude_cli
     from iai_mcp.doctor import check_o_subscription_credentials
 
@@ -64,17 +50,13 @@ def test_check_o_warn_when_credentials_missing(tmp_path, monkeypatch):
 
     result = check_o_subscription_credentials()
     assert result.status == "WARN"
-    assert result.passed is True  # WARN is advisory, does not fail doctor exit
+    assert result.passed is True
     assert "credentials_file_missing" in result.detail
 
 
 def test_check_o_warn_when_credentials_expired_and_no_refresh_token(
     tmp_path, monkeypatch,
 ):
-    """expired accessToken AND missing refreshToken -> WARN. The
-    next claude -p call has no way to recover; surface the cause before
-    it bites. (Expired accessToken WITH refreshToken is healthy --
-    the CLI refreshes transparently.)"""
     from iai_mcp import claude_cli
     from iai_mcp.doctor import check_o_subscription_credentials
 
@@ -85,7 +67,6 @@ def test_check_o_warn_when_credentials_expired_and_no_refresh_token(
     creds.write_text(json.dumps({
         "claudeAiOauth": {
             "accessToken": "sk-ant-oat01-stub",
-            # No refreshToken -- the gate must fail closed.
             "expiresAt": expired_ms,
             "scopes": ["user:inference"],
             "subscriptionType": "max",
@@ -98,18 +79,9 @@ def test_check_o_warn_when_credentials_expired_and_no_refresh_token(
     assert "credentials_expired" in result.detail
 
 
-# ---------------------------------------------------------------------------
-# check_p — anthropic SDK absent
-# ---------------------------------------------------------------------------
-
-
 def test_check_p_warn_when_sdk_importable(monkeypatch):
-    """stale install where `anthropic` site-packages still resolves
-    -> WARN. Advisory only; daemon does not USE the SDK, but operator
-    should `pip uninstall anthropic` to keep the venv clean."""
     from iai_mcp.doctor import check_p_anthropic_sdk_absent
 
-    # Fake an importable anthropic module so the check sees it.
     fake_module = type(sys)("anthropic")
     monkeypatch.setitem(sys.modules, "anthropic", fake_module)
 
@@ -120,12 +92,8 @@ def test_check_p_warn_when_sdk_importable(monkeypatch):
 
 
 def test_check_p_pass_when_sdk_absent(monkeypatch):
-    """clean install where `import anthropic` raises
-    ImportError -> PASS. The expected state."""
     from iai_mcp.doctor import check_p_anthropic_sdk_absent
 
-    # Remove anthropic from sys.modules if present, then patch the import
-    # mechanism so even a fresh import fails.
     monkeypatch.delitem(sys.modules, "anthropic", raising=False)
 
     real_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
@@ -141,14 +109,7 @@ def test_check_p_pass_when_sdk_absent(monkeypatch):
     assert result.passed is True
 
 
-# ---------------------------------------------------------------------------
-# Wire-in: both rows are present in run_diagnosis() output
-# ---------------------------------------------------------------------------
-
-
 def test_run_diagnosis_includes_o_and_p_rows():
-    """run_diagnosis() includes (o) + (p) rows in the documented
-    position (after m/n, before z)."""
     from iai_mcp.doctor import run_diagnosis
 
     results = run_diagnosis()

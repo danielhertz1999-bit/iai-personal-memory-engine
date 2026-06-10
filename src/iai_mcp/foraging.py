@@ -1,10 +1,3 @@
-"""Proactive Internal Foraging.
-
-Detects weak bridges between communities and generates self-queries
-to fill knowledge gaps. Runs during daemon tick (throttled).
-
-Zero API cost: uses local graph analysis only.
-"""
 from __future__ import annotations
 
 import logging
@@ -20,11 +13,6 @@ def detect_weak_bridges(
     min_communities: int = 3,
     max_bridges: int = 5,
 ) -> list[dict]:
-    """Find community pairs with low inter-bridge connectivity.
-
-    Returns list of {"community_a": UUID, "community_b": UUID, "bridge_strength": float}
-    sorted by weakest first.
-    """
     from iai_mcp import retrieve
     from iai_mcp.store import EDGES_TABLE
 
@@ -86,13 +74,6 @@ def detect_weak_bridges(
 
 
 def forage_for_connections(store: MemoryStore, max_edges: int = 3) -> int:
-    """Generate new edges between weakly-connected communities.
-
-    Uses community centroids to find semantically plausible connections
-    between isolated clusters. Creates edges with provenance="self_foraging".
-
-    Returns count of new edges created.
-    """
     import numpy as np
 
     from iai_mcp import retrieve

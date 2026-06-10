@@ -1,23 +1,3 @@
-"""E2E WAKE-drain test for deferred-provenance buffer.
-
-Verifies that the deferred-provenance buffer at.deferred-provenance.jsonl
-is drained on daemon WAKE transitions, satisfying the invariant
-("every recall appends provenance") in production.
-
-Test cases:
-  - test_buffer_drains_on_wake: hot-path defer → explicit flush → buffer
-    empty + provenance entries land on records (simulates daemon WAKE drain).
-  - test_flush_idempotent_on_empty: flush on empty/missing buffer returns 0,
-    no exception, no store write.
-  - test_grep_production_callsite_exists: regression guard — daemon.py
-    source MUST literally contain "flush_deferred_provenance" so we never
-    silently de-wire the production call site again.
-
-Background: `flush_deferred_provenance` once had ZERO production call sites;
-a stale comment claimed it was "flushed during SLEEP" but no SLEEP step
-called it, so the buffer file grew unboundedly. The flush is now wired into
-the daemon WAKE handler, homologous to drain_deferred_captures.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -34,7 +14,6 @@ from iai_mcp.types import EMBED_DIM, MemoryRecord
 
 
 class _PerfEmbedder:
-    """Deterministic sha256-based embedder, copy of test_pipeline_perf helper."""
 
     DIM = EMBED_DIM
 
@@ -82,7 +61,6 @@ def _make_rec(vec: list[float], text: str, tags: list[str]) -> MemoryRecord:
 
 
 def _seed_small_store(path, n: int = 20, seed: int = 0):
-    """Seed a small MemoryStore + runtime graph for fast E2E tests."""
     from iai_mcp.retrieve import build_runtime_graph
     from iai_mcp.store import MemoryStore
 
@@ -102,28 +80,12 @@ def _seed_small_store(path, n: int = 20, seed: int = 0):
 
 
 def test_buffer_drains_on_wake(tmp_path, monkeypatch):
-    """End-to-end: recall defers → flush drains → buffer empty + provenance lands.
-
-    Simulates the daemon WAKE-handler drain by calling
-    `flush_deferred_provenance(store)` directly (unit-scope; no FSM).
-    Verifies the contract: every returned hit has a provenance
-    entry tagged with the session_id used in the recall.
-
-    Opts out of the conftest's `defer_provenance` auto-flush fixture so the
-    buffer file is observable mid-test (the whole point of this test is to
-    verify the deferred-then-drained lifecycle of that file). Seed runs
-    BEFORE the env var is set so the records/edges auto-flush stays active
-    during inserts; only the post-seed recall path observes the deferred
-    JSONL buffer.
-    """
     from iai_mcp.pipeline import recall_for_response
 
     store, embedder, graph, assignment, rich_club = _seed_small_store(
         tmp_path, n=20, seed=0,
     )
 
-    # Opt out of conftest auto-flushes AFTER seeding so the recall below
-    # leaves the deferred buffer un-drained (which is what this test asserts).
     monkeypatch.setenv("IAI_MCP_TEST_NO_AUTOFLUSH", "1")
     session = "wake-drain-test"
 
@@ -167,7 +129,6 @@ def test_buffer_drains_on_wake(tmp_path, monkeypatch):
 
 
 def test_flush_idempotent_on_empty(tmp_path):
-    """flush_deferred_provenance returns 0 on missing/empty buffer, no raise."""
     from iai_mcp.store import MemoryStore
 
     store = MemoryStore(path=tmp_path)
@@ -183,11 +144,6 @@ def test_flush_idempotent_on_empty(tmp_path):
 
 
 def test_grep_production_callsite_exists():
-    """Regression guard: daemon.py source MUST reference flush_deferred_provenance.
-
-    Catches future de-wiring of the production call site. Skipped if running
-    from a sdist install where src/ is not on disk relative to repo root.
-    """
     repo_root = Path(__file__).resolve().parent.parent
     daemon_src = repo_root / "src" / "iai_mcp" / "daemon.py"
     if not daemon_src.exists():

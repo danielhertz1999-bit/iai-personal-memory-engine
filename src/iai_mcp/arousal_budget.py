@@ -1,21 +1,3 @@
-"""Arousal-based dynamic budget + Basta constraint.
-
-Connects the token budget for recall to an internal "stress" variable,
-implementing Beer's VSM arousal-based resource allocation:
-
-- High stress (many failed recalls, errors, rapid queries):
-  Monotropic tunneling — 1 hop, high rank, narrow focus
-- Low stress (successful recalls, idle, stable):
-  Associative dreaming — 2 hops, low rank threshold, broad exploration
-
-The Basta constraint (S5 says "no") limits write throughput when the
-system's variety exceeds its capacity to absorb new information —
-preventing information overload that degrades retrieval quality.
-
-Somatic Markers: The arousal level IS the somatic marker — it encodes
-the system's "gut feeling" about whether to explore broadly or focus
-narrowly based on accumulated experience.
-"""
 from __future__ import annotations
 
 import logging
@@ -59,18 +41,6 @@ class RetrievalParams:
 
 
 def update_arousal(state: ArousalState, event: str) -> ArousalState:
-    """Update arousal level based on system event.
-
-    Events that increase arousal (stress):
-    - 'recall_failed': retrieval returned empty
-    - 'error': exception in hot path
-    - 'rapid_query': queries arriving faster than 1/sec
-
-    Events that decrease arousal (calm):
-    - 'recall_success': retrieval found hits
-    - 'idle': no activity for >30s
-    - 'sleep_complete': consolidation finished
-    """
     now = time.time()
     elapsed = now - state.last_updated
     state.level *= AROUSAL_DECAY_RATE ** elapsed
@@ -98,11 +68,6 @@ def update_arousal(state: ArousalState, event: str) -> ArousalState:
 
 
 def compute_retrieval_params(arousal: ArousalState) -> RetrievalParams:
-    """Derive retrieval parameters from current arousal level.
-
-    High arousal → monotropic tunneling (focused, shallow, high threshold)
-    Low arousal → associative exploration (broad, deep, low threshold)
-    """
     level = arousal.level
 
     if level >= STRESS_THRESHOLD_HIGH:
@@ -136,12 +101,6 @@ def basta_check(
     total_records: int,
     community_count: int,
 ) -> bool:
-    """S5 Basta constraint: should the system refuse new writes?
-
-    Returns True when variety exceeds capacity:
-    - Too many writes per minute (flooding)
-    - Records/community ratio too high (communities can't absorb)
-    """
     if writes_last_minute > BASTA_WRITE_CAP_PER_MINUTE:
         logger.info("Basta: write rate %d/min exceeds cap %d", writes_last_minute, BASTA_WRITE_CAP_PER_MINUTE)
         return True

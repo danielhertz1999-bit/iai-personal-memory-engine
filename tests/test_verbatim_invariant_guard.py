@@ -1,8 +1,3 @@
-"""v6.0 prerequisite: verbatim invariant guard.
-
-Verifies that literal_surface is byte-exact after insert → recall roundtrip.
-Must pass BEFORE any v6.0 refactoring begins.
-"""
 from __future__ import annotations
 
 import sys
@@ -11,10 +6,9 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
-from test_store import _make  # reuse project's existing helper
+from test_store import _make
 
 from iai_mcp.store import MemoryStore
-
 
 TRICKY_STRINGS = [
     "simple ascii text",
@@ -28,10 +22,8 @@ TRICKY_STRINGS = [
     "path: /home/alice/.iai-mcp/store/records.lance",
 ]
 
-
 def _record(text: str):
     return _make(text=text)
-
 
 @pytest.mark.parametrize("text", TRICKY_STRINGS, ids=[s[:30] for s in TRICKY_STRINGS])
 def test_literal_surface_roundtrip_exact(tmp_path, text):
@@ -47,7 +39,6 @@ def test_literal_surface_roundtrip_exact(tmp_path, text):
         f"  Got:      {got.literal_surface!r}"
     )
 
-
 def test_literal_surface_survives_multiple_inserts(tmp_path):
     store = MemoryStore(str(tmp_path))
     originals = {}
@@ -59,7 +50,6 @@ def test_literal_surface_survives_multiple_inserts(tmp_path):
     for rid, expected in originals.items():
         got = store.get(rid)
         assert got.literal_surface == expected, f"MEM-01 violation on record {rid}"
-
 
 def test_literal_surface_not_trimmed(tmp_path):
     store = MemoryStore(str(tmp_path))

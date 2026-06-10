@@ -1,36 +1,3 @@
-"""Regression: source_uuid-keyed idempotency prevents re-emission duplicates.
-
-Scenario (the root bug):
-  The per-turn hook fires multiple times on the same session. When the
-  offset file is empty or missing (observed on remote sessions), the hook
-  re-reads from line 0 and re-emits turns it already emitted earlier — each
-  time with a fresh ``now()`` timestamp, which was the old ``ts`` stamped on
-  the event. The old ``(session, role, ts, text)`` idem key is now() at
-  emit-time, so every re-emission got a *different* key → different store
-  rows → duplicates.
-
-  The fix: hook emits the transcript line's native ``uuid`` as
-  ``source_uuid``. ``capture_turn`` builds the idem key from
-  ``source_uuid`` when present: ``session_id|role|source_uuid``. Same
-  transcript line → same uuid → same idem key → second insert is
-  ``status=reinforced`` → no duplicate row.
-
-Contracts verified here:
-  (A) Same source_uuid emitted twice via capture_turn → exactly ONE store row.
-  (B) Two distinct source_uuids (even identical text) → TWO store rows
-      (verbatim 1:1 preserved — genuinely distinct turns are NOT collapsed).
-  (C) No source_uuid at all (fallback, test-fixture style) → behaves as
-      before: identical (session, role, ts, text) tuple deduplicates, but
-      two calls with different ts produce two rows.
-  (D) Cross-path dedup: drain_deferred_captures draining a file that
-      contains source_uuid for a turn already inserted by capture_turn
-      returns status=reinforced (1 row) — not a second row. This is the
-      scenario where drain_active ingests during the session and
-      drain_deferred ingests after the session rename.
-
-SAFETY: uses tmp HOME / IAI_MCP_STORE only; never touches ~/.iai-mcp/ or
-the live daemon socket.
-"""
 from __future__ import annotations
 
 import json
@@ -46,13 +13,12 @@ pytestmark = pytest.mark.skipif(
 )
 
 SESSION_ID = "cccccccc-cccc-cccc-cccc-cccccccccccc"
-TRANSCRIPT_TS = "2026-05-31T17:41:01.968Z"   # real transcript format with Z suffix
+TRANSCRIPT_TS = "2026-05-31T17:41:01.968Z"
 TURN_TEXT = "маркер один — unique marker for re-emission idem test"
 
 
 @pytest.fixture
 def iai_home(tmp_path, monkeypatch):
-    """Redirect HOME to tmp_path so no test touches ~/.iai-mcp."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("PYTHON_KEYRING_BACKEND", "keyring.backends.fail.Keyring")
     monkeypatch.setenv("IAI_MCP_CRYPTO_PASSPHRASE", "test-source-uuid-idem-passphrase")
@@ -69,14 +35,7 @@ def _open_store():
     return MemoryStore()
 
 
-# ---------------------------------------------------------------------------
-# (A) Same source_uuid twice -> exactly one row
-# ---------------------------------------------------------------------------
-
-
 def test_same_uuid_twice_is_one_row(iai_home):
-    """Calling capture_turn twice with the same source_uuid yields exactly one
-    store row — the second call returns status=reinforced."""
     from iai_mcp.capture import capture_turn
 
     store = _open_store()
@@ -94,8 +53,6 @@ def test_same_uuid_twice_is_one_row(iai_home):
     )
     assert r1["status"] == "inserted", f"First emit must insert; got {r1}"
 
-    # Simulate re-emission: same transcript line, fresh now() ts (as the old
-    # hook would produce), but same source_uuid.
     fresh_ts = datetime.now(timezone.utc).isoformat()
     r2 = capture_turn(
         store,
@@ -104,7 +61,7 @@ def test_same_uuid_twice_is_one_row(iai_home):
         tier="episodic",
         session_id=SESSION_ID,
         role="user",
-        ts=fresh_ts,   # different ts — the bug scenario
+        ts=fresh_ts,
         source_uuid=SRC_UUID,
     )
     assert r2["status"] == "reinforced", (
@@ -116,7 +73,6 @@ def test_same_uuid_twice_is_one_row(iai_home):
         "Reinforced record_id must equal the original inserted id"
     )
 
-    # Only one row in the store.
     turns = store.recent_user_turns(n=50, session_id=SESSION_ID)
     matching = [t for t in turns if TURN_TEXT in (t.literal_surface or "")]
     assert len(matching) == 1, (
@@ -124,11 +80,8 @@ def test_same_uuid_twice_is_one_row(iai_home):
         f"Duplicate rows indicate idem dedup is broken: {[t.literal_surface for t in matching]}"
     )
 
-    # created_at must reflect the transcript timestamp, not now().
     rec = matching[0]
     assert rec.created_at is not None
-    # The transcript ts "2026-05-31T17:41:01.968Z" parses to 2026-05-31 17:41:01 UTC.
-    # Verify year/date are correct (not today's now()).
     assert rec.created_at.year == 2026, (
         f"created_at year should be 2026 (transcript time); got {rec.created_at}"
     )
@@ -138,14 +91,7 @@ def test_same_uuid_twice_is_one_row(iai_home):
     assert rec.created_at.minute == 41
 
 
-# ---------------------------------------------------------------------------
-# (B) Two distinct uuids (identical text) -> two rows (verbatim 1:1)
-# ---------------------------------------------------------------------------
-
-
 def test_distinct_uuids_same_text_are_two_rows(iai_home):
-    """Two genuinely distinct transcript lines (distinct uuid, same text)
-    must each produce their own store row — verbatim 1:1 invariant."""
     from iai_mcp.capture import capture_turn
 
     store = _open_store()
@@ -192,14 +138,7 @@ def test_distinct_uuids_same_text_are_two_rows(iai_home):
     )
 
 
-# ---------------------------------------------------------------------------
-# (C) No source_uuid fallback: (session, role, ts, text) key still works
-# ---------------------------------------------------------------------------
-
-
 def test_no_uuid_fallback_same_ts_text_is_one_row(iai_home):
-    """Without source_uuid the idem key falls back to (session, role, ts, text).
-    Same (session, role, ts, text) twice -> one row (existing test-fixture path)."""
     from iai_mcp.capture import capture_turn
 
     store = _open_store()
@@ -238,8 +177,6 @@ def test_no_uuid_fallback_same_ts_text_is_one_row(iai_home):
 
 
 def test_no_uuid_fallback_different_ts_is_two_rows(iai_home):
-    """Without source_uuid, different ts -> different idem key -> two rows.
-    This confirms the fallback doesn't over-collapse distinct no-uuid turns."""
     from iai_mcp.capture import capture_turn
 
     store = _open_store()
@@ -274,21 +211,7 @@ def test_no_uuid_fallback_different_ts_is_two_rows(iai_home):
     )
 
 
-# ---------------------------------------------------------------------------
-# (D) Cross-path dedup: drain_deferred_captures + prior capture_turn
-# ---------------------------------------------------------------------------
-
-
 def test_drain_deferred_deduplicates_already_inserted_uuid(iai_home):
-    """Cross-path scenario: a turn inserted directly by capture_turn (uuid key)
-    must not create a duplicate row when drain_deferred_captures later processes
-    a deferred file that contains the same source_uuid.
-
-    This covers the case where drain_active ingests a turn during the live
-    session (uuid key stamped) and then after the session ends drain_deferred
-    processes the renamed.live-{epoch}.jsonl containing the same source_uuid.
-    The two paths must compute the SAME idem key and produce exactly 1 row.
-    """
     from iai_mcp.capture import capture_turn, drain_deferred_captures
 
     store = _open_store()
@@ -297,7 +220,6 @@ def test_drain_deferred_deduplicates_already_inserted_uuid(iai_home):
     TEXT = "cross-path dedup test: drain_deferred must not re-insert uuid-keyed turn"
     SESSION = "dddddddd-dddd-dddd-dddd-dddddddddddd"
 
-    # Step 1: capture_turn inserts (simulates drain_active mid-session).
     r1 = capture_turn(
         store,
         cue="drain_active path",
@@ -311,8 +233,6 @@ def test_drain_deferred_deduplicates_already_inserted_uuid(iai_home):
     assert r1["status"] == "inserted", f"First insert must succeed; got {r1}"
     record_id_1 = r1["record_id"]
 
-    # Step 2: write a deferred-format.jsonl file containing the same event
-    # (simulates the renamed.live-{epoch}.jsonl after session end).
     deferred_dir = iai_home / ".iai-mcp" / ".deferred-captures"
     deferred_dir.mkdir(parents=True, exist_ok=True)
     drain_file = deferred_dir / f"{SESSION}-1234567890.jsonl"
@@ -334,11 +254,8 @@ def test_drain_deferred_deduplicates_already_inserted_uuid(iai_home):
         fh.write(json.dumps(header) + "\n")
         fh.write(json.dumps(event) + "\n")
 
-    # Step 3: run drain_deferred_captures.
     counts = drain_deferred_captures(store)
 
-    # The event must be reinforced (not re-inserted) because its uuid matches
-    # the idem tag already stamped on the row from step 1.
     assert counts["events_reinforced"] == 1, (
         f"drain_deferred must reinforce (not re-insert) a turn already captured "
         f"by uuid key; got counts={counts!r}.  events_inserted>0 indicates the "
@@ -349,7 +266,6 @@ def test_drain_deferred_deduplicates_already_inserted_uuid(iai_home):
         f"No new inserts expected; got counts={counts!r}"
     )
 
-    # Still exactly 1 row for this text in the store.
     turns = store.recent_user_turns(n=50, session_id=SESSION)
     matching = [t for t in turns if TEXT in (t.literal_surface or "")]
     assert len(matching) == 1, (
@@ -358,19 +274,7 @@ def test_drain_deferred_deduplicates_already_inserted_uuid(iai_home):
     )
 
 
-# ---------------------------------------------------------------------------
-# Read-time ts normalization matches drain-time idem-tag
-# ---------------------------------------------------------------------------
-
-
 def test_dedup_with_ts_microsecond_normalization(iai_home):
-    """Live event with .000000 microseconds is deduped after drain.
-
-    Takes a live event whose ts has .000000 microseconds and NO source_uuid.
-    Drains it into the store, then calls recent_user_turns with
-    pending_live_events. The same turn must appear exactly once (count == 1),
-    proving ev['ts_iso'] == drain-time ts_iso.
-    """
     from iai_mcp.capture import (
         drain_deferred_captures,
         read_pending_live_events,
@@ -384,12 +288,8 @@ def test_dedup_with_ts_microsecond_normalization(iai_home):
 
     store = _open_store()
 
-    # Step 1: write to live file with.000000 microseconds, no source_uuid
     write_deferred_event(session, "user", text, ts=ts_microsec)
 
-    # Step 2: drain by moving to a named file and draining it
-    # Use write_deferred_captures + drain_deferred_captures path (ended file)
-    # We need a *.jsonl (not.live.jsonl) file — create one manually
     deferred_dir = iai_home / ".iai-mcp" / ".deferred-captures"
     deferred_dir.mkdir(parents=True, exist_ok=True)
     drain_file = deferred_dir / f"{session}-drain-1234567890.jsonl"
@@ -405,7 +305,6 @@ def test_dedup_with_ts_microsecond_normalization(iai_home):
         "tier": "episodic",
         "role": "user",
         "ts": ts_microsec,
-        # No source_uuid — forces fallback (session|role|ts|text) idem key
     }
     with drain_file.open("w", encoding="utf-8") as fh:
         fh.write(json.dumps(header_d) + "\n")
@@ -416,7 +315,6 @@ def test_dedup_with_ts_microsecond_normalization(iai_home):
         f"drain must insert the turn; got counts={counts!r}"
     )
 
-    # Step 3: call recent_user_turns with pending_live_events
     pending = read_pending_live_events(session_id=session)
     turns = store.recent_user_turns(10, session_id=session, pending_live_events=pending)
 

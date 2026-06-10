@@ -1,35 +1,3 @@
-"""11-knob profile registry: 10 autistic-kernel (AUTIST-01..14, excluding removed entries) +
-MCP-12 wake_depth operator knob.
-
-MCP-12 wake_depth was added as the operator-facing knob that selects session-start payload
-size. AUTIST-02/08/11/12 were removed when their dead-code status was confirmed
-(sensory_channel_weights, event_vs_time_cue, alexithymia_accommodation, double_empathy).
-double_empathy was promoted to a passive system invariant; event_vs_time_cue was documented
-as a deferred future capability.
-
-Registry shape:
-- 10 live autistic-kernel knobs (AUTIST-01,03,04,05,06,07,09,10,13,14)
-- 1 live operator knob (MCP-12 wake_depth, default "minimal")
-- 0 deferred
-
-The registry is a module-level frozen-dataclass dict so
-   1. `assert len(PROFILE_KNOBS) == 11`
-   2. test_profile.py can grep exact knob names in order
-   3. Session-start assembler reads the live subset in O(1)
-
-Schema validation covers:
-- `enum:a|b|c`            -- value must be exactly one of the listed tokens
-- `bool`                  -- isinstance(value, bool)
-- `int_range:lo..hi`      -- integer in [lo, hi] inclusive
-- `float_range:lo..hi`    -- float in [lo, hi] inclusive
-- `dict:<keytype>:<valuetype>` -- per-key recursive validation
-                                  (e.g. `dict:str:float_range:0.0..1.0`)
-- anything else           -- reject (typo guard)
-
-Bayesian self-tuning mechanism exposed via two helpers:
-- bayesian_update: weighted ensemble posterior update
-- profile_modulation_for_record: per-record edge-weight gain dict
-"""
 from __future__ import annotations
 
 import copy
@@ -37,31 +5,22 @@ from dataclasses import dataclass
 from typing import Any
 
 
-# --------------------------------------------------------------------- schema
 @dataclass(frozen=True)
 class KnobSpec:
-    """Static spec for one autistic-kernel knob."""
 
     name: str
-    phase: int                 # 1 | 2 | 3
-    default: Any               # Phase-1 default, or Phase-2/3 placeholder default
+    phase: int
+    default: Any
     description: str
-    value_schema: str          # "enum:a|b|c" | "bool" | "int_range:0..5" | "float_range:0.0..1.0"
-    requirement_id: str        # AUTIST-01..14
+    value_schema: str
+    requirement_id: str
 
 
-# ------------------------------------------------------------------ registry
-# 11 sealed knobs: 10 autistic-kernel + MCP-12 wake_depth operator knob.
-# AUTIST-02 sensory_channel_weights, AUTIST-08 event_vs_time_cue,
-# AUTIST-11 alexithymia_accommodation, AUTIST-12 double_empathy were removed
-# when their dead-code status was confirmed.
-# AUTIST-13 camouflaging_relaxation was flipped to phase=1 (live).
-# wake_depth (MCP-12) was appended as the sealed operator-facing knob.
 PROFILE_KNOBS: dict[str, KnobSpec] = {
     "monotropism_depth": KnobSpec(
         "monotropism_depth",
         1,
-        {},  # per-domain dict; empty default (unknown domains -> no gain)
+        {},
         "Monotropism depth per domain (voluntary tunnel; HIPPEA precision)",
         "dict:str:float_range:0.0..1.0",
         "AUTIST-01",
@@ -139,18 +98,13 @@ PROFILE_KNOBS: dict[str, KnobSpec] = {
         "bool",
         "AUTIST-14",
     ),
-    # MCP-12 wake_depth (operator-facing, not autistic-kernel).
-    # wake_depth drives session-start payload size. minimal (default) = <=30 raw
-    # tok pointer handle (lazy; brain stays server-side); standard = Phase-1
-    # 1388 tok eager dump (back-compat); deep = <=2000 tok expanded rich_club.
-    # Set via existing profile_get_set tool; no new MCP surface.
     "wake_depth": KnobSpec(
         "wake_depth",
-        1,  # phase -- live
+        1,
         "minimal",
         (
             "Session-start payload size: minimal=<=30 raw (lazy, default), "
-            "standard=Phase-1 eager (back-compat), deep=<=2000 (full)"
+            "standard=eager (back-compat), deep=<=2000 (full)"
         ),
         "enum:minimal|standard|deep",
         "MCP-12",
@@ -169,9 +123,6 @@ PHASE_3_DEFERRED: frozenset[str] = frozenset(
 )
 
 
-# 11-knob shape is load-bearing. Enforced at import time.
-# AUTIST-02/08/11/12 removed; AUTIST-13 flipped live; MCP-12 wake_depth appended.
-# Final shape: 10 AUTIST + 1 MCP-12 wake_depth = 11 sealed knobs.
 assert len(PROFILE_KNOBS) == 11, (
     "10 autistic-kernel knobs + wake_depth = 11 sealed entries"
 )
@@ -182,7 +133,6 @@ assert len(PHASE_2_DEFERRED) == 0, "PHASE_2_DEFERRED must be empty"
 assert len(PHASE_3_DEFERRED) == 0, "PHASE_3_DEFERRED must be empty"
 
 
-# Bayesian signal weights
 SIGNAL_WEIGHT: dict[str, float] = {
     "implicit": 0.3,
     "inferred": 0.5,
@@ -190,27 +140,10 @@ SIGNAL_WEIGHT: dict[str, float] = {
 }
 
 
-# Profile sentinel UUID -- target node for every profile_modulates edge.
-# Deterministic so the edges table can be scanned without a side table. The
-# UUID is ff-nonsense so no record ever collides with it.
 PROFILE_SENTINEL_UUID_STR = "00000000-0000-0000-0000-0000000000f1"
 
 
-# --------------------------------------------------------------------- state
 def default_state() -> dict[str, Any]:
-    """Initial per-process state: the live knobs with their defaults.
-
-    Deferred knobs do not appear in state because profile_set rejects them;
-    profile_get on a deferred knob returns status/phase/requirement_id directly
-    from the registry.
-
-    Each call deep-copies the registry defaults so two states never share a
-    mutable default object (e.g. the empty per-domain dict for monotropism_depth).
-    Without the copy, an in-place mutation of one returned state's mutable value
-    would pollute every subsequent call AND the registry default for the whole
-    process lifetime. Scalar immutables (str/bool/float) copy to equal values, so
-    this is behaviour-preserving for correct callers.
-    """
     return {
         name: copy.deepcopy(spec.default)
         for name, spec in PROFILE_KNOBS.items()
@@ -218,15 +151,8 @@ def default_state() -> dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------- validation
 def _validate(schema: str, value: Any) -> tuple[bool, str]:
-    """Return (ok, reason). Reason empty on success.
-
-    Extends validators to support `dict:<keytype>:<valuetype>`
-    via recursive per-key validation. Unknown schemas (typos) are rejected.
-    """
     if schema == "bool":
-        # Note: `isinstance(True, int)` is True in Python, so check bool first.
         if isinstance(value, bool):
             return True, ""
         return False, f"value must be bool, got {type(value).__name__}"
@@ -283,21 +209,10 @@ def _validate(schema: str, value: Any) -> tuple[bool, str]:
                 return False, f"in key {k!r}: {reason}"
         return True, ""
 
-    # Unknown schema -> reject (covers accidental typos in KnobSpec.value_schema).
     return False, f"unknown value_schema {schema!r}"
 
 
-# ------------------------------------------------------------- public surface
 def profile_get(knob: str | None, state: dict[str, Any]) -> dict:
-    """Read a knob (or the full registry surface).
-
-    - knob=None -> full registry: {live: {11}, deferred: {0}, total_knobs: 11}.
-    - knob in PHASE_1_LIVE -> {"knob": n, "value": state[n]}.
-    - knob in deferred (P3) -> status/phase/requirement_id payload.
-    - unknown knob -> {"knob": n, "status": "unknown"}.
-
-    total_knobs is 11 (10 AUTIST + wake_depth) after AUTIST-02/08/11/12 removal.
-    """
     if knob is None:
         live = {
             n: state.get(n, PROFILE_KNOBS[n].default)
@@ -337,21 +252,6 @@ def profile_set(
     *,
     store: "object | None" = None,
 ) -> dict:
-    """Write a live knob. Rejects unknown/deferred/invalid-value writes.
-
-    Rule priority:
-      1. unknown knob  -> {"status": "error", "reason": "unknown knob"}
-      2. Phase-2 knob  -> {"status": "error", "reason": "deferred to Phase 2"}
-         (PHASE_2_DEFERRED is empty but the branch is retained for safety.)
-      3. Phase-3 knob  -> {"status": "error", "reason": "deferred to Phase 3"}
-      4. schema fail   -> {"status": "error", "reason": <validator message>}
-      5. success       -> mutates state; returns {"status": "ok", knob, value}
-
-    When ``store`` is provided AND the write actually changes the value, emit
-    ``kind='profile_updated'`` so profile-variance can be computed live.
-    No-op writes (old == new) do NOT emit (avoid event flood). The ``store``
-    kwarg is optional so old callers keep working unchanged.
-    """
     if knob not in PROFILE_KNOBS:
         return {"status": "error", "reason": "unknown knob", "knob": knob}
 
@@ -359,14 +259,14 @@ def profile_set(
     if spec.phase == 2:
         return {
             "status": "error",
-            "reason": "deferred to Phase 2",
+            "reason": "deferred",
             "knob": knob,
             "requirement_id": spec.requirement_id,
         }
     if spec.phase == 3:
         return {
             "status": "error",
-            "reason": "deferred to Phase 3",
+            "reason": "deferred",
             "knob": knob,
             "requirement_id": spec.requirement_id,
         }
@@ -383,7 +283,6 @@ def profile_set(
     old_value = state.get(knob, spec.default)
     state[knob] = value
 
-    # Emit only on actual change to avoid no-op flood.
     if store is not None and old_value != value:
         try:
             from datetime import datetime, timezone
@@ -401,13 +300,9 @@ def profile_set(
                 severity="info",
             )
         except (OSError, RuntimeError, ValueError):
-            # Diagnostic only: never block the profile_set on emit failure.
             pass
 
     return {"status": "ok", "knob": knob, "value": value}
-
-
-# ---------------------------------------------------------------- Bayesian
 
 
 def bayesian_update(
@@ -417,20 +312,6 @@ def bayesian_update(
     state: dict,
     posterior: dict,
 ) -> tuple[Any, dict]:
-    """Weighted-ensemble posterior update on a knob value.
-
-    Conjugate-prior form per schema type:
-      - bool        -> Beta(alpha, beta); alpha += w*obs, beta += w*(1-obs)
-                       New value is the Beta mode (alpha > beta -> True).
-      - enum        -> Dirichlet(alphas); alphas[obs] += w
-                       New value is argmax(alphas).
-      - float_range -> Normal mean via weighted running average
-      - int_range   -> rounded weighted running average
-      - dict:...    -> per-key recursive update (observed must also be a dict)
-
-    Returns (new_value, new_posterior). `posterior` is a dict keyed by knob
-    name with an internal per-knob sub-dict carrying alpha/beta/alphas/mean/n.
-    """
     w = SIGNAL_WEIGHT.get(signal, 0.0)
     if w == 0.0:
         return state.get(knob, PROFILE_KNOBS[knob].default if knob in PROFILE_KNOBS else None), posterior
@@ -453,7 +334,6 @@ def bayesian_update(
         elif observed is False:
             beta += w
         else:
-            # Invalid observation for bool; degrade silently.
             return current, p
         kp["alpha"] = alpha
         kp["beta"] = beta
@@ -465,12 +345,10 @@ def bayesian_update(
             return current, p
         alphas[observed] = alphas.get(observed, 1.0) + w
         kp["alphas"] = alphas
-        # Seed with current as implicit prior boost if no entries yet.
         if current in allowed and current not in alphas:
             alphas[current] = alphas.get(current, 1.0) + 0.001
         new_value = max(alphas.keys(), key=lambda k: alphas[k])
     elif sch.startswith("float_range:"):
-        # Weighted running mean.
         try:
             obs_f = float(observed)
         except (TypeError, ValueError):
@@ -480,7 +358,6 @@ def bayesian_update(
         new_sum = prev_sum + w * obs_f
         new_wts = prev_wts + w
         mean = new_sum / new_wts if new_wts > 0 else obs_f
-        # Clamp to the schema range.
         bounds = sch[len("float_range:"):]
         lo_s, hi_s = bounds.split("..")
         lo, hi = float(lo_s), float(hi_s)
@@ -507,7 +384,6 @@ def bayesian_update(
         kp["total_weight"] = new_wts
         kp["mean"] = mean
     elif sch.startswith("dict:"):
-        # Per-key recursive update. `observed` must be dict-of-same-shape.
         if not isinstance(observed, dict):
             return current, p
         body = sch[len("dict:"):]
@@ -515,7 +391,6 @@ def bayesian_update(
         per_key_posts: dict[str, dict] = dict(kp.get("per_key", {}))
         current_dict: dict = dict(current) if isinstance(current, dict) else {}
         for k, v in observed.items():
-            # Mini-recursion: synthesise a float-style update for the inner value.
             sub_spec = val_type
             sub_kp = dict(per_key_posts.get(k, {}))
             if sub_spec.startswith("float_range:"):
@@ -547,43 +422,14 @@ def bayesian_update(
     return new_value, p
 
 
-# ---------------------------------------------------------------- gain
-
-
 def profile_modulation_for_record(
     record,
     profile_state: dict,
     *,
     knobs_applied: dict | None = None,
 ) -> dict[str, float]:
-    """Compute edge-weight gain dict for a record.
-
-    Returned gains are multiplicative (>=1.0 means amplify, <1.0 means damp).
-    Keys match the knob name. Empty dict means no active modulation.
-
-    Current gain sources:
-    - `monotropism_depth`: gain = 1.0 + depth for the record's domain tag.
-    - `interest_boost`: gain = 1.0 + boost (amplifies every record).
-    - `dunn_quadrant`: seeking -> 1.2, avoiding -> 0.8, else no entry.
-    - `special_interest_amplification`: extension (no-op here).
-
-    The record's own `profile_modulation_gain` dict is NOT mutated here; the
-    caller (pipeline_recall) copies the gains onto the record cache after
-    computing them.
-
-    When ``knobs_applied`` is provided (a dict), records
-    AUTIST-01 / AUTIST-09 / AUTIST-03 provenance strings into it whenever
-    the corresponding gain branch fires. The accumulator is owned by the
-    caller; this function mutates it in place, pass-by-reference.
-
-    Provenance strings contain 'profile.py' so the production-path
-    integration test can prove the upstream-gains accumulator is wired
-    in the original location (not stubbed elsewhere). Back-compat: callers
-    that don't pass the kwarg behave exactly as before.
-    """
     gains: dict[str, float] = {}
 
-    # Monotropism depth per domain tag.
     md = profile_state.get("monotropism_depth", {})
     if isinstance(md, dict) and md:
         for tag in (record.tags or []):
@@ -601,7 +447,6 @@ def profile_modulation_for_record(
                         )
                     break
 
-    # Interest boost amplifies any record.
     ib = profile_state.get("interest_boost", 0.0)
     try:
         if float(ib) > 0:
@@ -613,7 +458,6 @@ def profile_modulation_for_record(
     except (TypeError, ValueError):
         pass
 
-    # Dunn quadrant posture.
     dq = profile_state.get("dunn_quadrant")
     if dq == "seeking":
         gains["dunn_quadrant"] = 1.2

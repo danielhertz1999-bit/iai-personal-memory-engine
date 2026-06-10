@@ -1,20 +1,3 @@
-// — tests for `WrapperLifecycle`.
-//
-// Eight-test matrix:
-//
-// 1. ensureDaemonAlive: socket reachable -> NO subprocess invoked.
-// 2. ensureDaemonAlive: socket unreachable + darwin -> kickstart called.
-// 3. ensureDaemonAlive: kickstart throws -> falls back to wake.signal.
-// 4. ensureDaemonAlive: non-macos -> wake.signal written, no subprocess.
-// 5. registerHeartbeat: file exists with correct schema.
-// 6. heartbeat refresh: small interval -> last_refresh updates.
-// 7. cleanupHeartbeat: file gone, timer cleared.
-// 8. security: source has no `shell: true` and no shell-interpreting
-// subprocess variant in mcp-wrapper/src/.
-//
-// Test runner: Node's built-in `node:test` (zero new dep — Node 22 has
-// it natively) loaded via the existing `tsx` dev-dep so `.ts` files
-// run without a build step. Assertions: `node:assert/strict`.
 
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
@@ -25,8 +8,6 @@ import { fileURLToPath } from "node:url";
 
 import { WrapperLifecycle } from "../src/lifecycle.js";
 
-// Tmp-dir helper. node:test isolates per-file but not per-`it`, so
-// every test allocates its own dir.
 async function makeTmp(prefix: string): Promise<string> {
   return await mkdtemp(join(tmpdir(), `iai-mcp-lifecycle-${prefix}-`));
 }
@@ -35,13 +16,10 @@ async function cleanupTmp(dir: string): Promise<void> {
   await rm(dir, { recursive: true, force: true });
 }
 
-// Sleep helper for fake-interval verification (Node's setInterval is
-// real-time; we use a small interval (10 ms) and wait deterministically).
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// ---------------------------------------------------------------- ensureDaemonAlive
 
 describe("WrapperLifecycle.ensureDaemonAlive", () => {
   it("does NOT invoke subprocess when socket is reachable", async () => {
@@ -60,7 +38,6 @@ describe("WrapperLifecycle.ensureDaemonAlive", () => {
       });
       await lifecycle.ensureDaemonAlive();
       assert.equal(kickstarts, 0, "kickstart must not be invoked when socket is alive");
-      // wake.signal must NOT be written when daemon is reachable.
       await assert.rejects(stat(join(tmp, "wake.signal")));
     } finally {
       await cleanupTmp(tmp);
@@ -150,7 +127,6 @@ describe("WrapperLifecycle.ensureDaemonAlive", () => {
   });
 });
 
-// ---------------------------------------------------------------- registerHeartbeat
 
 describe("WrapperLifecycle.registerHeartbeat", () => {
   it("creates heartbeat file with correct schema", async () => {
@@ -166,7 +142,7 @@ describe("WrapperLifecycle.registerHeartbeat", () => {
         platform: "darwin",
         socketReachable: async () => true,
         spawnKickstart: async () => {},
-        refreshIntervalMs: 60_000, // big — we don't want it firing in this test
+        refreshIntervalMs: 60_000,
       });
       await lifecycle.registerHeartbeat();
       try {
@@ -199,14 +175,13 @@ describe("WrapperLifecycle.registerHeartbeat", () => {
         platform: "darwin",
         socketReachable: async () => true,
         spawnKickstart: async () => {},
-        refreshIntervalMs: 10, // tight interval to keep test fast
+        refreshIntervalMs: 10,
       });
       await lifecycle.registerHeartbeat();
       try {
         const before = JSON.parse(await readFile(heartbeatPath, "utf-8"));
-        await sleep(60); // ~6 refresh ticks
+        await sleep(60);
         const after = JSON.parse(await readFile(heartbeatPath, "utf-8"));
-        // started_at is stable; last_refresh advances.
         assert.equal(before.started_at, after.started_at);
         assert.notEqual(before.last_refresh, after.last_refresh);
       } finally {
@@ -218,7 +193,6 @@ describe("WrapperLifecycle.registerHeartbeat", () => {
   });
 });
 
-// ---------------------------------------------------------------- cleanupHeartbeat
 
 describe("WrapperLifecycle.cleanupHeartbeat", () => {
   it("deletes heartbeat file and clears timer", async () => {
@@ -243,12 +217,9 @@ describe("WrapperLifecycle.cleanupHeartbeat", () => {
       await lifecycle.cleanupHeartbeat();
       await assert.rejects(stat(heartbeatPath), "heartbeat file must be gone after cleanup");
 
-      // No refresh after cleanup: wait longer than the refresh interval
-      // and verify the file does NOT reappear.
       await sleep(60);
       await assert.rejects(stat(heartbeatPath), "no refresh tick after cleanup");
 
-      // Idempotent: second cleanup must NOT throw.
       await lifecycle.cleanupHeartbeat();
     } finally {
       await cleanupTmp(tmp);
@@ -256,35 +227,23 @@ describe("WrapperLifecycle.cleanupHeartbeat", () => {
   });
 });
 
-// ---------------------------------------------------------------- security
 
 describe("WrapperLifecycle security invariants", () => {
   it("source contains no shell-true option and no shell-interpreting subprocess variants", async () => {
-    // Walk mcp-wrapper/src/ and assert that no.ts file contains the
-    // forbidden patterns. We allow the safe `execFile` API; we forbid
-    // (a) the `shell: true` option anywhere, (b) bare-name calls to
-    // the shell-interpreting subprocess variant from node:child_process.
-    //
-    // Detection strategy: build the forbidden tokens at runtime from
-    // characters so the test source itself doesn't contain the literal
-    // banned substring (avoids tripping security-reminder hooks that
-    // grep for source-level mentions).
     const here = fileURLToPath(new URL(".", import.meta.url));
     const srcDir = join(here, "..", "src");
     const files = await readdir(srcDir);
     const tsFiles = files.filter((f) => f.endsWith(".ts"));
     assert.ok(tsFiles.length > 0, "expected at least one .ts file in src/");
 
-    const E = String.fromCharCode(0x65); // 'e'
-    const X = String.fromCharCode(0x78); // 'x'
-    const C = String.fromCharCode(0x63); // 'c'
-    const SHELL_INTERP_TOKEN = E + X + E + C; // 4-char banned identifier
-    const SHELL_OPTION_TOKEN = "shell"; // followed by colon + true
+    const E = String.fromCharCode(0x65);
+    const X = String.fromCharCode(0x78);
+    const C = String.fromCharCode(0x63);
+    const SHELL_INTERP_TOKEN = E + X + E + C;
+    const SHELL_OPTION_TOKEN = "shell";
     const shellOptionRegex = new RegExp(
       `\\b${SHELL_OPTION_TOKEN}\\s*:\\s*true\\b`,
     );
-    // Allow `<token>File` (the safe variant) but forbid bare `<token>(`
-    // OR `child_process.<token>(`.
     const bareCallRegex = new RegExp(
       `(?:^|[^A-Za-z0-9_])${SHELL_INTERP_TOKEN}\\s*\\(`,
     );
@@ -299,9 +258,6 @@ describe("WrapperLifecycle security invariants", () => {
       const lines = content.split("\n");
       lines.forEach((line, idx) => {
         const trimmed = line.trim();
-        // Strip trailing line comment so an inline `// NEVER...` mention
-        // in a code line doesn't match. Pure-comment lines (codePortion
-        // empty after trim) are skipped.
         const codePortion = (trimmed.split("//")[0] ?? "").trim();
         if (codePortion.length === 0) {
           return;

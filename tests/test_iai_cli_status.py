@@ -1,4 +1,3 @@
-"""Tests for `iai status` -- short user-tier health summary."""
 from __future__ import annotations
 
 import io
@@ -12,7 +11,6 @@ def _make_args():
 
 
 def _stub_topology(monkeypatch, *, ok: bool, n: int = 100, regime: str = "healthy"):
-    """Mock the daemon socket helper for topology probing."""
     if ok:
         fake_resp = {
             "jsonrpc": "2.0",
@@ -33,7 +31,6 @@ def _stub_topology(monkeypatch, *, ok: bool, n: int = 100, regime: str = "health
 
 
 def test_status_daemon_up_prints_summary(monkeypatch):
-    """Daemon alive + valid subscription -> 5 lines, all populated."""
     from iai_mcp import iai_cli
 
     _stub_topology(monkeypatch, ok=True, n=6266, regime="healthy")
@@ -57,7 +54,6 @@ def test_status_daemon_up_prints_summary(monkeypatch):
 
 
 def test_status_daemon_down_prints_down(monkeypatch):
-    """Daemon dead -> DOWN, but the subscription row still renders."""
     from iai_mcp import iai_cli
 
     _stub_topology(monkeypatch, ok=False)
@@ -78,7 +74,6 @@ def test_status_daemon_down_prints_down(monkeypatch):
 
 
 def test_status_subscription_missing_shown(monkeypatch):
-    """Subscription gate denies -> 'missing' label + reason."""
     from iai_mcp import iai_cli
 
     _stub_topology(monkeypatch, ok=True, n=10, regime="developmental")
@@ -99,7 +94,6 @@ def test_status_subscription_missing_shown(monkeypatch):
 
 
 def test_status_subcommand_registered():
-    """`iai status` is a valid subcommand."""
     from iai_mcp.iai_cli import _build_parser
 
     parser = _build_parser()
@@ -108,7 +102,6 @@ def test_status_subcommand_registered():
 
 
 def test_status_no_color_strips_ansi(monkeypatch):
-    """NO_COLOR env strips ANSI from the status header."""
     from iai_mcp import iai_cli
 
     _stub_topology(monkeypatch, ok=True)

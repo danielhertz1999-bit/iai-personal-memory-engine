@@ -1,9 +1,3 @@
-"""Contract:
-- Bash hook exits 0 with empty stdout when the CLI subprocess fails (non-zero
-  exit, signal, or timeout).
-- IAI_MCP_RECALL_HOOK_TIMEOUT env var caps the CLI call; an over-long stub
-  still yields exit 0 / empty stdout within roughly the cap budget.
-"""
 from __future__ import annotations
 
 import os
@@ -15,19 +9,15 @@ from pathlib import Path
 
 import pytest
 
-
 pytestmark = pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX shell hook")
 
-
 HOOK_PATH = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "_deploy" / "hooks" / "iai-mcp-session-recall.sh"
-
 
 def _make_stub_cli(dir_: Path, script: str) -> Path:
     cli = dir_ / "iai-mcp"
     cli.write_text(script)
     cli.chmod(cli.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return cli
-
 
 def _run_hook(home: Path, *, extra_env: dict[str, str] | None = None,
               stdin_payload: str = '{"session_id":"x","source":"startup","cwd":"/tmp","transcript_path":""}',
@@ -45,7 +35,6 @@ def _run_hook(home: Path, *, extra_env: dict[str, str] | None = None,
         timeout=timeout,
     )
 
-
 def test_hook_exits_zero_when_cli_fails(tmp_path):
     assert HOOK_PATH.exists(), f"hook script missing: {HOOK_PATH}"
     home = tmp_path / "home"
@@ -60,7 +49,6 @@ def test_hook_exits_zero_when_cli_fails(tmp_path):
     proc = _run_hook(home)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "", proc.stdout
-
 
 def test_hook_exits_zero_under_timeout_against_sleep_stub(tmp_path):
     assert HOOK_PATH.exists(), f"hook script missing: {HOOK_PATH}"

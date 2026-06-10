@@ -1,14 +1,3 @@
-"""Route + cue_hash columns on the contradiction-longitudinal bench.
-
-The bench harness must:
-1. expose `route` and `cue_hash` fields on the `ProbeResult` dataclass,
-2. provide a `_bench_efe_route_for_cue(cue)` helper that mirrors the
-   pipeline's EFE route selection byte-for-byte,
-3. emit both columns in the per-probe CSV written by `write_outputs`.
-
-These tests operate on pure-Python data plumbing only — no MemoryStore,
-no embedder, no daemon required.
-"""
 
 from __future__ import annotations
 
@@ -22,13 +11,7 @@ import pytest
 from bench import contradiction_longitudinal_claude as bench
 
 
-# ---------------------------------------------------------------------------
-# Test 1 — dataclass evolution
-# ---------------------------------------------------------------------------
-
-
 def test_probe_result_has_route_and_cue_hash_columns() -> None:
-    """`ProbeResult` dataclass exposes route + cue_hash with default-empty strings."""
     pr = bench.ProbeResult(
         probe_id="p-001",
         seed=13,
@@ -48,7 +31,6 @@ def test_probe_result_has_route_and_cue_hash_columns() -> None:
     assert pr.route == "efe_real"
     assert pr.cue_hash == "deadbeef"
 
-    # Defaults must be empty so historical readers stay back-compat.
     pr_default = bench.ProbeResult(
         probe_id="p-002",
         seed=13,
@@ -65,11 +47,6 @@ def test_probe_result_has_route_and_cue_hash_columns() -> None:
     assert pr_default.cue_hash == ""
 
 
-# ---------------------------------------------------------------------------
-# Test 2 — bench helper matches the pipeline formula byte-for-byte
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "cue",
     [
@@ -81,17 +58,10 @@ def test_probe_result_has_route_and_cue_hash_columns() -> None:
     ],
 )
 def test_bench_route_matches_pipeline_formula(cue: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """`_bench_efe_route_for_cue` mirrors the pipeline's EFE route selection byte-for-byte.
-
-    We recompute the route inline from the formula in the test, instead of
-    hardcoding the expected string. If pipeline.py ever changes the formula
-    without updating the bench helper, this test catches the drift.
-    """
     monkeypatch.delenv("IAI_MCP_EFE_USE_SHADOW", raising=False)
     helper = bench._bench_efe_route_for_cue
     route, cue_hash = helper(cue)
 
-    # Recompute inline — the test owns the formula too.
     digest = hashlib.md5(str(cue).encode("utf-8")).digest()
     expected_cue_hash = digest[:4].hex()
     expected_route = "efe_real" if (digest[0] & 1) else "efe_shadow"
@@ -107,21 +77,14 @@ def test_bench_route_matches_pipeline_formula(cue: str, monkeypatch: pytest.Monk
 
 
 def test_bench_route_respects_shadow_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`IAI_MCP_EFE_USE_SHADOW=1` forces all cues to `efe_shadow` (pipeline:952-953)."""
     monkeypatch.setenv("IAI_MCP_EFE_USE_SHADOW", "1")
     for cue in ["cue-a", "cue-b", "cue-c", "cue-d"]:
         route, cue_hash = bench._bench_efe_route_for_cue(cue)
         assert route == "efe_shadow", (
             f"shadow override broken for cue={cue!r}: got {route}"
         )
-        # cue_hash still computed normally (it's not branched on the env var).
         expected = hashlib.md5(cue.encode("utf-8")).digest()[:4].hex()
         assert cue_hash == expected
-
-
-# ---------------------------------------------------------------------------
-# Test 3 — CSV writer emits the new columns on every row
-# ---------------------------------------------------------------------------
 
 
 def _make_pr(
@@ -144,7 +107,6 @@ def _make_pr(
 
 
 def test_csv_writer_emits_route_and_cue_hash_columns(tmp_path: Path) -> None:
-    """`write_outputs` puts `route` and `cue_hash` columns in the CSV with correct values."""
     results = [
         _make_pr("probe-a", 13, "efe_real", "aaaaaaaa"),
         _make_pr("probe-b", 13, "efe_shadow", "bbbbbbbb"),
@@ -152,7 +114,6 @@ def test_csv_writer_emits_route_and_cue_hash_columns(tmp_path: Path) -> None:
         _make_pr("probe-d", 42, "efe_shadow", "dddddddd", hit=False),
     ]
 
-    # Minimal summary dict — write_outputs only needs the keys it actually reads.
     summary = {
         "gates": {
             "overall_pass": True,

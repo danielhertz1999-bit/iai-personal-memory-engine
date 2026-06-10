@@ -1,16 +1,3 @@
-"""Tests for _tick_body honoring scheduler control flags.
-
-After the single-driver consolidation collapse:
-  - scheduler_paused=True  -> _tick_body emits daemon_tick_skipped and returns.
-  - _tick_body NO LONGER calls run_rem_cycle / drives consolidation.
-    force_rem_request / user_sleep_request are now consumed by
-    lifecycle_tick's FORCE_SLEEP dispatch.
-  - Per-tick maintenance (S4, foraging) still runs.
-  - State timestamp (last_tick_at) is persisted on each tick.
-
-All REM cycle references that were previously mocked as assertions are
-now inverted: we assert run_rem_cycle is NEVER called from _tick_body.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -20,17 +7,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture
 def tick_env(tmp_path, monkeypatch):
-    """Isolate STATE_PATH to tmp_path.
-
-    Returns (store, state_path, tmp_path).
-    """
     from iai_mcp import daemon_state
     from iai_mcp.store import MemoryStore
 
@@ -42,7 +20,6 @@ def tick_env(tmp_path, monkeypatch):
 
     store = MemoryStore()
 
-    # Seed a single record so _store_is_empty returns False.
     from iai_mcp.types import MemoryRecord
     from uuid import uuid4
     rec = MemoryRecord(
@@ -71,11 +48,6 @@ def tick_env(tmp_path, monkeypatch):
     yield store, state_path, tmp_path
 
 
-# ---------------------------------------------------------------------------
-# Test 1: scheduler_paused=True short-circuits the tick
-# ---------------------------------------------------------------------------
-
-
 def test_scheduler_paused_emits_skip_event_and_returns(tick_env, monkeypatch):
     from iai_mcp import daemon as daemon_mod
     from iai_mcp.events import query_events
@@ -87,7 +59,6 @@ def test_scheduler_paused_emits_skip_event_and_returns(tick_env, monkeypatch):
         "scheduler_paused": True,
     }
 
-    # Assert the tick does NOT call run_rem_cycle even when paused.
     rem_mock = AsyncMock(side_effect=AssertionError("run_rem_cycle must never be called"))
     monkeypatch.setattr(daemon_mod, "run_rem_cycle", rem_mock)
 
@@ -100,16 +71,7 @@ def test_scheduler_paused_emits_skip_event_and_returns(tick_env, monkeypatch):
     assert state["fsm_state"] == "WAKE"
 
 
-# ---------------------------------------------------------------------------
-# Test 2: _tick_body NEVER calls run_rem_cycle (consolidation removed)
-# ---------------------------------------------------------------------------
-
-
 def test_tick_body_never_calls_run_rem_cycle(tick_env, monkeypatch):
-    """After the single-driver collapse, _tick_body must NOT call run_rem_cycle
-    for any flag combination. Consolidation routes exclusively through
-    lifecycle_tick -> _sleep_pipeline.run.
-    """
     from iai_mcp import daemon as daemon_mod
 
     store, state_path, tmp_path = tick_env
@@ -119,7 +81,6 @@ def test_tick_body_never_calls_run_rem_cycle(tick_env, monkeypatch):
     monkeypatch.setattr(daemon_mod, "run_rem_cycle", rem_mock)
     monkeypatch.setattr(daemon_mod, "should_relearn", lambda last, now: False)
 
-    # Try with force_rem pending (would have triggered a REM cycle before).
     state = {
         "fsm_state": "WAKE",
         "quiet_window": None,
@@ -135,11 +96,6 @@ def test_tick_body_never_calls_run_rem_cycle(tick_env, monkeypatch):
         f"_tick_body called run_rem_cycle {len(rem_calls)} time(s); expected 0 "
         f"(consolidation now routes through lifecycle_tick)"
     )
-
-
-# ---------------------------------------------------------------------------
-# Test 3: _tick_body NEVER calls run_rem_cycle for user_sleep flag
-# ---------------------------------------------------------------------------
 
 
 def test_tick_body_never_calls_run_rem_cycle_user_sleep(tick_env, monkeypatch):
@@ -169,11 +125,6 @@ def test_tick_body_never_calls_run_rem_cycle_user_sleep(tick_env, monkeypatch):
     )
 
 
-# ---------------------------------------------------------------------------
-# Test 4: paused=True state persisted to disk
-# ---------------------------------------------------------------------------
-
-
 def test_paused_skip_persists_to_disk(tick_env, monkeypatch):
     from iai_mcp import daemon as daemon_mod
     from iai_mcp.daemon_state import load_state
@@ -193,13 +144,7 @@ def test_paused_skip_persists_to_disk(tick_env, monkeypatch):
     datetime.fromisoformat(loaded["last_tick_at"])
 
 
-# ---------------------------------------------------------------------------
-# Test 5: tick updates last_tick_at even without consolidation
-# ---------------------------------------------------------------------------
-
-
 def test_tick_updates_last_tick_at(tick_env, monkeypatch):
-    """_tick_body must persist last_tick_at even when there is no consolidation work."""
     from iai_mcp import daemon as daemon_mod
     from iai_mcp.daemon_state import load_state
 
@@ -210,6 +155,5 @@ def test_tick_updates_last_tick_at(tick_env, monkeypatch):
     state = {"fsm_state": "WAKE"}
     asyncio.run(daemon_mod._tick_body(store, state))
 
-    # last_tick_at must be set.
     assert "last_tick_at" in state
     datetime.fromisoformat(state["last_tick_at"])

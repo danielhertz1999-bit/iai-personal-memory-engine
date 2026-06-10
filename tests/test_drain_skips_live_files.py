@@ -1,11 +1,3 @@
-"""Drain skips active-writer marker files but processes finalized ones.
-
-Contract:
-- `{id}.live.jsonl` (active writer marker) is skipped.
-- `{id}.live-{epoch}.jsonl` (Stop-hook rename output) is processed.
-- `{id}-{epoch}.jsonl` (existing safety-net output shape) is processed.
-- The skip predicate matches the exact `*.live.jsonl` suffix only.
-"""
 from __future__ import annotations
 
 import json
@@ -65,8 +57,6 @@ def _write_jsonl(deferred_dir: Path, fname: str, session_id: str, n_events: int)
     lines = [json.dumps(header)]
     for i in range(n_events):
         text = _DISTINCT_TEXTS[i % len(_DISTINCT_TEXTS)]
-        # Use the text as cue so the dedup embedding stays distinct between
-        # events; tiny formulaic cue strings collapse above the 0.95 cos floor.
         lines.append(json.dumps({
             "text": f"[{session_id}-{i}] {text}",
             "cue": f"[{session_id}-{i}] {text}",
@@ -79,7 +69,6 @@ def _write_jsonl(deferred_dir: Path, fname: str, session_id: str, n_events: int)
 
 
 def test_drain_skips_exact_dot_live_files(iai_home):
-    """Active-writer marker {id}.live.jsonl is skipped; finalized {id}-{epoch}.jsonl is processed."""
     from iai_mcp.capture import drain_deferred_captures
 
     deferred = iai_home / ".iai-mcp" / ".deferred-captures"
@@ -96,7 +85,6 @@ def test_drain_skips_exact_dot_live_files(iai_home):
 
 
 def test_drain_processes_renamed_live_dash_epoch(iai_home):
-    """Stop-hook rename output {id}.live-{epoch}.jsonl is drained."""
     from iai_mcp.capture import drain_deferred_captures
 
     deferred = iai_home / ".iai-mcp" / ".deferred-captures"
@@ -111,7 +99,6 @@ def test_drain_processes_renamed_live_dash_epoch(iai_home):
 
 
 def test_drain_processes_finalized_after_rename(iai_home):
-    """Simulated Stop-hook rename: drain consumes the renamed file."""
     from iai_mcp.capture import drain_deferred_captures
 
     deferred = iai_home / ".iai-mcp" / ".deferred-captures"
@@ -130,7 +117,6 @@ def test_drain_processes_finalized_after_rename(iai_home):
 
 
 def test_skip_predicate_exactness(iai_home):
-    """Files literally ending in `.live.jsonl` skip; `.live-N.jsonl` processes."""
     from iai_mcp.capture import drain_deferred_captures
 
     deferred = iai_home / ".iai-mcp" / ".deferred-captures"

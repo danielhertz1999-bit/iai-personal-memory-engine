@@ -1,18 +1,3 @@
-"""Tests for migrate_reembed_to_current_dim.
-
-Contract: re-embed every record in the store under a target Embedder, even if
-the target dim differs from the current records-table schema dim. Rebuild the
-table in a staging location and atomically swap.
-
-Invariants preserved (constitutional):
--: literal_surface byte-for-byte identical before and after.
-- All non-embedding fields preserved (tags, tier, language, schema_version,
-  s5_trust_score, detail_level, pinned, never_*, stability, difficulty,
-  last_reviewed, provenance, profile_modulation_gain, structure_hv).
-- Idempotent: running with the same dim is a no-op and returns updated=0.
-- After migration: store.embed_dim == target_embedder.DIM.
-- After migration: retrieval at the new dim actually succeeds (no shape mismatch).
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -22,8 +7,6 @@ import pytest
 
 
 class _DimEmbedder:
-    """Deterministic fake embedder with configurable dim. Turns text into a
-    normalised vector by hashing char offsets into the target length."""
 
     def __init__(self, dim: int):
         self.DIM = dim
@@ -42,8 +25,6 @@ class _DimEmbedder:
 
 
 def _fresh_store(tmp_path, dim: int, monkeypatch):
-    """Make a MemoryStore at an explicit dim via env override. Env is torn down
-    automatically by monkeypatch so other tests aren't polluted."""
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path / "iai"))
     monkeypatch.setenv("IAI_MCP_EMBED_DIM", str(dim))
     from iai_mcp.store import MemoryStore
@@ -51,7 +32,6 @@ def _fresh_store(tmp_path, dim: int, monkeypatch):
 
 
 def _seed_records(store, embedder, n: int = 3) -> list[UUID]:
-    """Insert n deterministic records. Returns their ids."""
     from iai_mcp.types import MemoryRecord
     ids = []
     now = datetime.now(timezone.utc)
@@ -89,7 +69,6 @@ def _seed_records(store, embedder, n: int = 3) -> list[UUID]:
 
 
 def test_reembed_upgrades_dim_and_preserves_all_non_embedding_fields(tmp_path, monkeypatch):
-    """Start at 384d, migrate to 1024d, verify every field except embedding stays identical."""
     src_embedder = _DimEmbedder(384)
     target_embedder = _DimEmbedder(1024)
 
@@ -131,7 +110,6 @@ def test_reembed_idempotent_same_dim_no_op(tmp_path, monkeypatch):
     _seed_records(store, src, n=2)
 
     from iai_mcp.migrate import migrate_reembed_to_current_dim
-    # Target matches current: should be no-op.
     result = migrate_reembed_to_current_dim(store, _DimEmbedder(384))
     assert result["updated"] == 0
     assert result["skipped"] == 2 or result.get("no_op") is True
@@ -146,7 +124,6 @@ def test_reembed_dry_run_reports_without_mutating(tmp_path, monkeypatch):
     from iai_mcp.migrate import migrate_reembed_to_current_dim
     result = migrate_reembed_to_current_dim(store, _DimEmbedder(1024), dry_run=True)
     assert result["would_update"] == 2
-    # Store unchanged after dry-run.
     assert store.embed_dim == 384
     post = store.get(seeded[0])
     assert len(post.embedding) == 384

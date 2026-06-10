@@ -1,7 +1,3 @@
-"""Contract:
-- Empty MemoryStore -> session-start CLI prints nothing on stdout.
-- Return code 0.
-"""
 from __future__ import annotations
 
 import argparse

@@ -1,12 +1,3 @@
-"""Tests for profile_modulates edges (Task 1, runtime gain).
-
-The runtime-gain mechanism: active autistic-kernel knobs (e.g.
-monotropism_depth in the active domain) multiply hit scores during
-recall_for_response. The multiplication is recorded as a `profile_modulates` edge
-in the edges table pointing from the affected record to a fixed profile
-sentinel UUID. The record's `profile_modulation_gain` dict is populated at
-recall time with the per-knob gains actually applied.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -16,7 +7,6 @@ import pytest
 
 from iai_mcp.store import EDGES_TABLE, MemoryStore
 from iai_mcp.types import EMBED_DIM, MemoryRecord
-
 
 def _rec(
     *,
@@ -50,23 +40,15 @@ def _rec(
         language=language,
     )
 
-
-# ---------------------------------------------------------------- helpers
-
-
 def test_profile_modulation_for_record_empty_profile():
-    """No knobs set -> no gains computed."""
     from iai_mcp.profile import profile_modulation_for_record
 
     rec = _rec(text="hi", tags=["domain:coding"])
     gains = profile_modulation_for_record(rec, profile_state={})
     assert isinstance(gains, dict)
-    # Empty state -> no gains
     assert gains == {} or all(v == 1.0 for v in gains.values())
 
-
 def test_profile_modulation_for_record_monotropism_depth_domain_tag():
-    """With monotropism_depth[coding]=0.9 and domain:coding tag -> gain present."""
     from iai_mcp.profile import profile_modulation_for_record
 
     rec = _rec(text="deep coding fact", tags=["domain:coding"])
@@ -77,9 +59,7 @@ def test_profile_modulation_for_record_monotropism_depth_domain_tag():
     assert "monotropism_depth" in gains
     assert gains["monotropism_depth"] > 1.0
 
-
 def test_profile_modulation_for_record_wrong_domain_no_gain():
-    """Domain mismatch -> gain NOT present."""
     from iai_mcp.profile import profile_modulation_for_record
 
     rec = _rec(text="gardening fact", tags=["domain:gardening"])
@@ -89,9 +69,7 @@ def test_profile_modulation_for_record_wrong_domain_no_gain():
     )
     assert "monotropism_depth" not in gains
 
-
 def test_profile_modulation_for_record_interest_boost():
-    """interest_boost float > 0 -> gain > 1.0."""
     from iai_mcp.profile import profile_modulation_for_record
 
     rec = _rec(text="hi", tags=[])
@@ -102,13 +80,8 @@ def test_profile_modulation_for_record_interest_boost():
     assert "interest_boost" in gains
     assert gains["interest_boost"] > 1.0
 
-
-# ---------------------------------------------------------------- pipeline integration
-
-
 @pytest.fixture(autouse=True)
 def _patch_embedder(monkeypatch):
-    """Fake embedder so we don't load bge-m3 during the pipeline test."""
     from iai_mcp import embed as embed_mod
 
     class _FakeEmbedder:
@@ -128,18 +101,14 @@ def _patch_embedder(monkeypatch):
     monkeypatch.setattr(embed_mod, "Embedder", _FakeEmbedder)
     yield
 
-
 def test_profile_modulation_edge_created_on_knob_affect(tmp_path, monkeypatch):
-    """Pipeline recall with active monotropism_depth creates profile_modulates edges."""
     from iai_mcp import retrieve
     from iai_mcp.pipeline import recall_for_response
 
-    # Inject a fake embedder that produces vectors aligned with the primary axis.
     from iai_mcp.embed import Embedder as _E
 
     store = MemoryStore(path=tmp_path)
 
-    # Seed a coding-tagged record.
     r = _rec(text="code fact", tags=["domain:coding"])
     store.insert(r)
 
@@ -158,14 +127,11 @@ def test_profile_modulation_edge_created_on_knob_affect(tmp_path, monkeypatch):
         profile_state=profile_state,
     )
 
-    # Inspect edges for a profile_modulates row.
     df = store.db.open_table(EDGES_TABLE).to_pandas()
     pm = df[df["edge_type"] == "profile_modulates"]
     assert len(pm) >= 1
 
-
 def test_profile_modulates_edge_weight_positive(tmp_path):
-    """profile_modulates edge weight is positive and reflects gain magnitude."""
     from iai_mcp import retrieve
     from iai_mcp.embed import Embedder as _E
     from iai_mcp.pipeline import recall_for_response
@@ -195,9 +161,7 @@ def test_profile_modulates_edge_weight_positive(tmp_path):
     pm = df[df["edge_type"] == "profile_modulates"]
     assert (pm["weight"] > 0).all()
 
-
 def test_profile_modulation_gain_populates_on_record(tmp_path):
-    """After recall, the record's profile_modulation_gain dict is non-empty."""
     from iai_mcp import retrieve
     from iai_mcp.embed import Embedder as _E
     from iai_mcp.pipeline import recall_for_response
@@ -220,17 +184,12 @@ def test_profile_modulation_gain_populates_on_record(tmp_path):
         profile_state=profile_state,
     )
 
-    # The hit record's profile_modulation_gain (from pipeline's in-memory cache)
-    # should be populated. We verify via the response's hits.
     assert len(resp.hits) >= 1
-    # Either the response hints or edges confirm the modulation fired.
     df = store.db.open_table(EDGES_TABLE).to_pandas()
     pm = df[df["edge_type"] == "profile_modulates"]
     assert len(pm) >= 1
 
-
 def test_profile_modulation_no_gain_when_state_empty(tmp_path):
-    """Empty profile_state -> no profile_modulates edges."""
     from iai_mcp import retrieve
     from iai_mcp.embed import Embedder as _E
     from iai_mcp.pipeline import recall_for_response

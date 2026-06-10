@@ -1,24 +1,8 @@
-"""Pure-read drift detection between canonical and legacy FSM state files.
-
-The canonical lifecycle state machine (WAKE / DROWSY / SLEEP / HIBERNATION)
-persists to ``~/.iai-mcp/lifecycle_state.json``. The historical
-``~/.iai-mcp/.daemon-state.json`` carries an ``fsm_state`` field with the
-older vocabulary (WAKE / TRANSITIONING / SLEEP / DREAMING).
-
-Both files coexist during the migration window. ``reconcile_fsm_state``
-compares the two and returns whether the declared states agree according
-to the documented mapping. It is a read-only diagnostic — the caller
-decides how to surface a drift report (log, event emission, etc.).
-"""
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-# Pairs of (canonical, legacy) values that are treated as equivalent.
-# Any other (canonical, legacy) combo where both sides are populated counts
-# as drift. HIBERNATION is canonical-only — the legacy file predates it,
-# so any legacy value alongside HIBERNATION is accepted without drift.
 _NO_DRIFT_PAIRS: frozenset[tuple[str, str]] = frozenset(
     {
         ("WAKE", "WAKE"),
@@ -64,7 +48,6 @@ _CANONICAL_TO_LEGACY: dict[str, str] = {
 
 
 def _auto_correct_legacy(legacy_path: Path, canonical_state: str) -> bool:
-    """Overwrite legacy fsm_state to match canonical. Returns True on success."""
     import os
     import tempfile
 
@@ -99,20 +82,6 @@ def reconcile_fsm_state(
     *,
     auto_correct: bool = False,
 ) -> dict[str, str | bool | None]:
-    """Return a drift report comparing the canonical and legacy state files.
-
-    Both file paths default to the production locations under
-    ``~/.iai-mcp/``. When ``auto_correct=True`` and drift is detected,
-    overwrites the legacy file's fsm_state to match the canonical state.
-
-    Returns a dict with keys:
-      * ``canonical`` -- the canonical lifecycle state name, or ``None``
-        when the file is absent / unreadable / malformed.
-      * ``legacy`` -- the legacy ``fsm_state`` value, or ``None`` likewise.
-      * ``drift`` -- ``True`` only when both sides are populated and the
-        (canonical, legacy) pair is not in the no-drift mapping table.
-      * ``corrected`` -- ``True`` when auto_correct resolved a drift.
-    """
     if canonical_path is None:
         from iai_mcp.lifecycle_state import LIFECYCLE_STATE_PATH
 

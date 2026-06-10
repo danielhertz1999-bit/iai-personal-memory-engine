@@ -1,14 +1,3 @@
-"""RED: iai-mcp topology CLI.
-
-The `topology` subcommand prints one key:value line per metric:
-    C: <float>
-    L: <float>
-    sigma: <float | "insufficient_data">
-    communities: <int>
-    rich_club_ratio: <float>
-    N: <int>
-    regime: <str>
-"""
 from __future__ import annotations
 
 import re
@@ -19,15 +8,12 @@ from iai_mcp.cli import main as cli_main
 
 
 def test_topology_subcommand_registered():
-    """`iai-mcp topology --help` must succeed (subparser registered)."""
     with pytest.raises(SystemExit) as ex:
         cli_main(["topology", "--help"])
-    # argparse --help calls sys.exit(0) on success
     assert ex.value.code == 0
 
 
 def test_topology_prints_required_keys(tmp_path, capsys, monkeypatch):
-    """All seven key:value lines must appear in output."""
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
     code = cli_main(["topology"])
     assert code == 0
@@ -51,13 +37,10 @@ def test_topology_prints_required_keys(tmp_path, capsys, monkeypatch):
 
 
 def test_topology_empty_store_prints_insufficient_data(tmp_path, capsys, monkeypatch):
-    """Fresh store: N is small, sigma should print as 'insufficient_data'."""
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
     code = cli_main(["topology"])
     assert code == 0
     out = capsys.readouterr().out
-    # On an empty store, sigma must be "insufficient_data" or the regime is
-    # "insufficient_data" -- either way, the line must contain the marker.
     assert "insufficient_data" in out, (
         f"empty store must surface insufficient_data; got {out!r}"
     )

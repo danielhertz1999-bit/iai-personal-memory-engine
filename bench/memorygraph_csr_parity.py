@@ -1,18 +1,3 @@
-"""CSR byte-exact parity gate against the sigma fixture set.
-
-Builds the same graph twice — once via the current networkx-backed
-``MemoryGraph``, once via the standalone ``_AdjacencyBackend`` prototype —
-and asserts byte-exact equality on the ``(indptr, indices, data)`` triple
-returned by ``to_csr_arrays``. The triple is what the downstream native
-graph kernels consume; if the two backends diverge on this triple, the
-storage swap would silently regress centrality / clustering / shortest-path
-math at the downstream parity gate.
-
-Gate. Exit 0 → byte-parity proven on all 6 mandatory
-sigma fixtures (karate, les_miserables, er_200, er_500, er_1000,
-ws_2500_k4_p0). Any byte-divergence prints the fixture name + first
-divergent array + index + values on each side BEFORE exiting non-zero.
-"""
 
 from __future__ import annotations
 
@@ -24,21 +9,15 @@ from typing import Any
 
 import numpy as np
 
-# Resolve ``iai_mcp.*`` to this worktree's ``src/`` rather than an editable
-# install elsewhere on the path. Idempotent: each ``sys.path.insert`` is
-# guarded by an "if not already present" check.
 _SRC_PATH = str(Path(__file__).resolve().parent.parent / "src")
 if _SRC_PATH not in sys.path:
     sys.path.insert(0, _SRC_PATH)
 
-# Allow the spike sibling to be imported by absolute name when this script
-# is executed via ``python bench/memorygraph_csr_parity.py``.
 sys.path.insert(0, str(Path(__file__).parent))
 from memorygraph_adj_spike import _AdjacencyBackend  # noqa: E402
 
-from iai_mcp.graph import MemoryGraph  # noqa: E402 # current nx-backed
+from iai_mcp.graph import MemoryGraph  # noqa: E402  # current nx-backed
 
-# 6 mandatory sigma fixtures (baseline set, status=mandatory).
 FIXTURES: tuple[str, ...] = (
     "karate",
     "les_miserables",
@@ -56,25 +35,14 @@ FIXTURE_PATH = (
 
 
 def deterministic_uuid(node_index: int) -> uuid.UUID:
-    """Map a fixture integer node-id to a stable UUID.
-
-    Both backends see identical labels — uuid5 is referentially transparent
-    so the two build paths produce the same sort order and CSR rows.
-    """
     return uuid.uuid5(uuid.NAMESPACE_DNS, str(node_index))
 
 
 def build_both(
     edges: list[list[int]],
 ) -> tuple[MemoryGraph, _AdjacencyBackend]:
-    """Build a networkx-backed MemoryGraph and an adjacency-dict prototype
-    from the same edge list, with identical UUIDs on each side.
-    """
     nx_graph = MemoryGraph()
     adj_graph = _AdjacencyBackend()
-    # Collect node set first so add_node is called before add_edge for both
-    # backends. Sorted for deterministic insertion order (matches the
-    # iteration shape both Wave 2 will see at production callsites).
     nodes = sorted({n for edge in edges for n in edge[:2]})
     for n in nodes:
         uid = deterministic_uuid(n)
@@ -95,12 +63,6 @@ def diff_csr_triple(
     nx_triple: tuple[np.ndarray, np.ndarray, np.ndarray],
     adj_triple: tuple[np.ndarray, np.ndarray, np.ndarray],
 ) -> str | None:
-    """Return None on byte-exact match, or a one-line diagnostic string.
-
-    Surfaces the first divergent index on whichever array (indptr /
-    indices / data) breaks parity first — gives the root-cause hook
-    if any fixture fails.
-    """
     n_indptr, n_indices, n_data = nx_triple
     a_indptr, a_indices, a_data = adj_triple
     for arr_name, n_arr, a_arr in (

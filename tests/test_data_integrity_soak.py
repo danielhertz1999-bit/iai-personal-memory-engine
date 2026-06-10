@@ -1,16 +1,3 @@
-"""Cross-cut data-integrity integration soak.
-
-Exercises the hardening fixes *together* under load shapes that no
-single unit test reaches:
-
-1. provenance overflow round-trip under sustained load
-2. capture drain partial-failure preserves evidence
-3. graph-cache encryption round-trip + plaintext absence
-4. anti-hits malformed edge does not crash recall
-
-All cases run against a real ``MemoryStore`` in tmp_path with a
-deterministic passphrase fallback (no keyring required).
-"""
 from __future__ import annotations
 
 import json
@@ -24,17 +11,8 @@ from uuid import UUID, uuid4
 import pytest
 
 
-# Deterministic passphrase so encryption paths work without a keyring
-# backend on this host. Provided per-test by the conftest autouse
-# ``_crypto_passphrase_env`` fixture (any consistent value works for the
-# in-process encrypt/decrypt round-trips here — no subprocess needs a
-# specific shared value). No module-level os.environ write — that would
-# pollute the global env for every subsequently-collected test.
-
-
 @pytest.fixture(autouse=True)
 def _isolated_keyring(monkeypatch: pytest.MonkeyPatch):
-    """Force keyring fail-backend so the passphrase fallback fires."""
     import keyring as _keyring
 
     fake: dict[tuple[str, str], str] = {}
@@ -48,23 +26,11 @@ def _isolated_keyring(monkeypatch: pytest.MonkeyPatch):
     yield fake
 
 
-# ============================================================================
-# Case 1 — provenance overflow round-trip under sustained load
-# ============================================================================
-
-
 def test_w5_provenance_overflow_sustained_load(tmp_path, monkeypatch):
-    """Case 1: drive 10 batches into a queue sized for 2 in-memory
-    slots while the worker is throttled. Assert zero pairs lost; the spill
-    dir transient (drains to empty after release + flush)."""
     from iai_mcp.provenance_queue import ProvenanceWriteQueue
     from iai_mcp.store import MemoryStore
     from tests.test_store import _make as _make_record
 
-    # Init store BEFORE redirecting HOME so MemoryStore uses the real
-    # keyring resolver path (then falls through to the passphrase since
-    # the keyring fail-backend is monkeypatched). Spill dir under HOME
-    # is exactly what we want isolated to tmp.
     store = MemoryStore(path=tmp_path / "store")
     r = _make_record()
     store.insert(r)
@@ -91,7 +57,6 @@ def test_w5_provenance_overflow_sustained_load(tmp_path, monkeypatch):
             q.enqueue([(r.id, {
                 "ts": f"t{i}", "cue": f"sustained-{i}", "session_id": "soak",
             })])
-        # Some spilled by now.
         time.sleep(0.15)
         overflow_dir = tmp_path / ".iai-mcp" / ".provenance-overflow"
         spilled = list(overflow_dir.glob("*.jsonl"))
@@ -99,19 +64,11 @@ def test_w5_provenance_overflow_sustained_load(tmp_path, monkeypatch):
             f"expected ≥1 spilled file under sustained overload; got {spilled}"
         )
 
-        # Release the worker — drains in-memory items first.
         release.set()
 
-        # Production: the worker's idle-poll picks up the spill dir
-        # every _WORKER_IDLE_POLL_S (5s) when _q is empty. For test
-        # speed we drive the drain explicitly via the internal helper
-        # — same code path the worker uses on its idle tick.
         deadline = time.time() + 15.0
         while time.time() < deadline:
-            # First let the worker drain whatever's currently in _q.
             q.flush(timeout=2.0)
-            # Then explicitly re-enqueue any spilled files. The worker
-            # will pull them on the next get() in its outer loop.
             q._drain_overflow_dir()
             q.flush(timeout=2.0)
             if not list(overflow_dir.glob("*.jsonl")):
@@ -128,15 +85,7 @@ def test_w5_provenance_overflow_sustained_load(tmp_path, monkeypatch):
     assert list(overflow_dir.glob("*.jsonl")) == []
 
 
-# ============================================================================
-# Case 2 — capture drain partial-failure preserves evidence
-# ============================================================================
-
-
 def test_w5_capture_drain_partial_failure_preserves_evidence(tmp_path, monkeypatch):
-    """Case 2: a deferred file with a mixed-success transcript
-    is renamed .failed-<ts>.jsonl when any event hits insert-failed:*,
-    so the events are never silently unlinked and lost."""
     from iai_mcp.capture import drain_deferred_captures
     from iai_mcp.store import MemoryStore
 
@@ -191,21 +140,13 @@ def test_w5_capture_drain_partial_failure_preserves_evidence(tmp_path, monkeypat
     assert counts["files_failed"] == 1, counts
 
 
-# ============================================================================
-# Case 3 — graph-cache encryption round-trip + plaintext absence
-# ============================================================================
-
-
 def test_w5_graph_cache_encryption_no_plaintext_canary(tmp_path):
-    """Case 3: save() with surface containing a canary; the
-    canary must NOT appear anywhere in the on-disk bytes; try_load
-    decrypts back to the original surface byte-for-byte."""
     from iai_mcp import runtime_graph_cache
     from iai_mcp.community import CommunityAssignment
     from iai_mcp.store import MemoryStore
 
     store = MemoryStore(path=tmp_path / "hippo")
-    store.root = tmp_path  # cache file under tmp_path
+    store.root = tmp_path
 
     rid = uuid4()
     canary = "PLAINTEXT_CANARY_W5_SOAK_aaak_07_9"
@@ -249,15 +190,7 @@ def test_w5_graph_cache_encryption_no_plaintext_canary(tmp_path):
     assert payload[str(rid)]["surface"] == canary
 
 
-# ============================================================================
-# Case 4 — anti-hits malformed edge does not crash recall
-# ============================================================================
-
-
 def test_w5_recall_survives_malformed_anti_edge(tmp_path):
-    """Case 4: end-to-end through _find_anti_hits with one
-    valid + one malformed contradicts edge. The recall pipeline must
-    survive; the valid anti-hit surfaces; the skip is logged."""
     from iai_mcp.graph import MemoryGraph
     from iai_mcp.pipeline import _find_anti_hits
     from iai_mcp.store import MemoryStore

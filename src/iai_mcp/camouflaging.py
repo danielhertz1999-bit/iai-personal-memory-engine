@@ -1,6 +1,3 @@
-"""Back-compat shim — camouflaging detector + double_empathy invariant
-have moved to iai_mcp.lilli.profile.invariants.
-"""
 from __future__ import annotations
 
 from iai_mcp.lilli.profile.invariants import (

@@ -1,21 +1,3 @@
-"""Tests for iai_mcp.claude_cli -- Task 1.
-
-Covers 12 behaviours (+ C3 constitutional):
-1. invoke_claude_once spawns `claude --bare -p... --output-format json --max-turns 1
-   --tools "" --no-session-persistence --model haiku` via create_subprocess_exec (argv).
-2. ANTHROPIC_API_KEY / CLAUDE_API_KEY / CLAUDE_CODE_API_KEY scrubbed from child env.
-3. Happy path -- returns ok=True with data, cost_usd, tokens_in, tokens_out.
-4. Cost tripwire (bug #43333): cost_usd > 0 -> auto-disable Claude AND return ok=False.
-5. 120s timeout -> terminate-then-kill escalation, returns ok=False reason=timeout.
-6. Non-zero exit -> ok=False reason=nonzero_exit.
-7. Malformed JSON stdout -> ok=False reason=unparseable_output.
-8. verify_credentials_subscription gates on billingType=stripe_subscription.
-9. BudgetTracker.can_spend -- daily cap + weekly buffer arithmetic.
-10. BudgetTracker.reset_if_new_day -- local-midnight counter reset.
-11. BudgetTracker.weekly_buffer_exceeded -- 7% ceiling.
-12. Force-wake mid-call -- CancelledError triggers terminate->60s grace->kill
-    escalation, returns force_wake_killed, does NOT re-raise.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -27,14 +9,8 @@ from zoneinfo import ZoneInfo
 import pytest
 
 
-# ---------------------------------------------------------------------------
-# Shared fixtures
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture
 def isolated_state(tmp_path, monkeypatch):
-    """Redirect daemon_state.STATE_PATH to tmp_path for test isolation."""
     from iai_mcp import daemon_state
     state_path = tmp_path / ".daemon-state.json"
     monkeypatch.setattr(daemon_state, "STATE_PATH", state_path)
@@ -43,7 +19,6 @@ def isolated_state(tmp_path, monkeypatch):
 
 @pytest.fixture
 def fake_creds(tmp_path, monkeypatch):
-    """Write a fake credentials.json and point claude_cli at it."""
     creds = tmp_path / ".credentials.json"
     creds.write_text(json.dumps({"billingType": "stripe_subscription"}))
     from iai_mcp import claude_cli
@@ -52,7 +27,6 @@ def fake_creds(tmp_path, monkeypatch):
 
 
 class _FakeProc:
-    """Mock of an asyncio subprocess."""
 
     def __init__(
         self,
@@ -89,8 +63,6 @@ class _FakeProc:
 
 
 def _install_subprocess_mock(monkeypatch, proc: _FakeProc) -> dict:
-    """Replace asyncio.create_subprocess_exec with an async callable that
-    returns `proc` and captures its args/env for assertion."""
     capture: dict = {"args": None, "env": None, "kwargs": None}
 
     async def fake_spawn(*args, **kwargs):
@@ -101,11 +73,6 @@ def _install_subprocess_mock(monkeypatch, proc: _FakeProc) -> dict:
 
     monkeypatch.setattr("asyncio.create_subprocess_exec", fake_spawn)
     return capture
-
-
-# ---------------------------------------------------------------------------
-# Test 1: argv form + all required CLI flags
-# ---------------------------------------------------------------------------
 
 
 def test_invoke_uses_argv_and_required_flags(monkeypatch, fake_creds, isolated_state):
@@ -133,11 +100,6 @@ def test_invoke_uses_argv_and_required_flags(monkeypatch, fake_creds, isolated_s
     assert "--model" in args and "haiku" in args
 
 
-# ---------------------------------------------------------------------------
-# Test 2: env scrubbing (C3 guard)
-# ---------------------------------------------------------------------------
-
-
 def test_env_scrubbed(monkeypatch, fake_creds, isolated_state):
     from iai_mcp.claude_cli import invoke_claude_once
 
@@ -158,11 +120,6 @@ def test_env_scrubbed(monkeypatch, fake_creds, isolated_state):
     for key in ("ANTHROPIC_API_KEY", "CLAUDE_API_KEY", "CLAUDE_CODE_API_KEY"):
         assert key not in env, f"C3 violation: {key} leaked to subprocess env"
     assert env.get("KEEP_ME") == "benign"
-
-
-# ---------------------------------------------------------------------------
-# Test 3: happy path
-# ---------------------------------------------------------------------------
 
 
 def test_happy_path_parses_tokens_and_cost(monkeypatch, fake_creds, isolated_state):
@@ -188,11 +145,6 @@ def test_happy_path_parses_tokens_and_cost(monkeypatch, fake_creds, isolated_sta
     assert result["data"]["result"] == "unifying insight text"
 
 
-# ---------------------------------------------------------------------------
-# Test 4: C3 auto-disable on cost_usd > 0 (bug #43333 tripwire)
-# ---------------------------------------------------------------------------
-
-
 def test_c3_auto_disable(monkeypatch, fake_creds, isolated_state):
     from iai_mcp.claude_cli import BudgetTracker, invoke_claude_once
     from iai_mcp.daemon_state import load_state
@@ -212,11 +164,6 @@ def test_c3_auto_disable(monkeypatch, fake_creds, isolated_state):
 
     tracker = BudgetTracker(load_state())
     assert tracker.claude_disabled_after_billing_event() is True
-
-
-# ---------------------------------------------------------------------------
-# Test 5: timeout -> terminate -> kill escalation
-# ---------------------------------------------------------------------------
 
 
 def test_timeout_terminates_then_kills(monkeypatch, fake_creds, isolated_state):
@@ -243,11 +190,6 @@ def test_timeout_terminates_then_kills(monkeypatch, fake_creds, isolated_state):
     assert proc.kill_called is True
 
 
-# ---------------------------------------------------------------------------
-# Test 6: non-zero exit
-# ---------------------------------------------------------------------------
-
-
 def test_nonzero_exit(monkeypatch, fake_creds, isolated_state):
     from iai_mcp.claude_cli import invoke_claude_once
 
@@ -261,11 +203,6 @@ def test_nonzero_exit(monkeypatch, fake_creds, isolated_state):
     assert "subscription expired" in result["stderr"]
 
 
-# ---------------------------------------------------------------------------
-# Test 7: unparseable output
-# ---------------------------------------------------------------------------
-
-
 def test_unparseable_output(monkeypatch, fake_creds, isolated_state):
     from iai_mcp.claude_cli import invoke_claude_once
 
@@ -275,11 +212,6 @@ def test_unparseable_output(monkeypatch, fake_creds, isolated_state):
     result = asyncio.run(invoke_claude_once("hi", model="haiku"))
     assert result["ok"] is False
     assert result["reason"] == "unparseable_output"
-
-
-# ---------------------------------------------------------------------------
-# Test 8: credentials.json gate
-# ---------------------------------------------------------------------------
 
 
 def test_credentials_gate(tmp_path, monkeypatch):
@@ -302,17 +234,10 @@ def test_credentials_gate(tmp_path, monkeypatch):
     assert r2["billing_type"] == "stripe_subscription"
 
 
-# ---------------------------------------------------------------------------
-# Test 8.5: verify_credentials_subscription new schema
-# ---------------------------------------------------------------------------
-
-
 def _new_schema_creds(sub_type: str = "max", scopes=None, expires_at_ms=None):
-    """Build the modern claudeAiOauth-nested credentials JSON."""
     if scopes is None:
         scopes = ["user:inference", "user:profile"]
     if expires_at_ms is None:
-        # 1 year in the future, default
         expires_at_ms = int(
             (datetime.now(tz=timezone.utc) + timedelta(days=365)).timestamp() * 1000
         )
@@ -330,8 +255,6 @@ def _new_schema_creds(sub_type: str = "max", scopes=None, expires_at_ms=None):
 
 @pytest.mark.parametrize("sub_type", ["pro", "pro_max", "max", "team", "enterprise"])
 def test_new_schema_accepts_any_valid_tier(tmp_path, monkeypatch, sub_type):
-    """do NOT hardcode tier -- any of the 5 valid subscription
-    plans unlocks claude -p invocation."""
     from iai_mcp import claude_cli
     from iai_mcp.claude_cli import verify_credentials_subscription
 
@@ -345,7 +268,6 @@ def test_new_schema_accepts_any_valid_tier(tmp_path, monkeypatch, sub_type):
 
 
 def test_new_schema_rejects_invalid_tier(tmp_path, monkeypatch):
-    """unknown / community / null tier must fail closed."""
     from iai_mcp import claude_cli
     from iai_mcp.claude_cli import verify_credentials_subscription
 
@@ -360,8 +282,6 @@ def test_new_schema_rejects_invalid_tier(tmp_path, monkeypatch):
 
 
 def test_new_schema_rejects_missing_inference_scope(tmp_path, monkeypatch):
-    """scope must include user:inference; otherwise the OAuth
-    token is read-only / mcp-only and cannot drive claude -p."""
     from iai_mcp import claude_cli
     from iai_mcp.claude_cli import verify_credentials_subscription
 
@@ -380,10 +300,6 @@ def test_new_schema_rejects_missing_inference_scope(tmp_path, monkeypatch):
 def test_new_schema_rejects_expired_credentials_when_no_refresh_token(
     tmp_path, monkeypatch,
 ):
-    """expiresAt in the past WITH no refreshToken means there is
-    no way to recover without `claude /login`. Fail-fast in that case.
-    Note: expired accessToken + present refreshToken is HEALTHY (CLI
-    refreshes transparently on next invocation)."""
     from iai_mcp import claude_cli
     from iai_mcp.claude_cli import verify_credentials_subscription
 
@@ -395,7 +311,6 @@ def test_new_schema_rejects_expired_credentials_when_no_refresh_token(
         sub_type="max",
         expires_at_ms=expired_ms,
     )
-    # Strip the refreshToken so the gate has no recovery path.
     del payload["claudeAiOauth"]["refreshToken"]
     creds.write_text(json.dumps(payload))
     monkeypatch.setattr(claude_cli, "CREDENTIALS_PATH", creds)
@@ -408,10 +323,6 @@ def test_new_schema_rejects_expired_credentials_when_no_refresh_token(
 def test_new_schema_accepts_expired_access_token_with_refresh_token(
     tmp_path, monkeypatch,
 ):
-    """expired accessToken + present refreshToken = HEALTHY.
-    The CLI handles refresh transparently. The earlier bug here returned
-    `credentials_expired` for live Claude Code installs where accessToken
-    legitimately rotates many times per day; fixed it."""
     from iai_mcp import claude_cli
     from iai_mcp.claude_cli import verify_credentials_subscription
 
@@ -422,7 +333,7 @@ def test_new_schema_accepts_expired_access_token_with_refresh_token(
     creds.write_text(json.dumps(_new_schema_creds(
         sub_type="max",
         expires_at_ms=expired_ms,
-    )))  # default _new_schema_creds includes refreshToken
+    )))
     monkeypatch.setattr(claude_cli, "CREDENTIALS_PATH", creds)
 
     r = verify_credentials_subscription()
@@ -433,15 +344,11 @@ def test_new_schema_accepts_expired_access_token_with_refresh_token(
 def test_new_schema_takes_precedence_over_legacy_billingType(
     tmp_path, monkeypatch,
 ):
-    """when both schemas coexist, the modern claudeAiOauth block
-    is authoritative -- legacy billingType is silently ignored."""
     from iai_mcp import claude_cli
     from iai_mcp.claude_cli import verify_credentials_subscription
 
     creds = tmp_path / ".credentials.json"
     payload = _new_schema_creds(sub_type="pro")
-    # Old field present with bogus value -- must NOT poison the new-schema
-    # decision path.
     payload["billingType"] = "api_key"
     creds.write_text(json.dumps(payload))
     monkeypatch.setattr(claude_cli, "CREDENTIALS_PATH", creds)
@@ -449,11 +356,6 @@ def test_new_schema_takes_precedence_over_legacy_billingType(
     r = verify_credentials_subscription()
     assert r["ok"] is True
     assert r["subscription_type"] == "pro"
-
-
-# ---------------------------------------------------------------------------
-# Test 9: BudgetTracker.can_spend arithmetic
-# ---------------------------------------------------------------------------
 
 
 def test_budget_cap(isolated_state):
@@ -494,15 +396,10 @@ def test_budget_cap(isolated_state):
     assert BudgetTracker(state3).can_spend(1) is False
 
 
-# ---------------------------------------------------------------------------
-# Test 10: reset_if_new_day
-# ---------------------------------------------------------------------------
-
-
 def test_reset_if_new_day(isolated_state):
     from iai_mcp.claude_cli import BUDGET_STATE_KEY, BudgetTracker
 
-    tz = ZoneInfo("Asia/Dubai")  # UTC+4
+    tz = ZoneInfo("Asia/Dubai")
     state = {BUDGET_STATE_KEY: {
         "daily_used_tokens": 8000,
         "weekly_buffer_used_tokens": 0,
@@ -520,11 +417,6 @@ def test_reset_if_new_day(isolated_state):
     t.reset_if_new_day(now_new_day, tz)
     assert state[BUDGET_STATE_KEY]["daily_used_tokens"] == 0
     assert state[BUDGET_STATE_KEY]["last_reset_date"] == "2026-04-18"
-
-
-# ---------------------------------------------------------------------------
-# Test 11: weekly buffer ceiling
-# ---------------------------------------------------------------------------
 
 
 def test_weekly_buffer_exceeded(isolated_state):
@@ -555,16 +447,7 @@ def test_weekly_buffer_exceeded(isolated_state):
     assert BudgetTracker(state_over).weekly_buffer_exceeded() is True
 
 
-# ---------------------------------------------------------------------------
-# Test 12: force-wake mid-Claude does not crash daemon (+ Warning 8)
-# ---------------------------------------------------------------------------
-
-
 def test_force_wake_does_not_crash_daemon(monkeypatch, fake_creds, isolated_state):
-    """CancelledError while awaiting claude -p must be handled cooperatively.
-    invoke_claude_once terminates the subprocess (60s grace -> kill) and returns
-    a structured dict WITHOUT re-raising. Re-raising would propagate up and
-    potentially crash the daemon scheduler."""
     from iai_mcp import claude_cli
     from iai_mcp.claude_cli import invoke_claude_once
 

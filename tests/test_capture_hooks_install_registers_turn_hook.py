@@ -1,12 +1,3 @@
-"""capture-hooks installer wires both UserPromptSubmit and Stop entries.
-
-Contract:
-- After install: settings.json has both UserPromptSubmit + Stop entries.
-- Install is idempotent on re-run.
-- Uninstall strips both entries (and removes empty keys).
-- Status reports both as wired after install.
-- The turn-hook script lands in `~/.claude/hooks/` and is executable.
-"""
 from __future__ import annotations
 
 import argparse
@@ -27,7 +18,6 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
-    # Avoid Claude Desktop config patching side effects.
     monkeypatch.setattr(
         "iai_mcp.cli._claude_desktop_config_path",
         lambda: None,
@@ -69,7 +59,6 @@ def _commands_for(entries: list) -> list[str]:
 
 
 def test_install_writes_both_hook_entries(home):
-    """Install lands both hook scripts AND both settings.json entries."""
     rc = _install(home)
     assert rc == 0
 
@@ -89,7 +78,6 @@ def test_install_writes_both_hook_entries(home):
 
 
 def test_install_idempotent(home):
-    """Running install twice does not duplicate either entry."""
     _install(home)
     _install(home)
 
@@ -101,7 +89,6 @@ def test_install_idempotent(home):
 
 
 def test_uninstall_removes_both(home):
-    """Uninstall strips both keys from settings.json."""
     _install(home)
     _uninstall(home)
 
@@ -119,7 +106,6 @@ def test_uninstall_removes_both(home):
 
 
 def test_status_reports_both_wired(home, capsys):
-    """After install, status exits 0 and prints both wirings as WIRED."""
     _install(home)
     capsys.readouterr()
     rc = _status(home)
@@ -130,7 +116,6 @@ def test_status_reports_both_wired(home, capsys):
 
 
 def test_install_copies_turn_hook_script(home):
-    """The turn-hook script lands in ~/.claude/hooks/ and is executable."""
     _install(home)
 
     turn_hook = home / ".claude" / "hooks" / "iai-mcp-turn-capture.sh"

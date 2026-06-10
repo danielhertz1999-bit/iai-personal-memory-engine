@@ -1,46 +1,3 @@
-"""Acceptance suite for the literal_preservation knob modulating W_DEGREE.
-
-Two-tier coverage:
-
-  Task 1 (rank-stage scale-map wiring):
-    - test_literal_preservation_strong_ranks_verbatim_high
-    - test_literal_preservation_loose_ranks_verbatim_low
-    - test_literal_preservation_knob_moves_verbatim_position ← main acceptance (Δ ≥ 3)
-    - test_literal_preservation_medium_is_normalize_only_baseline
-    - test_scale_constant_keys_match_profile_enum ← shape lock
-    - test_empty_profile_state_falls_back_to_medium_scale
-
-  Task 2 (core.py dispatch threading of profile_state):
-    - test_dispatch_passes_profile_state_to_recall_for_response (kwarg-capture)
-    - test_dispatch_end_to_end_knob_moves_verbatim_position (integration via dispatch)
-
-Fixture geometry (5 hubs + 1 verbatim, all degrees equal so max_deg=hub_deg
-and every hub has deg_norm=1.0 exactly):
-
-  cue_text: the fixed literal-preservation cue marker (see CUE_TEXT)
-  hub_cos = 0.50 × 5 records, each with hub_degree (=8) Hebbian edges
-  verbatim_cos = 0.60, deg = 0 (no edges)
-  → max_deg = 8, deg_norm(hub) = log(9)/log(9) = 1.0, deg_norm(verbatim) = 0.
-
-Score budget per knob (W_DEGREE = 0.1):
-  strong (scale 0.3): effective = 0.03
-    hub_score = 0.50 + 0.03 * 1.0 = 0.53
-    verbatim_score = 0.60 + 0.03 * 0.0 = 0.60 → verbatim wins all hubs (pos 0)
-  medium (scale 1.0): effective = 0.10 (baseline)
-    hub_score = 0.50 + 0.10 * 1.0 = 0.60
-    verbatim_score = 0.60 → ties hub on score; UUID tie-break
-                                                   places between depending on UUID order
-  loose (scale 1.5): effective = 0.15
-    hub_score = 0.50 + 0.15 * 1.0 = 0.65
-    verbatim_score = 0.60 → verbatim loses all hubs (pos 5)
-
-Position delta strong→loose = 5 ≥ 3.
-
-The scale-map keys are `strong | medium | loose` per the canonical
-profile KnobSpec enum (`enum:strong|medium|loose`). Numeric ordering and
-semantic intent (strong tightens degree influence; loose lets hubs speak
-louder) are preserved.
-"""
 from __future__ import annotations
 
 import math
@@ -53,19 +10,7 @@ import pytest
 from iai_mcp.types import EMBED_DIM, MemoryRecord
 
 
-# --------------------------------------------------------- Fixture machinery
-# Reuses the design from tests/test_pipeline_normalized_degree.py
-# (_ControlledEmbedder + _unit_vector_with_cosine + _make_episodic).
-# Copied locally so this file is self-contained and the helpers
-# can evolve without coupling.
-
-
 class _ControlledEmbedder:
-    """Embedder whose output for a given text is deterministic AND
-    overridable. ``self.fixed`` maps cue text → 384d unit vector; any
-    other text falls through to a sha256-derived vector for parity with
-    the seed-time hash path used elsewhere in the suite.
-    """
 
     DIM = EMBED_DIM
 
@@ -91,7 +36,6 @@ class _ControlledEmbedder:
 
 
 def _unit_vector_with_cosine(cue_vec: list[float], target_cos: float) -> list[float]:
-    """Build a unit vector v such that dot(cue_vec, v) == target_cos."""
     cue = np.asarray(cue_vec, dtype=np.float32)
     cue_norm = float(np.linalg.norm(cue))
     if cue_norm == 0.0:
@@ -141,16 +85,6 @@ def _make_episodic(vec: list[float], text: str) -> MemoryRecord:
 
 
 def _make_schema_hub(vec: list[float], text: str, pattern: str) -> MemoryRecord:
-    """Schema-style hub fixture — tier=semantic + high-degree edges. Used
-    here as a high-cosine-but-low-cosine-vs-verbatim foil so the rank-stage
-    W_DEGREE knob is the only modulating signal.
-
-    The hub keeps tier=semantic and the high degree count (the only inputs
-    the W_DEGREE math reads) but drops the `pattern:` prefix from its tag, so
-    the concept-mode strip (which removes tier=semantic records tagged
-    `pattern:*` from hits[]) leaves the hub in hits[] where the ranking
-    assertion needs it.
-    """
     now = datetime.now(timezone.utc)
     return MemoryRecord(
         id=uuid4(),
@@ -170,7 +104,6 @@ def _make_schema_hub(vec: list[float], text: str, pattern: str) -> MemoryRecord:
         provenance=[],
         created_at=now,
         updated_at=now,
-        # Drop the `pattern:` prefix so the concept-mode strip keeps the hub.
         tags=["schema", "draft", f"hub:test:{pattern}"],
         language="en",
     )
@@ -191,25 +124,12 @@ def _isolated_keyring(monkeypatch: pytest.MonkeyPatch):
     yield fake
 
 
-HUB_DEGREE = 8     # 5 hubs each get 8 schema_instance_of edges; max_deg = 8
+HUB_DEGREE = 8
 HUB_COUNT = 5
 CUE_TEXT = "literal preservation cue marker R3"
 
 
 def _seed_verbatim_vs_hubs(tmp_path):
-    """Seed a store with one verbatim (cos=0.60, deg=0) and HUB_COUNT
-    schema hubs (each cos=0.50, deg=HUB_DEGREE).
-
-    Returns:
-        (store, embedder, graph, assignment, rich_club, verbatim_id, hub_ids, cue_text)
-
-    Geometry rationale:
-      max_deg = HUB_DEGREE → deg_norm(hub) = log(1+8)/log(1+8) = 1.0 exactly
-      deg_norm(verbatim) = log(1)/log(9) = 0.0
-      With strong scale 0.3: hub=0.50+0.03=0.53, verbatim=0.60 verbatim@0
-      With loose scale 1.5: hub=0.50+0.15=0.65, verbatim=0.60 verbatim@5
-      Δposition = 5 ≥ 3 (ceiling at 5; floor is 3).
-    """
     from iai_mcp.retrieve import build_runtime_graph
     from iai_mcp.store import MemoryStore
 
@@ -219,15 +139,12 @@ def _seed_verbatim_vs_hubs(tmp_path):
     cue_vec = embedder.embed(CUE_TEXT)
     embedder.set_fixed(CUE_TEXT, cue_vec)
 
-    # Verbatim — cos=0.60 to cue, no incoming/outgoing edges.
     verbatim_vec = _unit_vector_with_cosine(cue_vec, 0.60)
     verbatim_rec = _make_episodic(
         verbatim_vec, "the exact verbatim quote you are looking for"
     )
     store.insert(verbatim_rec)
 
-    # Schema hubs — each cos=0.50 to cue. Each gets HUB_DEGREE distractor
-    # edges so all 5 hubs end with deg = HUB_DEGREE = max_deg of the graph.
     hub_ids: list = []
     edge_pairs: list = []
     distractor_idx = 0
@@ -255,23 +172,13 @@ def _seed_verbatim_vs_hubs(tmp_path):
 
 
 def _verbatim_position(resp, verbatim_id) -> int | None:
-    """Return the verbatim record's position in resp.hits, or None if absent."""
     ids = [h.record_id for h in resp.hits]
     if verbatim_id not in ids:
         return None
     return ids.index(verbatim_id)
 
 
-# ============================================================================
-# Task 1 tests — rank-stage scale-map wiring
-# ============================================================================
-
-
 def test_scale_constant_keys_match_profile_enum():
-    """Shape lock: LITERAL_PRESERVATION_W_DEGREE_SCALE must be exactly the
-    canonical profile enum keys with the agreed numeric values. Locks
-    against future drift back to phantom keys (balanced/weak).
-    """
     from iai_mcp.pipeline import LITERAL_PRESERVATION_W_DEGREE_SCALE
 
     assert LITERAL_PRESERVATION_W_DEGREE_SCALE == {
@@ -286,10 +193,6 @@ def test_scale_constant_keys_match_profile_enum():
 
 
 def test_literal_preservation_strong_ranks_verbatim_high(tmp_path):
-    """Strong (scale 0.3) tightens degree influence so verbatim
-    (high-cos, deg=0) outranks every schema hub (low-cos, deg=max).
-    Acceptance: verbatim position ≤ 2 (top-3 variance window).
-    """
     from iai_mcp.pipeline import recall_for_response
 
     (store, embedder, graph, assignment, rich_club,
@@ -318,9 +221,6 @@ def test_literal_preservation_strong_ranks_verbatim_high(tmp_path):
 
 
 def test_literal_preservation_loose_ranks_verbatim_low(tmp_path):
-    """Loose (scale 1.5) lets hubs dominate so verbatim (high-cos, deg=0)
-    is pushed down past every schema hub. Acceptance: verbatim position ≥ 4.
-    """
     from iai_mcp.pipeline import recall_for_response
 
     (store, embedder, graph, assignment, rich_club,
@@ -350,9 +250,6 @@ def test_literal_preservation_loose_ranks_verbatim_low(tmp_path):
 
 
 def test_literal_preservation_knob_moves_verbatim_position(tmp_path):
-    """Main acceptance: position delta between literal_preservation=strong
-    and literal_preservation=loose on the same store + same cue ≥ 3.
-    """
     from iai_mcp.pipeline import recall_for_response
 
     (store, embedder, graph, assignment, rich_club,
@@ -387,13 +284,6 @@ def test_literal_preservation_knob_moves_verbatim_position(tmp_path):
 
 
 def test_literal_preservation_medium_is_normalize_only_baseline(tmp_path):
-    """Medium (scale 1.0) preserves 's normalize-only behaviour
-    — no extra knob effect on top of bounded deg_norm. Verbatim's position
-    under medium must lie BETWEEN its position under strong (low pos) and
-    loose (high pos). Strict inequality is informational; equality is
-    permitted because tied scores break by UUID and the medium tie can land
-    either side of strong.
-    """
     from iai_mcp.pipeline import recall_for_response
 
     (store, embedder, graph, assignment, rich_club,
@@ -421,7 +311,6 @@ def test_literal_preservation_medium_is_normalize_only_baseline(tmp_path):
     pos_m = _verbatim_position(resp_medium, verbatim_id)
     pos_l = _verbatim_position(resp_loose, verbatim_id)
     assert pos_s is not None and pos_m is not None and pos_l is not None
-    # Medium must lie between the extremes (allowing ties on either side).
     assert pos_s <= pos_m <= pos_l, (
         f"medium must be between strong and loose: "
         f"strong={pos_s}, medium={pos_m}, loose={pos_l}"
@@ -429,13 +318,6 @@ def test_literal_preservation_medium_is_normalize_only_baseline(tmp_path):
 
 
 def test_empty_profile_state_falls_back_to_medium_scale(tmp_path):
-    """When profile_state is empty/missing/None, the rank stage falls back
-    to medium scale (1.0) so existing callers without a knob set see no
-    behavioural change vs normalize-only baseline.
-
-    Empirical equivalence test: a recall_for_response with profile_state={} must
-    produce IDENTICAL ordering and scores to one with profile_state={"literal_preservation":"medium"}.
-    """
     from iai_mcp.pipeline import recall_for_response
 
     (store, embedder, graph, assignment, rich_club,
@@ -453,14 +335,12 @@ def test_empty_profile_state_falls_back_to_medium_scale(tmp_path):
         session_id="r3_medium_ref", budget_tokens=2000,
         profile_state={"literal_preservation": "medium"},
     )
-    # Same hit ordering.
     ids_empty = [h.record_id for h in resp_empty.hits]
     ids_medium = [h.record_id for h in resp_medium.hits]
     assert ids_empty == ids_medium, (
         f"empty profile_state must equal medium baseline. "
         f"empty={ids_empty}, medium={ids_medium}"
     )
-    # And same scores (within float32 noise).
     scores_empty = [h.score for h in resp_empty.hits]
     scores_medium = [h.score for h in resp_medium.hits]
     for a, b in zip(scores_empty, scores_medium):
@@ -470,21 +350,7 @@ def test_empty_profile_state_falls_back_to_medium_scale(tmp_path):
         )
 
 
-# ============================================================================
-# Task 2 tests — core.py:dispatch threading of profile_state
-# ============================================================================
-
-
 def test_dispatch_passes_profile_state_to_recall_for_response(tmp_path, monkeypatch):
-    """core.py:dispatch must pass profile_state=_profile_state into the
-    recall_for_response call. Previously the kwarg was missing — every
-    knob value silently dropped before reaching the rank stage.
-
-    Test pattern: monkey-patch iai_mcp.pipeline.recall_for_response with a
-    capture wrapper, route a memory_recall through dispatch(), then assert
-    the captured kwargs include profile_state with the literal_preservation
-    knob value the test set on _profile_state.
-    """
     from iai_mcp import core, pipeline as _pipeline_mod
     from iai_mcp.types import RecallResponse
 
@@ -496,17 +362,12 @@ def test_dispatch_passes_profile_state_to_recall_for_response(tmp_path, monkeypa
     def _capturing_recall(*args, **kwargs):
         captured["args"] = args
         captured["kwargs"] = kwargs
-        # Return a minimal valid response so dispatch() doesn't crash.
         return RecallResponse(
             hits=[], anti_hits=[], activation_trace=[],
             budget_used=0, hints=[],
         )
 
-    # Patch in the pipeline module namespace; dispatch's local import
-    # `from iai_mcp.pipeline import recall_for_response` resolves through the
-    # module attribute table so the patch is honoured.
     monkeypatch.setattr(_pipeline_mod, "recall_for_response", _capturing_recall)
-    # Set the knob on the per-process profile state.
     monkeypatch.setitem(core._profile_state, "literal_preservation", "strong")
 
     core.dispatch(
@@ -548,21 +409,6 @@ def test_dispatch_passes_profile_state_to_recall_for_response(tmp_path, monkeypa
     )
 )
 def test_dispatch_end_to_end_knob_moves_verbatim_position(tmp_path, monkeypatch):
-    """Integration: the position-delta acceptance from Task 1 reproduces
-    THROUGH the dispatch entrypoint (not just direct recall_for_response calls).
-    Proves both bugs landed together — wiring at the rank stage AND threading
-    via core.py.
-
-    Mutates iai_mcp.core._profile_state between two dispatch() calls and
-    asserts the verbatim's position-delta ≥ 3 holds via the dispatcher path.
-
-    Why monkey-patch ``iai_mcp.embed.embedder_for_store``: the dispatch path
-    calls ``embedder_for_store(store)`` to embed the cue, which loads the
-    real bge-small-en-v1.5 model. That breaks the hand-crafted cosine
-    geometry the fixture relies on (verbatim cos=0.60, hub cos=0.50). We
-    swap in the test's _ControlledEmbedder so the cue lands in the same
-    deterministic vector space the seeded record embeddings live in.
-    """
     from iai_mcp import core
     from iai_mcp import embed as _embed_mod
     from uuid import UUID
@@ -570,21 +416,14 @@ def test_dispatch_end_to_end_knob_moves_verbatim_position(tmp_path, monkeypatch)
     (store, embedder, graph, assignment, rich_club,
      verbatim_id, hub_ids, cue_text) = _seed_verbatim_vs_hubs(tmp_path)
 
-    # Pin embedder_for_store to return the test's _ControlledEmbedder so the
-    # cue's vector matches the seeded record geometry. Without this, dispatch
-    # would re-embed the cue with bge-small-en-v1.5 and the hand-crafted
-    # cos=0.50 / cos=0.60 spread collapses to whatever bge produces — the
-    # delta-≥-3 assertion becomes vacuous.
     monkeypatch.setattr(_embed_mod, "embedder_for_store", lambda _store: embedder)
 
-    # Strong call.
     monkeypatch.setitem(core._profile_state, "literal_preservation", "strong")
     resp_strong = core.dispatch(
         store, "memory_recall",
         {"cue": cue_text, "session_id": "e2e_dispatch_strong",
          "budget_tokens": 2000},
     )
-    # Loose call.
     monkeypatch.setitem(core._profile_state, "literal_preservation", "loose")
     resp_loose = core.dispatch(
         store, "memory_recall",
@@ -592,8 +431,6 @@ def test_dispatch_end_to_end_knob_moves_verbatim_position(tmp_path, monkeypatch)
          "budget_tokens": 2000},
     )
 
-    # dispatch returns a JSON-serialisable dict; hits are dict objects with
-    # "record_id" as str(UUID). Convert back to UUID for comparison.
     def _ids(resp):
         return [UUID(h["record_id"]) for h in resp["hits"]]
 

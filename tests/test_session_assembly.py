@@ -1,17 +1,3 @@
-"""Tests for the session-start assembler.
-
-The DEFAULT wake_depth is `minimal` (lazy <=30 tok payload). Tests that
-assert eager-dump behaviour now pass ``profile_state={"wake_depth":
-"standard"}`` explicitly to continue exercising the eager path.
-
-Scope:
-- Graceful empty-store path (total_cached_tokens == 0, l0 == "").
-- L0 identity rendering -- the configured identity appears in payload.l0 when seeded.
-- Total cached budget respected (<= 2000 tok) on realistic pinned content.
-- L2 community cap at 7 (Yeo-like).
-- Rich-club segment truncation at 1500-tok budget.
-- core.py `session_start_payload` dispatch wiring.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -33,19 +19,10 @@ from iai_mcp.session import (
 from iai_mcp.store import MemoryStore
 from iai_mcp.types import EMBED_DIM, MemoryRecord
 
-
-# Eager behaviour lives behind wake_depth="standard" now that the default
-# flipped to "minimal". Tests that need the eager path opt in explicitly.
 _STANDARD = {"wake_depth": "standard"}
 
-
-# ------------------------------------------------------------- helpers
-
-
 def _l0_record(store: MemoryStore) -> None:
-    """Seed the fixed-UUID L0 identity record (matches core._seed_l0_identity)."""
     _seed_l0_identity(store)
-
 
 def _pinned_record(
     store: MemoryStore,
@@ -77,16 +54,7 @@ def _pinned_record(
     store.insert(r)
     return r
 
-
-# -------------------------------------------------- graceful empty-store path
-
-
 def test_empty_store_graceful(tmp_path):
-    """Empty store -> all segments empty, token totals zero on cached.
-
-    Asserts on the standard path — minimal mode would emit pointer
-    handles even on empty stores, which is by design.
-    """
     store = MemoryStore(path=tmp_path)
     payload = assemble_session_start(
         store, CommunityAssignment(), [], profile_state=_STANDARD,
@@ -96,19 +64,11 @@ def test_empty_store_graceful(tmp_path):
     assert payload.l2 == []
     assert payload.rich_club == ""
     assert payload.total_cached_tokens == 0
-    # Dynamic tail is a fixed reserve even on empty stores.
     assert payload.total_dynamic_tokens > 0
 
-
-# ---------------------------------------------------------- identity
-
-
 def test_l0_renders_identity(tmp_path, monkeypatch):
-    """A seeded L0 record renders the configured identity into the L0 segment."""
     import json
 
-    # Seed a generic identity config; the seed reader resolves IAI_MCP_STORE,
-    # so point it at the same dir the store is constructed at.
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
     (tmp_path / "config.json").write_text(json.dumps(
         {"identity": {"name": "alice", "languages": "en", "role": "developer"}}))
@@ -119,63 +79,42 @@ def test_l0_renders_identity(tmp_path, monkeypatch):
     )
     assert "alice" in payload.l0
 
-
 def test_l0_uses_fixed_uuid(tmp_path):
-    """The assembler MUST read from the canonical L0 UUID. Standard mode."""
     store = MemoryStore(path=tmp_path)
     _l0_record(store)
-    # Confirm the seed landed at the fixed UUID, not some random new UUID.
     assert store.get(L0_RECORD_UUID) is not None
     payload = assemble_session_start(
         store, CommunityAssignment(), [], profile_state=_STANDARD,
     )
     assert payload.l0 != ""
 
-
 def test_l0_segment_excludes_literal_only_at_cap(tmp_path):
-    """L0 segment contains aaak_index header plus the literal (truncated if long)."""
     store = MemoryStore(path=tmp_path)
     _l0_record(store)
     payload = assemble_session_start(
         store, CommunityAssignment(), [], profile_state=_STANDARD,
     )
-    # The L0 record's aaak_index is stamped at seed time -> shows up in payload.
-    assert "W:" in payload.l0  # wing marker from generate_aaak_index
-
-
-# ------------------------------------------------------------- budget
-
+    assert "W:" in payload.l0
 
 def test_total_cached_budget_respected(tmp_path):
-    """L0 + L1 + L2 + rich_club <= TOTAL_CACHED_BUDGET (2000 tok)."""
     store = MemoryStore(path=tmp_path)
     _l0_record(store)
-    # 10 pinned L1 records with reasonable short content.
     for i in range(10):
         _pinned_record(store, f"Pinned fact #{i}: short verbatim content here.")
     payload = assemble_session_start(store, CommunityAssignment(), [])
     assert payload.total_cached_tokens <= TOTAL_CACHED_BUDGET
 
-
 def test_l1_caps_at_max_records(tmp_path):
-    """L1 segment stays bounded even with many pinned records (10-entry cap)."""
     store = MemoryStore(path=tmp_path)
     _l0_record(store)
-    # Seed 20 pinned records -- L1 should truncate to 10.
     for i in range(20):
         _pinned_record(store, f"Pinned fact #{i}")
     payload = assemble_session_start(store, CommunityAssignment(), [])
     l1_lines = payload.l1.split("\n") if payload.l1 else []
     assert len(l1_lines) <= 10
 
-
-# -------------------------------------------------- CONN-01 Yeo-like cap
-
-
 def test_l2_capped_at_seven(tmp_path):
-    """CONN-01: L2 summaries never exceed 7 regardless of input community count."""
     store = MemoryStore(path=tmp_path)
-    # Create 10 fake communities each with one member record.
     assignment = CommunityAssignment()
     for i in range(10):
         cid = uuid4()
@@ -189,14 +128,8 @@ def test_l2_capped_at_seven(tmp_path):
     assert len(payload.l2) <= L2_COMMUNITY_CAP
     assert L2_COMMUNITY_CAP == 7
 
-
-# ----------------------------------------------- rich-club budget truncation
-
-
 def test_rich_club_truncation_under_budget(tmp_path):
-    """Passing 50 records with long surfaces still keeps rich_club <= 1500 tok."""
     store = MemoryStore(path=tmp_path)
-    # Build 50 records with ~300 chars each (~75 tok each).
     rich_uuids: list[UUID] = []
     for i in range(50):
         r = _pinned_record(store, f"rich-club entry {i}: " + ("x" * 280))
@@ -204,15 +137,9 @@ def test_rich_club_truncation_under_budget(tmp_path):
     payload = assemble_session_start(store, CommunityAssignment(), rich_uuids)
     assert _approx_tokens(payload.rich_club) <= RICH_CLUB_BUDGET_TOKENS
 
-
-# ---------------------------------------------- core.py dispatch integration
-
-
 def test_session_start_payload_dispatch_empty(tmp_path):
-    """core.dispatch('session_start_payload') returns the canonical shape even on empty store."""
     store = MemoryStore(path=tmp_path)
     result = dispatch(store, "session_start_payload", {})
-    # Shape keys are all present regardless of whether the store is populated.
     for key in (
         "l0",
         "l1",
@@ -223,23 +150,13 @@ def test_session_start_payload_dispatch_empty(tmp_path):
         "breakpoint_marker",
     ):
         assert key in result
-    # On a fresh store the L0 segment is empty (no seed yet).
     assert result["l0"] == ""
     assert result["total_cached_tokens"] == 0
 
-
 def test_session_start_payload_dispatch_with_l0(tmp_path, monkeypatch):
-    """Once L0 is seeded, dispatch returns the configured identity content.
-
-    Per-process wake_depth stays at the 'minimal' default, so we temporarily
-    flip it to 'standard' for this assertion and restore afterwards.
-    Thread-safety is not a concern for unit tests.
-    """
     import json
     import iai_mcp.core as core
 
-    # Seed a generic identity config; the seed reader resolves IAI_MCP_STORE,
-    # so point it at the same dir the store is constructed at.
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
     (tmp_path / "config.json").write_text(json.dumps(
         {"identity": {"name": "alice", "languages": "en", "role": "developer"}}))
@@ -254,35 +171,20 @@ def test_session_start_payload_dispatch_with_l0(tmp_path, monkeypatch):
     finally:
         core._profile_state["wake_depth"] = original
 
-
 def test_payload_type_is_session_start_payload(tmp_path):
-    """Direct assemble_session_start returns a SessionStartPayload instance."""
     store = MemoryStore(path=tmp_path)
     payload = assemble_session_start(store, CommunityAssignment(), [])
     assert isinstance(payload, SessionStartPayload)
     assert payload.breakpoint_marker == "--<cache-breakpoint>--"
 
-
-# ---------------------------------------------------------------------------
-# recent_thread includes pending live events (standard/deep only)
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture
 def iai_home_assembly(tmp_path, monkeypatch):
-    """Redirect HOME + store so read_pending_live_events resolves to tmp."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path / ".iai-mcp"))
     monkeypatch.setenv("IAI_DAEMON_SOCKET_PATH", str(tmp_path / "test.sock"))
     yield tmp_path
 
-
 def test_recent_thread_includes_live_events_standard(iai_home_assembly):
-    """REQ-1: standard wake_depth includes a pending live turn in recent_thread.
-
-    The pending live turn is NOT in the store.  The _recent_thread_segment
-    called from the standard/deep assembly path must merge it.
-    """
     store = MemoryStore(path=iai_home_assembly)
 
     session = "assembly-live-session-60"
@@ -296,19 +198,12 @@ def test_recent_thread_includes_live_events_standard(iai_home_assembly):
         session_id=session,
         profile_state={"wake_depth": "standard"},
     )
-    # The recent_thread field must include the pending live turn's content
     assert live_text in (payload.recent_thread or ""), (
         f"standard payload recent_thread must include pending live turn; "
         f"got: {payload.recent_thread!r}"
     )
 
-
 def test_recent_thread_skips_live_scan_on_minimal(iai_home_assembly, monkeypatch):
-    """REQ-6: wake_depth=minimal NEVER calls read_pending_live_events.
-
-    Monkeypatches a sentinel to verify the helper is not invoked on the
-    minimal path (structural skip: minimal early-returns before line 542).
-    """
     store = MemoryStore(path=iai_home_assembly)
 
     call_count = [0]

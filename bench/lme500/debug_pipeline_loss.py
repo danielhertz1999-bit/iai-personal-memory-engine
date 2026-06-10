@@ -1,28 +1,7 @@
-"""bench/lme500/debug_pipeline_loss.py
+"""Trace which pipeline stage drops the gold session in loss cases.
 
-Trace WHICH pipeline stage drops the gold session in loss cases
-(rows where retrieve_recall hits in top-k but recall_for_benchmark does not).
+Usage: python bench/lme500/debug_pipeline_loss.py <question_id> [<question_id> ...]
 
-Usage:
-    python bench/lme500/debug_pipeline_loss.py <question_id> [<question_id>...]
-
-For each qid:
-- Loads the LongMemEval-S row from the pinned dataset.
-- Builds a fresh per-row store + runtime graph (same shape as the bench).
-- Runs retrieve_recall to confirm gold sessions are findable by flat cosine.
-- Runs recall_for_benchmark STAGE BY STAGE, recording at each cut whether the
-  gold record IDs survived.
-
-Stages traced:
-  Stage 2 — community gate (top-3 communities by centroid cosine)
-  Stage 3 — seeds (top-3 by cosine within gated candidates)
-  Stage 4 — 2-hop spread + rich-club union
-  Stage 5 — final recall_for_benchmark hits
-
-Output is a per-stage table showing where gold drops.
-
-Read-only — no src/iai_mcp changes. Calls private helpers _community_gate
-and _pick_seeds for stage-level inspection (debug-only path).
 """
 from __future__ import annotations
 
@@ -95,7 +74,6 @@ def find_row(qid: str):
 
 
 def trace_one(qid: str) -> dict:
-    """Returns a dict with the stage-by-stage gold survival counts."""
     print(f"\n{'=' * 78}\n=== qid={qid} ===\n{'=' * 78}", flush=True)
     question, qtype, gold_session_ids, sessions = find_row(qid)
     if question is None:
@@ -145,7 +123,6 @@ def trace_one(qid: str) -> dict:
     print(f"  rich-club: {len(rich_club)}", flush=True)
     cue_emb = embedder.embed(question)
 
-    # --- Baseline: retrieve_recall ---
     resp_x = retrieve_recall(
         store=store,
         cue_embedding=cue_emb,
@@ -162,7 +139,6 @@ def trace_one(qid: str) -> dict:
     print(f"    top-10 sessions: {x_sessions}", flush=True)
     print(f"    gold hit positions: {x_gold_pos}", flush=True)
 
-    # --- recall_for_benchmark, stage by stage ---
     print(f"\n  --- recall_for_benchmark (Y) stage-by-stage ---", flush=True)
 
     gated = _community_gate(cue_emb, assignment, top_n=3)
@@ -171,9 +147,6 @@ def trace_one(qid: str) -> dict:
         for cid in assignment.mid_regions.get(gc, []):
             candidates_set.add(cid)
     if not candidates_set:
-        # ``iter_nodes()`` yields UUID instances (was ``str(uuid)`` under the
-        # prior networkx backend); the prior ``UUID(n)`` wrap is therefore no
-        # longer needed.
         candidates_set = set(graph.iter_nodes())
         print(f"    Stage 2 (community gate): EMPTY, fallback to all nodes", flush=True)
     print(f"    Stage 2 (community gate): top-3 communities = {gated}", flush=True)
@@ -194,8 +167,6 @@ def trace_one(qid: str) -> dict:
             centrality = graph.centrality()
         except Exception:
             centrality = {}
-    # _pick_seeds now reads from a shared cosine array.
-    # Build the same array the production pipeline builds.
     pool_ids, pool_embs = _collect_graph_pool(graph, None, store)
     cue_vec_norm = np.asarray(cue_emb, dtype=np.float32)
     cn = float(np.linalg.norm(cue_vec_norm))
@@ -250,16 +221,6 @@ def trace_one(qid: str) -> dict:
     print(f"      top-10 sessions: {y_sessions}", flush=True)
     print(f"      gold hit positions: {y_gold_pos}", flush=True)
 
-    # ----- Verdict -----
-    #: verdict primary signal is whether gold lands in
-    # recall_for_benchmark's top-10 — which is what matters for R@5/R@10.
-    # Stage-2/3/4 stage-by-stage diagnostics still print above (useful when
-    # gold is missed) but they observe the PRIVATE _community_gate /
-    # _pick_seeds path. The redesign makes the
-    # community gate a soft-bias diagnostic rather than a hard filter, so a
-    # "stage_2 missed" diagnostic with gold present in final hits means:
-    # the gate's communities did not include gold, but the cosine top-K
-    # candidate pool did, and Stage 5 ranking surfaced it.
     print(f"\n  --- VERDICT ---", flush=True)
     if y_gold_pos:
         print(f"    gold present in top-10 (positions {y_gold_pos}) — no_loss", flush=True)

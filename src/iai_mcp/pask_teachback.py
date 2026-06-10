@@ -1,4 +1,3 @@
-"""Pask teachback: pre-injection contradiction verification."""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -9,17 +8,8 @@ if TYPE_CHECKING:
 
 
 def verify_hit_set(store: "MemoryStore", hit_record_ids: list[UUID]) -> dict:
-    """Detect contradicts-edges within the given hit set.
-
-    Returns dict with keys:
-      - has_contradictions: bool
-      - contradiction_pairs: list[tuple[str, str]] (UUIDs as str for JSON-safety)
-      - teachback_summary: str
-      - hit_count: int
-    """
     hit_count = len(hit_record_ids)
     if hit_count < 2:
-        # Trivially no internal contradictions possible with fewer than 2 hits.
         return {
             "has_contradictions": False,
             "contradiction_pairs": [],
@@ -28,14 +18,11 @@ def verify_hit_set(store: "MemoryStore", hit_record_ids: list[UUID]) -> dict:
         }
 
     hit_ids_str = [str(h) for h in hit_record_ids]
-    # Lazy import: keeps this module free of daemon top-level coupling.
     from iai_mcp.store import EDGES_TABLE
 
     df = None
     try:
         tbl = store.db.open_table(EDGES_TABLE)
-        # The store supports a SQL-style IN-list filter; quoting UUID strings is safe
-        # because UUID format guarantees no single-quote injection vectors.
         id_list = ", ".join(f"'{i}'" for i in hit_ids_str)
         where = (
             f"edge_type = 'contradicts' "

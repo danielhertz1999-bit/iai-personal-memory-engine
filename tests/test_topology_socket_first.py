@@ -1,18 +1,3 @@
-"""Regression tests for ``iai-mcp topology`` socket-first fix.
-
-cmd_topology previously opened MemoryStore() directly, taking the HippoDB
-exclusive fcntl lock. While the live daemon holds that lock the command would
-crash with HippoLockHeldError.
-
-The fix probes the AF_UNIX socket first (JSON-RPC topology call); the daemon
-answers while keeping its own lock, so there is no contention. Direct-open is
-the fallback for the daemon-down case (lock free). A HippoLockHeldError guard
-protects the fallback path for the mid-REM edge case where the socket times out
-but the daemon still holds the lock.
-
-All tests are fully mocked: no live daemon, no real store, no socket I/O,
-no filesystem access.
-"""
 from __future__ import annotations
 
 import argparse
@@ -20,13 +5,10 @@ import io
 from contextlib import redirect_stdout
 from unittest.mock import MagicMock, patch
 
-
 def _args() -> argparse.Namespace:
     return argparse.Namespace()
 
-
 def _topology_rpc_response() -> dict:
-    """Canonical JSON-RPC envelope wrapping a topology result dict."""
     return {
         "jsonrpc": "2.0",
         "id": 1,
@@ -41,13 +23,7 @@ def _topology_rpc_response() -> dict:
         },
     }
 
-
-# ---------------------------------------------------------------------------
-# (a) Socket path — daemon up
-# ---------------------------------------------------------------------------
-
 def test_topology_socket_renders_when_daemon_up():
-    """Socket returns a topology envelope -> renders all fields, rc 0."""
     from iai_mcp.cli import cmd_topology
 
     fake_resp = _topology_rpc_response()
@@ -70,9 +46,7 @@ def test_topology_socket_renders_when_daemon_up():
     assert "communities: 5" in out, f"communities line missing in: {out!r}"
     assert "sigma: 2.1000" in out, f"sigma line missing in: {out!r}"
 
-
 def test_topology_socket_does_not_open_memorystore():
-    """Socket success -> MemoryStore is never instantiated (no lock contention)."""
     from iai_mcp.cli import cmd_topology
 
     called = []
@@ -91,13 +65,7 @@ def test_topology_socket_does_not_open_memorystore():
 
     assert not called, "MemoryStore was instantiated on the socket path — lock contention bug"
 
-
-# ---------------------------------------------------------------------------
-# (b) Direct-open fallback — daemon down (socket returns None)
-# ---------------------------------------------------------------------------
-
 def test_topology_fallback_when_socket_none():
-    """Socket returns None -> fallback to direct open, renders output, rc 0."""
     from iai_mcp.cli import cmd_topology
 
     fake_snap = {
@@ -127,18 +95,7 @@ def test_topology_fallback_when_socket_none():
     assert "N: 42" in out, f"N line missing in: {out!r}"
     assert "regime: developmental" in out, f"regime line missing in: {out!r}"
 
-
-# ---------------------------------------------------------------------------
-# (c) HippoLockHeldError guard — mid-REM socket timeout
-# ---------------------------------------------------------------------------
-
 def test_topology_degrades_on_hippo_lock_held():
-    """Socket returns None AND MemoryStore raises HippoLockHeldError -> rc 0, no crash.
-
-    This covers the mid-REM edge case: socket times out (returns None) but the
-    daemon is still running and holding the lock. The command must degrade to
-    insufficient_data output rather than propagating the exception.
-    """
     from iai_mcp.cli import cmd_topology
     from iai_mcp.hippo import HippoLockHeldError
 
@@ -152,6 +109,5 @@ def test_topology_degrades_on_hippo_lock_held():
 
     assert rc == 0, f"expected rc=0 on HippoLockHeldError, got {rc}"
     out = buf.getvalue()
-    # All fields should degrade to insufficient_data sentinel
     assert "N: insufficient_data" in out, f"N line missing in degraded output: {out!r}"
     assert "regime: insufficient_data" in out, f"regime line missing in degraded output: {out!r}"

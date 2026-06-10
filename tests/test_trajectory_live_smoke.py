@@ -1,10 +1,3 @@
-"""Trajectory live-vs-synthetic smoke test.
-
-Proof that M2/M4/M6 numbers are actually coming from emitted events --
-the live values must differ measurably from the synthetic placeholder
-constants (which were all 0.0). M1/M3/M5 are static helpers and
-must remain unchanged in shape.
-"""
 from __future__ import annotations
 
 from uuid import uuid4
@@ -28,7 +21,6 @@ from iai_mcp.trajectory import (
     m6_context_repeat_rate_live,
 )
 from iai_mcp.types import EMBED_DIM, MemoryRecord
-
 
 def _make_record(literal: str) -> MemoryRecord:
     from datetime import datetime, timezone
@@ -55,9 +47,7 @@ def _make_record(literal: str) -> MemoryRecord:
         language="en",
     )
 
-
 def test_m2_live_differs_from_synthetic_when_retrievals_happen(tmp_path):
-    """The point of M2 going live: at least once retrieval must drive it >0."""
     store = MemoryStore(path=tmp_path)
     store.insert(_make_record("a"))
     store.insert(_make_record("b"))
@@ -72,7 +62,6 @@ def test_m2_live_differs_from_synthetic_when_retrievals_happen(tmp_path):
         f"M2 live ({live}) must differ from synthetic ({M2_SYNTHETIC_CONSTANT})"
     )
 
-
 def test_m4_live_differs_from_synthetic_when_profile_writes_happen(tmp_path):
     store = MemoryStore(path=tmp_path)
     state = profile.default_state()
@@ -82,7 +71,6 @@ def test_m4_live_differs_from_synthetic_when_profile_writes_happen(tmp_path):
     assert abs(live - M4_SYNTHETIC_CONSTANT) > 0.001, (
         f"M4 live ({live}) must differ from synthetic ({M4_SYNTHETIC_CONSTANT})"
     )
-
 
 def test_m6_live_differs_from_synthetic_when_session_starts_repeat(tmp_path):
     store = MemoryStore(path=tmp_path)
@@ -95,13 +83,7 @@ def test_m6_live_differs_from_synthetic_when_session_starts_repeat(tmp_path):
         f"M6 live ({live}) must differ from synthetic ({M6_SYNTHETIC_CONSTANT})"
     )
 
-
 def test_m1_m3_m5_remain_pre_phase3_live(tmp_path):
-    """M1/M3/M5 are static helpers; their behaviour must be unchanged.
-
-    Seed one curiosity_question + one session_start_tokens + one
-    curiosity_silent_log; assert the helpers still return real values.
-    """
     store = MemoryStore(path=tmp_path)
     sid = "smoke"
     write_event(
@@ -121,22 +103,17 @@ def test_m1_m3_m5_remain_pre_phase3_live(tmp_path):
     assert compute_m3_token_budget(store, sid) == pytest.approx(2500.0, abs=1e-6)
     assert compute_m5_curiosity_frequency(store, sid) == 2.0
 
-
 def test_compute_session_metrics_snapshot_returns_live_values_for_m2_m4_m6(tmp_path):
-    """compute_session_metrics_snapshot must surface the live functions."""
     store = MemoryStore(path=tmp_path)
     state = profile.default_state()
 
-    # M2 lift-off: one real recall.
     store.insert(_make_record("hello"))
     retrieve.recall(
         store=store, cue_embedding=[0.5] * EMBED_DIM,
         cue_text="hello", session_id="s",
     )
-    # M4 lift-off: one real change.
     profile.profile_set("interest_boost", 0.4, state, store=store)
     profile.profile_set("interest_boost", 0.6, state, store=store)
-    # M6 lift-off: two identical session starts.
     _g, assignment, rc = retrieve.build_runtime_graph(store)
     assemble_session_start(store, assignment, rc, session_id="x")
     assemble_session_start(store, assignment, rc, session_id="y")

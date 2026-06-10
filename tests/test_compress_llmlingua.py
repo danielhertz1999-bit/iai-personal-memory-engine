@@ -1,11 +1,3 @@
-"""Tests for LLMLingua-2 compression.
-
-Scope:
-- ALLOWED: L2 community descriptors, session summaries, cls_summary records.
-- FORBIDDEN: literal_surface of normal records, pinned, invariant_anchor,
-  user-tagged 'raw' records.
-- Passthrough when llmlingua package not installed (local-only stays green).
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -52,9 +44,6 @@ def _rec(
     )
 
 
-# --------------------------------------------------------------- is_compressible
-
-
 def test_is_compressible_rejects_pinned():
     from iai_mcp.compress import is_compressible
 
@@ -99,29 +88,23 @@ def test_is_compressible_allows_schema():
 
 
 def test_is_compressible_rejects_normal_record_by_default():
-    """literal_surface constitutional: default is reject unless explicitly allowed."""
     from iai_mcp.compress import is_compressible
 
     r = _rec(tags=["project:iai-mcp"])
     ok, reason = is_compressible(r)
     assert ok is False
-    assert "literal_surface" in reason.lower() or "constitutional" in reason.lower()
-
-
-# --------------------------------------------------------------- compress_llmlingua2
+    assert "literal_surface" in reason.lower()
 
 
 def test_compress_llmlingua2_passes_through_when_pkg_absent(tmp_path, monkeypatch):
-    """On ImportError, fall back to passthrough + log llm_health event."""
     from iai_mcp import compress as compress_mod
 
-    # Force the import path to fail.
     monkeypatch.setattr(compress_mod, "_load_llmlingua2", lambda: None)
 
     store = MemoryStore(path=tmp_path)
     text = "this is a long text that would normally be compressed"
     out = compress_mod.compress_llmlingua2(text, target_ratio=0.5, store=store)
-    assert out == text  # passthrough
+    assert out == text
 
 
 def test_compress_llmlingua2_logs_fallback_event(tmp_path, monkeypatch):
@@ -136,13 +119,9 @@ def test_compress_llmlingua2_logs_fallback_event(tmp_path, monkeypatch):
     assert len(fallback_events) >= 1
 
 
-# --------------------------------------------------------------- wrappers
-
-
 def test_compress_l2_descriptor_uses_l2_target_ratio():
     from iai_mcp.compress import COMPRESSION_TARGET_L2, compress_l2_descriptor
 
-    # Passthrough when pkg absent -- just check the function is callable.
     out = compress_l2_descriptor("community summary line")
     assert isinstance(out, str)
     assert COMPRESSION_TARGET_L2 == 0.5

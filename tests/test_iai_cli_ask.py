@@ -1,4 +1,3 @@
-"""Tests for `iai ask` -- recall + claude_cli synthesis."""
 from __future__ import annotations
 
 import io
@@ -15,14 +14,11 @@ def _make_args(question: str = "test question", limit: int = 5):
 
 
 def _stub_recall_hits(monkeypatch, hits: list[dict]):
-    """Pin _send_jsonrpc_request to return a fake recall response."""
     fake_resp = {"jsonrpc": "2.0", "id": 1, "result": {"hits": hits}}
     monkeypatch.setattr("iai_mcp.cli._send_jsonrpc_request", lambda *a, **k: fake_resp)
 
 
 def test_ask_happy_path_prints_answer_and_sources(monkeypatch):
-    """Recall returns hits, claude_cli returns answer -> stdout has the
-    answer + 'Sources:...' footer + exit 0."""
     from iai_mcp import iai_cli
 
     _stub_recall_hits(monkeypatch, [
@@ -31,7 +27,6 @@ def test_ask_happy_path_prints_answer_and_sources(monkeypatch):
     ])
 
     def _fake_sync(prompt, **kwargs):
-        # Prompt must include both the question and the memory surfaces.
         assert "fact one" in prompt
         assert "fact two" in prompt
         return {
@@ -58,8 +53,6 @@ def test_ask_happy_path_prints_answer_and_sources(monkeypatch):
 
 
 def test_ask_no_hits_returns_nonzero_with_explanation(monkeypatch):
-    """No memories to ground the answer -> error message + exit 1.
-    Don't invoke claude_cli (saves tokens)."""
     from iai_mcp import iai_cli
 
     _stub_recall_hits(monkeypatch, [])
@@ -83,7 +76,6 @@ def test_ask_no_hits_returns_nonzero_with_explanation(monkeypatch):
 
 
 def test_ask_subscription_gate_denies(monkeypatch):
-    """claude_cli returns ok=False -> error printed + exit 1."""
     from iai_mcp import iai_cli
 
     _stub_recall_hits(monkeypatch, [
@@ -105,7 +97,6 @@ def test_ask_subscription_gate_denies(monkeypatch):
 
 
 def test_ask_empty_answer_returns_nonzero(monkeypatch):
-    """claude_cli returns ok=True but empty data -> error."""
     from iai_mcp import iai_cli
 
     _stub_recall_hits(monkeypatch, [
@@ -127,8 +118,6 @@ def test_ask_empty_answer_returns_nonzero(monkeypatch):
 
 
 def test_ask_truncates_memories_to_limit(monkeypatch):
-    """When --limit is set, the prompt must include only that many
-    memories (not all recall hits)."""
     from iai_mcp import iai_cli
 
     hits = [
@@ -150,7 +139,6 @@ def test_ask_truncates_memories_to_limit(monkeypatch):
     with redirect_stdout(buf):
         iai_cli.cmd_ask(_make_args(limit=3))
 
-    # Only memories 0, 1, 2 in prompt.
     assert "memory 0" in seen_prompt["prompt"]
     assert "memory 1" in seen_prompt["prompt"]
     assert "memory 2" in seen_prompt["prompt"]
@@ -158,11 +146,10 @@ def test_ask_truncates_memories_to_limit(monkeypatch):
 
 
 def test_ask_subcommand_registered():
-    """`iai ask` is a valid subcommand in the parser."""
     from iai_mcp.iai_cli import _build_parser
 
     parser = _build_parser()
     args = parser.parse_args(["ask", "what is the answer to life?"])
     assert args.cmd == "ask"
     assert args.question == "what is the answer to life?"
-    assert args.limit == 5  # default
+    assert args.limit == 5

@@ -1,10 +1,3 @@
-"""Regression guard: native encode failure is observable via counter + log.
-
-Both embed() and embed_batch() route through _encode_one, so a native
-encode exception increments embed_failure_total and emits a logger.error
-breadcrumb before re-raising. This covers all 6 encode call sites at the
-store-free embedder boundary.
-"""
 from __future__ import annotations
 
 import logging
@@ -21,7 +14,6 @@ def _rust_available() -> bool:
 
 
 class _BrokenModel:
-    """Stub that mimics iai_mcp_native.embed.Embedder but always raises."""
 
     def __init__(self, exc: Exception):
         self._exc = exc
@@ -35,14 +27,12 @@ class _BrokenModel:
     reason="iai_mcp_native wheel not installed on this runner",
 )
 def test_embed_failure_increments_counter_and_logs(monkeypatch, caplog):
-    """embed() failure increments embed_failure_total and emits logger.error."""
     import iai_mcp.embed as embed_mod
     from iai_mcp.embed import Embedder
 
     e = Embedder()
     before = embed_mod.embed_failure_total
 
-    # Replace the native model object with a broken stub.
     e._model = _BrokenModel(RuntimeError("boom"))
 
     with caplog.at_level(logging.ERROR, logger="iai_mcp.embed"):
@@ -62,10 +52,6 @@ def test_embed_failure_increments_counter_and_logs(monkeypatch, caplog):
     reason="iai_mcp_native wheel not installed on this runner",
 )
 def test_embed_batch_failure_is_observable(monkeypatch, caplog):
-    """embed_batch() failure increments embed_failure_total and emits logger.error.
-
-    Proves the per-item batch loop routes through _encode_one (no silent hole).
-    """
     import iai_mcp.embed as embed_mod
     from iai_mcp.embed import Embedder
 

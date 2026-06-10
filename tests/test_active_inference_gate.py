@@ -1,9 +1,3 @@
-"""Tests for the active-inference retrieval gate.
-
-Contract: skip full pipeline_recall when expected free-energy reduction
-is less than 0.2 bits. Trivial cues (greetings, "thanks", very short strings)
-short-circuit to L0-only.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -64,7 +58,6 @@ def test_should_skip_retrieval_informative():
 
 
 def test_should_skip_very_short_cue():
-    """Cues shorter than 3 chars always skip (no discriminable signal)."""
     from iai_mcp.gate import should_skip_retrieval
 
     skip, _ = should_skip_retrieval("a")
@@ -74,7 +67,6 @@ def test_should_skip_very_short_cue():
 
 
 def test_pipeline_recall_skip_path_returns_minimal_response(tmp_path, monkeypatch):
-    """When gate triggers, pipeline_recall must return the L0 record only."""
     from iai_mcp import embed as embed_mod
     from iai_mcp.core import _seed_l0_identity, dispatch
 
@@ -96,7 +88,6 @@ def test_pipeline_recall_skip_path_returns_minimal_response(tmp_path, monkeypatc
 
     store = MemoryStore(path=tmp_path)
     _seed_l0_identity(store)
-    # Insert extra records so the pipeline branch would normally run.
     now = datetime.now(timezone.utc)
     for i in range(3):
         rec = MemoryRecord(
@@ -124,5 +115,4 @@ def test_pipeline_recall_skip_path_returns_minimal_response(tmp_path, monkeypatc
 
     resp = dispatch(store, "memory_recall", {"cue": "hi", "session_id": "s-trivial"})
     assert "budget_used" in resp
-    # Retrieval skip reduces budget dramatically (<50 tokens typical).
     assert resp["budget_used"] < 200

@@ -1,14 +1,3 @@
-"""Hermetic per-stage recall latency profiling harness.
-
-Wave-0 profile-to-confirm:
-  - Per-stage latency split: ALL 6 full-table scans + end-to-end recall
-  - ef/k linchpin: query_similar(k=200) at ef=50 + recall@200 vs exact at ef>=200
-  - Small-k (k=3) ef blast-radius: latency delta + top-set identity + memory delta
-  - Gate-B comparand fixture at N=1k AND N=10k
-
-This file MUST NOT modify any production src/ module.
-Run with: pytest tests/test_recall_stage_profile.py -x --runslow
-"""
 from __future__ import annotations
 
 import json
@@ -30,39 +19,24 @@ from iai_mcp.embed import Embedder, embedder_for_store
 from iai_mcp.store import MemoryStore
 from iai_mcp.types import EMBED_DIM, MemoryRecord
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
 RNG_SEED = 20260601
 N_SMALL = 1_000
 N_LARGE = 10_000
-N_TRIALS = 12          # per timing cell; >= 10 required
+N_TRIALS = 12
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "recall_quality_baseline.json"
 
-# Generic cue = broad common word
 LEXICAL_GENERIC_CUE = "hello"
-# Specific cue = distinctive multi-word phrase not present in filler records
 LEXICAL_SPECIFIC_CUE = "specialized technical framework review"
 
-# Stable-key text templates for gold/reference records
 _GOLD_TEXT_TEMPLATE = "reference gold doc {i}"
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _random_vec(seed: int) -> list[float]:
     rng = np.random.default_rng(seed)
     v = rng.random(EMBED_DIM).astype(np.float32)
     return (v / np.linalg.norm(v)).tolist()
 
-
 def _make_gold_record(i: int, vec: list[float]) -> MemoryRecord:
-    """Build a gold record with a deterministic stable UUID(int=i)."""
     from datetime import datetime, timezone
     return MemoryRecord(
         id=UUID(int=i),
@@ -86,9 +60,7 @@ def _make_gold_record(i: int, vec: list[float]) -> MemoryRecord:
         language="en",
     )
 
-
 def _populate_bulk(store: MemoryStore, n: int, rng_seed: int = RNG_SEED) -> None:
-    """Insert n filler records with deterministic random vectors."""
     rng = np.random.default_rng(rng_seed)
     for i in range(n):
         v = rng.random(EMBED_DIM).astype(np.float32)
@@ -99,11 +71,8 @@ def _populate_bulk(store: MemoryStore, n: int, rng_seed: int = RNG_SEED) -> None
         )
         store.insert(rec)
 
-
 def _reset_auto_depth() -> None:
-    """Reset the module-global auto-depth flag between trials."""
     _pipeline_mod._last_recall_latency_ms = 0.0
-
 
 def _p50_p95(samples: list[float]) -> tuple[float, float]:
     s = sorted(samples)
@@ -111,9 +80,7 @@ def _p50_p95(samples: list[float]) -> tuple[float, float]:
     p95 = s[int(len(s) * 0.95)]
     return p50, p95
 
-
 def _monkeypatch_env(monkeypatch, tmp_path: Path) -> None:
-    """Redirect all store/daemon paths to tmp_path to protect live ~/.iai-mcp."""
     fake_home = tmp_path / "home"
     fake_home.mkdir(exist_ok=True)
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path / "store"))
@@ -121,9 +88,7 @@ def _monkeypatch_env(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("IAI_DAEMON_SOCKET_PATH", str(tmp_path / "daemon.sock"))
     monkeypatch.setenv("IAI_MCP_RECALL_SAMPLE_RATE", "1.0")
 
-
 def _print_table(title: str, rows: list[tuple]) -> None:
-    """Print a simple text table to stdout."""
     print(f"\n{'='*72}")
     print(f"  {title}")
     print(f"{'='*72}")
@@ -134,27 +99,14 @@ def _print_table(title: str, rows: list[tuple]) -> None:
         print(f"{label:<44} {p50:>8.1f} {p95:>8.1f}")
     print(f"{'='*72}\n")
 
-
 def _build_store(root: Path, n: int) -> MemoryStore:
-    """Build + populate a hermetic store at root/store-{n}."""
     store_path = root / f"store-{n}"
     store_path.mkdir(parents=True, exist_ok=True)
     store = MemoryStore(str(store_path))
     _populate_bulk(store, n, rng_seed=RNG_SEED)
     return store
 
-
-# ---------------------------------------------------------------------------
-# STAGE ISOLATION HELPERS
-# ---------------------------------------------------------------------------
-
-
 def _time_build_runtime_graph_miss(store: MemoryStore) -> float:
-    """Time a build_runtime_graph MISS by purging the on-disk cache first.
-
-    Returns elapsed ms.
-    """
-    # Purge any existing cache file so we force the MISS path.
     try:
         cache_path = Path(store.path) / "runtime_graph_cache.json"
         if cache_path.exists():
@@ -166,51 +118,37 @@ def _time_build_runtime_graph_miss(store: MemoryStore) -> float:
     build_runtime_graph(store)
     return (time.perf_counter() - t0) * 1000.0
 
-
 def _time_edges_topology_scan(store: MemoryStore) -> float:
-    """Time the isolated edges-topology to_pandas scan at N records."""
     tbl = store.db.open_table("edges")
     t0 = time.perf_counter()
     _ = tbl.to_pandas()
     return (time.perf_counter() - t0) * 1000.0
 
-
 def _time_temporal_validity_dirty(store: MemoryStore, insert_rec: MemoryRecord) -> float:
-    """Insert a record (dirty flag), then time build_temporal_validity_maps (dirty/post-write path)."""
     from iai_mcp.retrieve import build_temporal_validity_maps, _tv_cache_dirty
-    # Force dirty flag.
     store.insert(insert_rec)
-    # Confirm dirty.
     _tv_cache_dirty[id(store)] = True
     t0 = time.perf_counter()
     build_temporal_validity_maps(store)
     return (time.perf_counter() - t0) * 1000.0
 
-
 def _time_temporal_validity_clean(store: MemoryStore) -> float:
-    """Time build_temporal_validity_maps on a CLEAN (cache-hit) path."""
     from iai_mcp.retrieve import build_temporal_validity_maps, _tv_cache_dirty
-    # Ensure cache is populated and flag is clean.
     _tv_cache_dirty[id(store)] = True
-    build_temporal_validity_maps(store)  # warm
+    build_temporal_validity_maps(store)
     _tv_cache_dirty[id(store)] = False
     t0 = time.perf_counter()
     build_temporal_validity_maps(store)
     return (time.perf_counter() - t0) * 1000.0
 
-
 def _build_graph_for_store(store: MemoryStore):
-    """Build runtime graph (using cache if available)."""
     from iai_mcp.retrieve import build_runtime_graph
     return build_runtime_graph(store)
 
-
 def _time_anti_hits_scan(store: MemoryStore, graph, cue_vec: list[float]) -> float:
-    """Time _find_anti_hits which does a full edges.to_pandas() scan."""
     from iai_mcp.pipeline import _find_anti_hits
     from iai_mcp.types import MemoryHit
     hits = store.query_similar(cue_vec, k=5)
-    # Convert to MemoryHit objects expected by _find_anti_hits.
     memory_hits = [
         MemoryHit(
             record_id=r.id,
@@ -225,25 +163,12 @@ def _time_anti_hits_scan(store: MemoryStore, graph, cue_vec: list[float]) -> flo
     _find_anti_hits(memory_hits, store, graph, k=3)
     return (time.perf_counter() - t0) * 1000.0
 
-
 def _time_schema_evidence_scan(store: MemoryStore) -> float:
-    """Time the concept-mode schema-evidence full edges.to_pandas() scan.
-
-    This mirrors pipeline.py: store.db.open_table("edges").to_pandas()
-    called when mode=="concept". Timed in isolation here.
-    """
     t0 = time.perf_counter()
     _ = store.db.open_table("edges").to_pandas()
     return (time.perf_counter() - t0) * 1000.0
 
-
 def _time_profile_modulates_large_batch(store: MemoryStore) -> float:
-    """Time the Stage-14 profile_modulates large-batch boost_edges scan.
-
-    Calls store.boost_edges with >4 pairs so the large-batch to_pandas() path fires.
-    This mirrors pipeline.py -> store.py.
-    """
-    # Build 6 pairs (> _SMALL_BATCH=4) using the PROFILE_SENTINEL_UUID.
     from iai_mcp.pipeline import PROFILE_SENTINEL_UUID
     dummy_ids = [UUID(int=9_000_000 + i) for i in range(6)]
     pairs = [(dummy_id, PROFILE_SENTINEL_UUID) for dummy_id in dummy_ids]
@@ -252,19 +177,15 @@ def _time_profile_modulates_large_batch(store: MemoryStore) -> float:
     store.boost_edges(pairs, edge_type="profile_modulates", delta=deltas)
     return (time.perf_counter() - t0) * 1000.0
 
-
 def _time_embed(cue_text: str) -> float:
-    """Time a single embedder.embed() call."""
     embedder = Embedder()
     t0 = time.perf_counter()
     embedder.embed(cue_text)
     return (time.perf_counter() - t0) * 1000.0
 
-
 def _time_end_to_end_recall(
     store: MemoryStore, graph, assignment, rich_club, embedder: Embedder, cue_text: str,
 ) -> float:
-    """Time a full recall_for_response call (warm graph = HIT path)."""
     from iai_mcp.pipeline import recall_for_response
     _reset_auto_depth()
     t0 = time.perf_counter()
@@ -275,25 +196,12 @@ def _time_end_to_end_recall(
     )
     return (time.perf_counter() - t0) * 1000.0
 
-
-# ---------------------------------------------------------------------------
-# Hermetic per-stage profiling harness
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.slow
 def test_per_stage_latency_profile(tmp_path, monkeypatch):
-    """Per-stage profiling harness.
-
-    Measures all 6 full-table scans, embed baseline, AND end-to-end recall.
-    HIT vs MISS x lexical-generic vs lexical-specific x N=1k/N=10k.
-    All assertions are: harness ran + produced finite numbers (no fix-target assertions).
-    """
     _monkeypatch_env(monkeypatch, tmp_path)
 
     embedder = Embedder()
 
-    # ---- Embed stage baseline (negligible) ----
     embed_generic_ms = _time_embed(LEXICAL_GENERIC_CUE)
     embed_specific_ms = _time_embed(LEXICAL_SPECIFIC_CUE)
 
@@ -303,7 +211,6 @@ def test_per_stage_latency_profile(tmp_path, monkeypatch):
         store = _build_store(tmp_path, n_records)
         graph, assignment, rich_club = _build_graph_for_store(store)
 
-        # --- embed vectors for cues ---
         cue_vec_generic = embedder.embed(LEXICAL_GENERIC_CUE)
         cue_vec_specific = embedder.embed(LEXICAL_SPECIFIC_CUE)
 
@@ -311,7 +218,6 @@ def test_per_stage_latency_profile(tmp_path, monkeypatch):
             (LEXICAL_GENERIC_CUE, cue_vec_generic, "lexical-generic"),
             (LEXICAL_SPECIFIC_CUE, cue_vec_specific, "lexical-specific"),
         ]:
-            # ---- END-TO-END recall timing (warm graph = HIT path) ----
             e2e_hit_samples = []
             for _ in range(N_TRIALS):
                 ms = _time_end_to_end_recall(store, graph, assignment, rich_club, embedder, cue_text)
@@ -320,7 +226,6 @@ def test_per_stage_latency_profile(tmp_path, monkeypatch):
             label = f"E2E-recall-HIT {cue_label} {n_label}"
             results_rows.append((label, p50, p95))
 
-            # ---- Scan 1: build_runtime_graph MISS literal_surface decrypt walk ----
             miss_decrypt_samples = []
             for _ in range(N_TRIALS):
                 ms = _time_build_runtime_graph_miss(store)
@@ -330,7 +235,6 @@ def test_per_stage_latency_profile(tmp_path, monkeypatch):
             label = f"S1-decrypt-MISS {cue_label} {n_label}"
             results_rows.append((label, p50, p95))
 
-            # ---- Scan 2: edges-topology scan (separate from decrypt walk) ----
             edges_topo_samples = []
             for _ in range(N_TRIALS):
                 ms = _time_edges_topology_scan(store)
@@ -339,7 +243,6 @@ def test_per_stage_latency_profile(tmp_path, monkeypatch):
             label = f"S2-edges-topology {n_label}"
             results_rows.append((label, p50, p95))
 
-            # ---- Scan 3a: temporal-validity DIRTY (post-write) path ----
             tv_dirty_samples = []
             for i in range(N_TRIALS):
                 dirty_rec = _make(
@@ -353,7 +256,6 @@ def test_per_stage_latency_profile(tmp_path, monkeypatch):
             label = f"S3a-temporal-validity-DIRTY {n_label}"
             results_rows.append((label, p50, p95))
 
-            # ---- Scan 3b: temporal-validity CLEAN (cache-hit) path ----
             tv_clean_samples = []
             for _ in range(N_TRIALS):
                 ms = _time_temporal_validity_clean(store)
@@ -362,10 +264,8 @@ def test_per_stage_latency_profile(tmp_path, monkeypatch):
             label = f"S3b-temporal-validity-HIT {n_label}"
             results_rows.append((label, p50, p95))
 
-            # Rebuild graph to account for dirty inserts above.
             graph, assignment, rich_club = _build_graph_for_store(store)
 
-            # ---- Scan 4: _find_anti_hits edges.to_pandas() scan ----
             anti_hits_samples = []
             for _ in range(N_TRIALS):
                 ms = _time_anti_hits_scan(store, graph, cue_vec)
@@ -375,7 +275,6 @@ def test_per_stage_latency_profile(tmp_path, monkeypatch):
             label = f"S4-anti-hits-edges-scan {cue_label} {n_label}"
             results_rows.append((label, p50, p95))
 
-            # ---- Scan 5: concept-mode schema-evidence edges.to_pandas() scan ----
             schema_ev_samples = []
             for _ in range(N_TRIALS):
                 ms = _time_schema_evidence_scan(store)
@@ -384,7 +283,6 @@ def test_per_stage_latency_profile(tmp_path, monkeypatch):
             label = f"S5-schema-evidence-edges-scan {n_label}"
             results_rows.append((label, p50, p95))
 
-            # ---- Scan 6: Stage-14 profile_modulates large-batch boost_edges (CC-E) ----
             profile_mod_samples = []
             for _ in range(N_TRIALS):
                 ms = _time_profile_modulates_large_batch(store)
@@ -393,29 +291,19 @@ def test_per_stage_latency_profile(tmp_path, monkeypatch):
             label = f"S6-profile-modulates-edges-scan {n_label}"
             results_rows.append((label, p50, p95))
 
-    # Print the full table for the owner to review.
     print(f"\n  Embed baseline: generic={embed_generic_ms:.1f}ms  specific={embed_specific_ms:.1f}ms")
     _print_table("Per-Stage Latency Profile (E2E + 6 Full-Table Scans)", results_rows)
 
-    # Assert harness ran and produced finite numbers -- NO fix-target assertions.
     for label, p50, p95 in results_rows:
         assert np.isfinite(p50), f"Non-finite p50 for {label}"
         assert np.isfinite(p95), f"Non-finite p95 for {label}"
         assert p50 >= 0.0, f"Negative p50 for {label}"
 
-
-# ---------------------------------------------------------------------------
-# ef/k linchpin + small-k blast-radius + Gate-B baseline fixture
-# ---------------------------------------------------------------------------
-
-
 def _exact_top_k(store: MemoryStore, cue_vec: list[float], k: int) -> list[str]:
-    """Compute exact top-k by full-pool matmul (same semantics as pipeline.py)."""
     records_tbl = store.db.open_table("records")
     df = records_tbl.search().select(["id", "embedding", "embedding_pending"]).limit(
         int(records_tbl.count_rows())
     ).to_pandas()
-    # Exclude pending.
     df = df[df["embedding_pending"].fillna(0).astype(int) == 0]
     if df.empty:
         return []
@@ -432,33 +320,22 @@ def _exact_top_k(store: MemoryStore, cue_vec: list[float], k: int) -> list[str]:
     order = np.argsort(-cos, kind="stable")[:k]
     return [str(ids[i]) for i in order]
 
-
 def _ann_top_k(store: MemoryStore, cue_vec: list[float], k: int) -> list[str]:
-    """Return ANN top-k record ids via query_similar."""
     results = store.query_similar(cue_vec, k=k)
     return [str(r.id) for r, _s in results]
 
-
 def _recall_at_k(ann_ids: list[str], exact_ids: list[str], k: int) -> float:
-    """Overlap fraction: |ANN_top_k intersect exact_top_k| / k."""
     ann_set = set(ann_ids[:k])
     exact_set = set(exact_ids[:k])
     if not exact_set:
         return 1.0
     return len(ann_set & exact_set) / len(exact_set)
 
-
 def _rss_mb() -> float:
-    """Current process RSS in MB."""
     proc = psutil.Process()
     return proc.memory_info().rss / (1024 * 1024)
 
-
 def _estimate_ann_top200_cosine_threshold(store: MemoryStore, cue_vec: list[float]) -> float:
-    """Estimate the cosine of the 200th nearest neighbor (ANN boundary).
-
-    Used to verify that a gold record is truly outside the ANN top-200.
-    """
     cue = np.asarray(cue_vec, dtype=np.float32)
     cue = cue / np.linalg.norm(cue)
     records_tbl = store.db.open_table("records")
@@ -471,30 +348,10 @@ def _estimate_ann_top200_cosine_threshold(store: MemoryStore, cue_vec: list[floa
     embs = np.array([list(e) for e in df["embedding"].tolist()], dtype=np.float32)
     cos = np.matmul(embs, cue)
     sorted_cos = np.sort(cos)[::-1]
-    # Return the cosine at the 200th position (0-indexed = 199).
     return float(sorted_cos[min(199, len(sorted_cos) - 1)])
-
 
 @pytest.mark.slow
 def test_ef_k_linchpin_and_gate_b_fixture(tmp_path, monkeypatch):
-    """ef/k linchpin measurement + durable Gate-B baseline fixture.
-
-    This test:
-    (a) Records query_similar(k=200) behaviour at ef=50.
-    (b) Raises ef to 200; computes recall@200 vs exact at ef>=200; measures
-        small-k (k=3) latency delta, top-set identity, and memory delta.
-    (c) Builds and writes tests/fixtures/recall_quality_baseline.json with
-        hub-sensitive gold (reachable via rich-club hub) AND two-hop-only
-        must_hit gold (reachable only via 2-hop spread, NOT in ANN top-200).
-
-    NOTE on recall@200 at N=10k: filler vectors are uniform random unit
-    vectors in 384-d. With near-uniform distribution, pairwise cosines cluster
-    tightly near 0 (std ~0.051), making the top-200 boundary barely above
-    random -- ANN at ef=200 struggles with near-tied neighbors. This is a
-    PESSIMISTIC scenario vs real clustered embeddings. The measured recall@200
-    quantifies the ANN quality on this distribution; real recall quality on
-    clustered production data is higher.
-    """
     _monkeypatch_env(monkeypatch, tmp_path)
     _reset_auto_depth()
 
@@ -513,7 +370,6 @@ def test_ef_k_linchpin_and_gate_b_fixture(tmp_path, monkeypatch):
         store_root.mkdir(parents=True, exist_ok=True)
         store = MemoryStore(str(store_root))
 
-        # --- Populate bulk filler ---
         rng = np.random.default_rng(RNG_SEED)
         for i in range(n_records):
             v = rng.random(EMBED_DIM).astype(np.float32)
@@ -526,11 +382,6 @@ def test_ef_k_linchpin_and_gate_b_fixture(tmp_path, monkeypatch):
         cue_gen_arr = np.asarray(cue_vec_generic, dtype=np.float32)
         cue_gen_arr /= np.linalg.norm(cue_gen_arr)
 
-        # --- Plant hub-sensitive gold (gold_id = UUID(int=1)) ---
-        # Hub gold: vector SIMILAR to generic cue (cosine ~0.99 -- in ANN top-k).
-        # This tests that a gold record reachable via the rich_club union is preserved.
-        # The hub node (UUID(int=2)) connects to the hub gold and to many other nodes,
-        # making it a high-degree node that appears in the rich_club.
         hub_gold_id = UUID(int=1)
         hub_gold_vec = list(cue_gen_arr)
         hub_gold_rec = _make_gold_record(1, hub_gold_vec)
@@ -542,60 +393,33 @@ def test_ef_k_linchpin_and_gate_b_fixture(tmp_path, monkeypatch):
         hub_node_vec /= np.linalg.norm(hub_node_vec)
         hub_node_rec = _make_gold_record(2, hub_node_vec.tolist())
         store.insert(hub_node_rec)
-        # Connect hub_node to hub_gold and to many other nodes (high degree).
         store.boost_edges([(hub_node_id, hub_gold_id)], edge_type="hebbian", delta=[3.0])
         for extra_i in range(12):
             store.boost_edges([(hub_node_id, UUID(int=1000 + extra_i))], edge_type="hebbian", delta=[1.0])
 
-        # --- Plant two-hop-only must_hit gold (CC-C) ---
-        # Strategy: make the seed have a vector similar to the specific cue so it IS
-        # in the ANN top-k. Then give the two-hop gold a vector that is:
-        # (a) NOT in the ANN top-200 by raw cosine at either N scale
-        # (b) Still has enough cosine similarity to survive the rank stage after
-        # being included via 2-hop spread from the seed.
-        #
-        # Design: gold vector is a small perturbation of cue_spec_arr (cosine ~0.15
-        # to the specific cue). At N=10k this may or may not be in the top-200 by
-        # pure cosine -- we measure and record the actual threshold. The two-hop-only
-        # property is verified by the _estimate_ann_top200_cosine_threshold function.
-        # The intermediate record connects seed to gold and is also made a hub-like
-        # node (many edges) so the gold record gets high degree/centrality.
         seed_id = UUID(int=3)
         seed_vec = list(cue_spec_arr)
         seed_rec = _make_gold_record(3, seed_vec)
         store.insert(seed_rec)
 
         intermediate_id = UUID(int=4)
-        # Intermediate: give it moderate similarity to cue (0.4) so it appears in
-        # ANN as well and its 2-hop neighborhood is inspected.
         inter_component = 0.4 * cue_spec_arr
         rng5 = np.random.default_rng(55555)
         inter_noise = rng5.random(EMBED_DIM).astype(np.float32)
-        inter_noise -= np.dot(inter_noise, cue_spec_arr) * cue_spec_arr  # orthogonal part
+        inter_noise -= np.dot(inter_noise, cue_spec_arr) * cue_spec_arr
         inter_noise /= np.linalg.norm(inter_noise)
-        inter_full = inter_component + 0.9165 * inter_noise  # gives cosine ~0.4
+        inter_full = inter_component + 0.9165 * inter_noise
         inter_full /= np.linalg.norm(inter_full)
         intermediate_rec = _make_gold_record(4, inter_full.tolist())
         store.insert(intermediate_rec)
-        # Make intermediate a hub: connect to many records.
         for extra_j in range(10):
             store.boost_edges([(intermediate_id, UUID(int=2000 + extra_j))], edge_type="hebbian", delta=[1.0])
 
         two_hop_gold_id = UUID(int=5)
-        # Two-hop gold: designed to be outside ANN top-200 by raw cosine yet
-        # surface via 2-hop spread + degree bonus.
-        # Strategy:
-        # - cosine ≈ 0.02 (well below the ~0.05 ANN top-200 boundary at N=10k)
-        # - Very high degree: intermediate connects to many additional gold-adjacent
-        # nodes so the gold accrues centrality and degree_norm in the rank formula.
-        # This means: Layer-1 ANN alone at ef=50 does NOT find the gold.
-        # Layer-1 with bounded 2-hop spread DOES find it (via seed→intermediate→gold).
-        # That makes the gold a genuine two-hop-only must_hit for Gate-B.
         rng6 = np.random.default_rng(66666)
         noise = rng6.random(EMBED_DIM).astype(np.float32)
         noise -= np.dot(noise, cue_spec_arr) * cue_spec_arr
         noise /= np.linalg.norm(noise)
-        # cosine to cue_spec ≈ 0.02 (well below top-200 boundary at N=1k AND N=10k)
         target_cosine = 0.02
         orth_magnitude = float(np.sqrt(max(0.0, 1.0 - target_cosine**2)))
         two_hop_vec = target_cosine * cue_spec_arr + orth_magnitude * noise
@@ -603,16 +427,11 @@ def test_ef_k_linchpin_and_gate_b_fixture(tmp_path, monkeypatch):
         two_hop_gold_rec = _make_gold_record(5, two_hop_vec.tolist())
         store.insert(two_hop_gold_rec)
 
-        # Give the two-hop gold high degree by connecting intermediate to it
-        # with a very strong edge, and connecting the gold to many additional
-        # records so it accrues degree centrality in the graph ranking.
         store.boost_edges([(seed_id, intermediate_id)], edge_type="hebbian", delta=[5.0])
         store.boost_edges([(intermediate_id, two_hop_gold_id)], edge_type="hebbian", delta=[5.0])
-        # Additional edges FROM gold to high-cosine filler records to boost degree.
         for extra_k in range(8):
             store.boost_edges([(two_hop_gold_id, UUID(int=3000 + extra_k))], edge_type="hebbian", delta=[2.0])
 
-        # --- Plant contradicts pair ---
         contradict_a_id = UUID(int=6)
         contradict_b_id = UUID(int=7)
         rng3 = np.random.default_rng(77777)
@@ -626,16 +445,13 @@ def test_ef_k_linchpin_and_gate_b_fixture(tmp_path, monkeypatch):
         store.insert(cb_rec)
         store.boost_edges([(contradict_a_id, contradict_b_id)], edge_type="contradicts", delta=[1.0])
 
-        # --- Build graph ---
         _reset_auto_depth()
         from iai_mcp.retrieve import build_runtime_graph
         graph, assignment, rich_club = build_runtime_graph(store)
 
-        # Verify seeding.
         hub_in_rich_club = hub_node_id in rich_club or hub_gold_id in rich_club
         print(f"  hub_in_rich_club: {hub_in_rich_club} (rich_club size={len(rich_club)})")
 
-        # Estimate ANN top-200 boundary for specific cue.
         ann_boundary = _estimate_ann_top200_cosine_threshold(store, cue_vec_specific)
         gold_cosine_vs_cue = float(np.dot(two_hop_vec, cue_spec_arr))
         two_hop_outside_ann_top200 = gold_cosine_vs_cue < ann_boundary
@@ -643,12 +459,10 @@ def test_ef_k_linchpin_and_gate_b_fixture(tmp_path, monkeypatch):
         print(f"  ANN top-200 boundary (specific cue): {ann_boundary:.4f}")
         print(f"  two-hop gold outside ANN top-200: {two_hop_outside_ann_top200}")
 
-        # Verify 2-hop reach from seed.
         spread_from_seed = graph.two_hop_neighborhood([seed_id], top_k=5)
         two_hop_reachable = two_hop_gold_id in spread_from_seed
         print(f"  two-hop gold reachable from seed via 2-hop: {two_hop_reachable}")
 
-        # --- (a) ef=50 behaviour for k=200 ---
         ef50_behaviour = "unknown"
         ef50_result_count = 0
         try:
@@ -664,13 +478,11 @@ def test_ef_k_linchpin_and_gate_b_fixture(tmp_path, monkeypatch):
             ef50_behaviour = f"raised: {type(exc).__name__}: {exc}"
         print(f"  ef=50 k=200 behaviour: {ef50_behaviour}")
 
-        # --- (b) Raise ef to >=200 for the linchpin ---
         rss_before_ef_raise = _rss_mb()
         store.db._hnsw.set_ef(200)
         rss_after_ef_raise = _rss_mb()
         memory_delta_ef_raise_mb = rss_after_ef_raise - rss_before_ef_raise
 
-        # Compute recall@200 overlap: ANN-top-200 vs exact-top-200 at ef>=200.
         recall_at_200_results = {}
         for cue_text, cue_vec, cue_label in [
             (LEXICAL_GENERIC_CUE, cue_vec_generic, "lexical-generic"),
@@ -682,7 +494,6 @@ def test_ef_k_linchpin_and_gate_b_fixture(tmp_path, monkeypatch):
             recall_at_200_results[cue_label] = round(overlap, 4)
             print(f"  recall@200 {cue_label} {n_label}: {overlap:.4f}")
 
-        # Small-k (k=3) blast-radius: reset ef to 50, measure, then raise to 200, measure again.
         store.db._hnsw.set_ef(50)
         k3_ef50_samples = []
         k3_ef50_top_set = None
@@ -708,7 +519,6 @@ def test_ef_k_linchpin_and_gate_b_fixture(tmp_path, monkeypatch):
         k3_latency_delta_p50 = k3_p50_ef200 - k3_p50_ef50
         k3_latency_delta_p95 = k3_p95_ef200 - k3_p95_ef50
         k3_top_set_changed = k3_ef50_top_set != k3_ef200_top_set
-        # Raising ef is toward-exact ANN recall (equal-or-more-accurate), never worse.
         k3_change_direction = "toward-exact-or-unchanged"
 
         print(f"  k=3 ef=50 p50={k3_p50_ef50:.1f}ms p95={k3_p95_ef50:.1f}ms")
@@ -717,14 +527,11 @@ def test_ef_k_linchpin_and_gate_b_fixture(tmp_path, monkeypatch):
         print(f"  k=3 top-set changed at ef=200: {k3_top_set_changed} ({k3_change_direction})")
         print(f"  memory delta (RSS) ef 50->200: {memory_delta_ef_raise_mb:+.1f}MB")
 
-        # Reset ef to 50 (daemon default) for baseline snapshot.
         store.db._hnsw.set_ef(50)
         _reset_auto_depth()
 
-        # --- (c) Baseline snapshot: recall@5 and recall@10 per cue ---
         from iai_mcp.pipeline import recall_for_response
 
-        # Rebuild graph with all planted records to ensure cache is warm.
         graph, assignment, rich_club = build_runtime_graph(store)
         _reset_auto_depth()
 
@@ -825,13 +632,11 @@ def test_ef_k_linchpin_and_gate_b_fixture(tmp_path, monkeypatch):
             },
         }
 
-    # Write the Gate-B comparand fixture.
     FIXTURE_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(FIXTURE_PATH, "w", encoding="utf-8") as f:
         json.dump(fixture_data, f, indent=2)
     print(f"\n  Gate-B fixture written: {FIXTURE_PATH}")
 
-    # Assertions: fixture exists, valid JSON, has required fields.
     assert FIXTURE_PATH.exists(), "Gate-B fixture not written"
     with open(FIXTURE_PATH) as f:
         loaded = json.load(f)
@@ -842,19 +647,15 @@ def test_ef_k_linchpin_and_gate_b_fixture(tmp_path, monkeypatch):
         assert "contradicts_pair_stable_keys" in entry
         assert "recall_at_200" in entry
         assert "small_k_ef_blast_radius" in entry
-        # Confirm must_hit and two_hop_only cues present.
         two_hop_cues = [c for c in entry["reference_cues"] if c.get("two_hop_only")]
         hub_cues = [c for c in entry["reference_cues"] if c.get("hub_sensitive")]
         assert len(two_hop_cues) >= 1, f"No two_hop_only cue in {n_label}"
         assert len(hub_cues) >= 1, f"No hub_sensitive cue in {n_label}"
-        # ef=50 behaviour recorded.
         assert entry["ef_50_behaviour"] != "unknown"
-        # recall@200 present.
         for cue_label in ("lexical-generic", "lexical-specific"):
             assert cue_label in entry["recall_at_200"], (
                 f"Missing recall@200 for {cue_label} in {n_label}"
             )
-        # Two-hop gold reachability verified.
         assert entry["two_hop_gold_reachable_via_2hop"], (
             f"Two-hop gold not reachable via 2-hop at {n_label} -- seeding failed"
         )

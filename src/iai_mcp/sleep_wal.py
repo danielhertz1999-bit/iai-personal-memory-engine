@@ -1,16 +1,3 @@
-"""Write-Ahead Log for destructive sleep operations.
-
-: Before any erasure or consolidation, write intent to a WAL file.
-On crash recovery, pending entries can be rolled back or replayed.
-
-WAL entries:
-- operation: tombstone | edge_prune | consolidate_merge | optimize_drop
-- target_ids: list of affected record/edge UUIDs
-- status: pending → committed | rolled_back
-- ts: ISO8601 creation time
-
-Dry-run mode: IAI_MCP_ERASURE_DRY_RUN=true writes WAL entries but skips execution.
-"""
 from __future__ import annotations
 
 import json
@@ -80,7 +67,6 @@ class WALEntry:
 
 
 class SleepWAL:
-    """Append-only write-ahead log for destructive sleep operations."""
 
     def __init__(self, path: Path | None = None):
         self.path = path or _wal_path()
@@ -127,7 +113,6 @@ class SleepWAL:
         return [e for e in entries.values() if e.status == "pending"]
 
     def cleanup(self, max_age_hours: int = 168) -> int:
-        """Remove committed/rolled_back entries older than max_age_hours."""
         if not self.path.exists():
             return 0
         cutoff = time.time() - (max_age_hours * 3600)

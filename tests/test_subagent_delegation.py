@@ -1,10 +1,3 @@
-"""Tests for subagent delegation.
-
-serialize_session_for_subagent emits a JSON-safe dict containing:
-- l0, l1, l2, rich_club segments (session-start payload)
-- hashes dict (delta-encoding integration)
-- proxy_tools list (5 memory tools; no user-introspection tools)
-"""
 from __future__ import annotations
 
 import json
@@ -15,7 +8,6 @@ import pytest
 
 from iai_mcp.store import MemoryStore
 from iai_mcp.types import EMBED_DIM, MemoryRecord
-
 
 @pytest.fixture(autouse=True)
 def _patch_embedder(monkeypatch):
@@ -37,7 +29,6 @@ def _patch_embedder(monkeypatch):
 
     monkeypatch.setattr(embed_mod, "Embedder", _FakeEmbedder)
     yield
-
 
 def _seeded_store(tmp_path) -> MemoryStore:
     store = MemoryStore(path=tmp_path)
@@ -69,7 +60,6 @@ def _seeded_store(tmp_path) -> MemoryStore:
         store.insert(rec)
     return store
 
-
 def test_serialize_session_keys(tmp_path):
     from iai_mcp.delegate import serialize_session_for_subagent
     from iai_mcp.retrieve import build_runtime_graph
@@ -78,7 +68,6 @@ def test_serialize_session_keys(tmp_path):
     _graph, assignment, rc = build_runtime_graph(store)
     out = serialize_session_for_subagent(store, assignment, rc)
     assert set(out.keys()) == {"l0", "l1", "l2", "rich_club", "hashes", "proxy_tools"}
-
 
 def test_serialize_hashes_for_each_component(tmp_path):
     from iai_mcp.delegate import serialize_session_for_subagent
@@ -93,7 +82,6 @@ def test_serialize_hashes_for_each_component(tmp_path):
         assert isinstance(hashes[k], str)
         assert len(hashes[k]) == 16
 
-
 def test_serialize_is_json_safe(tmp_path):
     from iai_mcp.delegate import serialize_session_for_subagent
     from iai_mcp.retrieve import build_runtime_graph
@@ -101,11 +89,9 @@ def test_serialize_is_json_safe(tmp_path):
     store = _seeded_store(tmp_path)
     _graph, assignment, rc = build_runtime_graph(store)
     out = serialize_session_for_subagent(store, assignment, rc)
-    # Round-trips through json without raising.
     blob = json.dumps(out)
     restored = json.loads(blob)
     assert restored["proxy_tools"] == out["proxy_tools"]
-
 
 def test_subagent_proxy_tools_returns_five(tmp_path):
     from iai_mcp.delegate import subagent_proxy_tools
@@ -121,17 +107,13 @@ def test_subagent_proxy_tools_returns_five(tmp_path):
         "profile_get_set",
     }
 
-
 def test_subagent_proxy_tools_excludes_02_04_new_tools():
-    """Subagent doesn't get curiosity_pending / schema_list / events_query
-    (those are user-introspection, not subagent tooling)."""
     from iai_mcp.delegate import subagent_proxy_tools
 
     names = {t["name"] for t in subagent_proxy_tools()}
     assert "curiosity_pending" not in names
     assert "schema_list" not in names
     assert "events_query" not in names
-
 
 def test_serialize_l2_is_list_of_strings(tmp_path):
     from iai_mcp.delegate import serialize_session_for_subagent
