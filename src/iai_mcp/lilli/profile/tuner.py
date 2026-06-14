@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
-from typing import Any
 from uuid import UUID
 
 from iai_mcp.events import query_events

@@ -82,7 +82,7 @@ def enforce_language_tagged(record: "MemoryRecord") -> None:
         return
 
     raise ValueError(
-        "constitutional violation: record.language is required and must be "
+        "record.language is required and must be "
         "non-empty. Set record.language='en' (or the appropriate code on "
         "legacy rows) before calling this guard."
     )
@@ -102,7 +102,7 @@ def enforce_english_raw(record: "MemoryRecord") -> None:
         return
 
     raise ValueError(
-        "constitutional violation: literal_surface contains non-English "
+        "literal_surface contains non-English "
         "characters; storage must be English raw verbatim. "
         "Add 'raw:<lang>' tag to declare explicit raw capture."
     )

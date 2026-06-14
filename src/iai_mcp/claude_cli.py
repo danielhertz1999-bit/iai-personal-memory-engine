@@ -6,7 +6,6 @@ import os
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 from iai_mcp.daemon_state import load_state, save_state
 

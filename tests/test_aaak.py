@@ -124,7 +124,7 @@ def test_enforce_english_raw_rejects_cyrillic_without_tag():
     r = _make(text="Alice сказал: пусть сохранится точно", tags=["project"])
     with pytest.raises(ValueError) as exc:
         enforce_english_raw(r)
-    assert "constitutional" in str(exc.value)
+    assert "English raw verbatim" in str(exc.value)
 
 
 def test_enforce_english_raw_accepts_cyrillic_with_raw_tag():

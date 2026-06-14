@@ -56,75 +56,6 @@ DEFERRED_KNOBS: frozenset[str] = frozenset(
 assert len(DEFERRED_KNOBS) == 0, "all 10 autistic-kernel knobs live"
 
 
-L0_ID = UUID("00000000-0000-0000-0000-000000000001")
-
-
-_DEFAULT_L0_SEED = (
-    "User identity not yet configured. "
-    "Run `iai-mcp config identity` to set your name, language, and role."
-)
-
-
-def _load_l0_identity_seed() -> str:
-    config_path = os.path.join(
-        os.environ.get("IAI_MCP_STORE", os.path.expanduser("~/.iai-mcp")),
-        "config.json",
-    )
-    if os.path.isfile(config_path):
-        try:
-            with open(config_path) as f:
-                cfg = json.load(f)
-            identity = cfg.get("identity", {})
-            parts = []
-            if identity.get("name"):
-                parts.append(f"User: {identity['name']}.")
-            if identity.get("languages"):
-                parts.append(f"Primary languages: {identity['languages']}.")
-            if identity.get("role"):
-                parts.append(f"Role: {identity['role']}.")
-            if identity.get("project"):
-                parts.append(f"Active project: {identity['project']}.")
-            if identity.get("extra"):
-                parts.append(identity["extra"])
-            if parts:
-                return " ".join(parts)
-        except (json.JSONDecodeError, OSError):
-            pass
-    return _DEFAULT_L0_SEED
-
-
-def _seed_l0_identity(store: MemoryStore) -> None:
-    existing = store.get(L0_ID)
-    if existing is not None:
-        return
-    now = datetime.now(timezone.utc)
-    seed_dim = store.embed_dim
-    seed = MemoryRecord(
-        id=L0_ID,
-        tier="semantic",
-        literal_surface=_load_l0_identity_seed(),
-        aaak_index="",
-        embedding=[0.0] * seed_dim,
-        community_id=None,
-        centrality=1.0,
-        detail_level=5,
-        pinned=True,
-        stability=0.0,
-        difficulty=0.0,
-        last_reviewed=None,
-        never_decay=True,
-        never_merge=True,
-        provenance=[],
-        created_at=now,
-        updated_at=now,
-        tags=["identity", "l0", "pinned"],
-        language="en",
-    )
-    enforce_english_raw(seed)
-    seed.aaak_index = generate_aaak_index(seed)
-    store.insert(seed)
-
-
 def dispatch(store: MemoryStore, method: str, params: dict) -> dict:
     global _last_injection_embedding, _last_injection_ids, _arousal_state
     if method == "memory_recall":
@@ -1000,165 +931,6 @@ def dispatch(store: MemoryStore, method: str, params: dict) -> dict:
     raise UnknownMethodError(method)
 
 
-def _hit_to_json(h) -> dict:
-    _vf = getattr(h, "valid_from", None)
-    _vt = getattr(h, "valid_to", None)
-    return {
-        "record_id": str(h.record_id),
-        "score": float(h.score),
-        "reason": h.reason,
-        "literal_surface": h.literal_surface,
-        "adjacent_suggestions": [str(x) for x in h.adjacent_suggestions],
-        "valid_from": _vf.isoformat() if _vf is not None else None,
-        "valid_to": _vt.isoformat() if _vt is not None else None,
-        "session_id": getattr(h, "session_id", None),
-        "captured_at": getattr(h, "captured_at", None),
-    }
-
-
-EVENTS_QUERY_WHITELIST: frozenset[str] = frozenset({
-    "s4_contradiction",
-    "trajectory_metric",
-    "schema_induction_run",
-    "llm_health",
-    "curiosity_silent_log",
-    "curiosity_question",
-    "cls_consolidation_run",
-    "crypto_key_rotated",
-    "session_started",
-    "recall_source",
-    "embed_construct",
-})
-
-
-def _schema_list_dispatch(store: MemoryStore, params: dict) -> dict:
-    import pandas as pd
-
-    confidence_min = float(params.get("confidence_min", 0.0) or 0.0)
-    domain_filter = params.get("domain")
-
-    records = store.all_records()
-    schema_records = [r for r in records if "schema" in (r.tags or [])]
-
-    edges_df = store.db.open_table("edges").to_pandas()
-    if not edges_df.empty:
-        schema_edges = edges_df[edges_df["edge_type"] == "schema_instance_of"]
-    else:
-        schema_edges = pd.DataFrame(columns=["src", "dst", "weight"])
-
-    out: list[dict] = []
-    for rec in schema_records:
-        pattern = ""
-        status = "auto"
-        for t in (rec.tags or []):
-            if t.startswith("pattern:"):
-                pattern = t.split(":", 1)[1]
-            elif t in ("auto", "pending_user_approval"):
-                status = t
-        if not pattern and rec.literal_surface.startswith("Schema: "):
-            rest = rec.literal_surface[len("Schema: "):]
-            pattern = rest.split(" (confidence=")[0]
-
-        confidence = 0.0
-        if "(confidence=" in rec.literal_surface:
-            try:
-                seg = rec.literal_surface.rsplit("(confidence=", 1)[1]
-                num = seg.split(")")[0]
-                confidence = float(num)
-            except (ValueError, IndexError):
-                confidence = 0.0
-
-        if domain_filter is not None:
-            domain_tag = f"domain:{domain_filter}"
-            if domain_tag not in (rec.tags or []):
-                continue
-
-        if confidence < confidence_min:
-            continue
-
-        sid = str(rec.id)
-        if len(schema_edges) > 0:
-            evidence = schema_edges[schema_edges["dst"] == sid]
-            evidence_count = int(len(evidence))
-            exceptions_count = int(
-                len(evidence[evidence["weight"] < 0])
-            ) if "weight" in evidence.columns else 0
-        else:
-            evidence_count = 0
-            exceptions_count = 0
-
-        out.append({
-            "id": str(rec.id),
-            "pattern": pattern,
-            "confidence": float(confidence),
-            "evidence_count": evidence_count,
-            "exceptions_count": exceptions_count,
-            "status": status,
-            "language": rec.language,
-        })
-
-    return {"schemas": out, "total": len(out)}
-
-
-def _events_query_dispatch(store: MemoryStore, params: dict) -> dict:
-    from iai_mcp.events import query_events
-
-    kind = params.get("kind")
-    if not kind:
-        return {"error": "kind parameter is required"}
-    if kind not in EVENTS_QUERY_WHITELIST:
-        return {
-            "error": (
-                f"kind {kind!r} is not user-visible; "
-                f"allowed: {sorted(EVENTS_QUERY_WHITELIST)}"
-            )
-        }
-
-    severity = params.get("severity")
-    since_raw = params.get("since")
-    since_dt = None
-    if since_raw:
-        try:
-            since_dt = datetime.fromisoformat(str(since_raw).replace("Z", "+00:00"))
-            if since_dt.tzinfo is None:
-                since_dt = since_dt.replace(tzinfo=timezone.utc)
-        except ValueError:
-            return {"error": f"since must be ISO-8601, got {since_raw!r}"}
-
-    limit = int(params.get("limit", 100) or 100)
-    limit = max(1, min(1000, limit))
-
-    events = query_events(
-        store,
-        kind=kind,
-        since=since_dt,
-        severity=severity,
-        limit=limit,
-    )
-    out_events: list[dict] = []
-    for e in events:
-        ts = e["ts"]
-        if hasattr(ts, "isoformat"):
-            try:
-                ts_str = ts.isoformat()
-            except (ValueError, TypeError, AttributeError) as exc:
-                logger.debug("ts_isoformat_failed: %s", exc)
-                ts_str = str(ts)
-        else:
-            ts_str = str(ts)
-        out_events.append({
-            "id": str(e["id"]),
-            "kind": e["kind"],
-            "severity": e.get("severity"),
-            "domain": e.get("domain"),
-            "ts": ts_str,
-            "data": e["data"],
-            "session_id": e.get("session_id"),
-            "source_ids": e.get("source_ids", []),
-        })
-    return {"events": out_events, "count": len(out_events)}
-
-
 async def _send_to_daemon(
     message: dict,
     *,
@@ -1377,23 +1149,6 @@ def _first_turn_recall_hook(
         logger.debug("first_turn_recall_hook_failed: %s", exc)
 
 
-def _payload_to_json(payload) -> dict:
-    return {
-        "l0": payload.l0,
-        "l1": payload.l1,
-        "l2": list(payload.l2),
-        "rich_club": payload.rich_club,
-        "total_cached_tokens": int(payload.total_cached_tokens),
-        "total_dynamic_tokens": int(payload.total_dynamic_tokens),
-        "breakpoint_marker": payload.breakpoint_marker,
-        "identity_pointer": getattr(payload, "identity_pointer", ""),
-        "brain_handle": getattr(payload, "brain_handle", ""),
-        "topic_cluster_hint": getattr(payload, "topic_cluster_hint", ""),
-        "compact_handle": getattr(payload, "compact_handle", ""),
-        "wake_depth": getattr(payload, "wake_depth", "minimal"),
-    }
-
-
 def main() -> None:
     _require_native()
 
@@ -1437,6 +1192,48 @@ def main() -> None:
             }
             sys.stdout.write(json.dumps(err) + "\n")
         sys.stdout.flush()
+
+
+from iai_mcp.core._serializers import _hit_to_json, _payload_to_json  # noqa: E402
+from iai_mcp.core._query_dispatch import (  # noqa: E402
+    _schema_list_dispatch,
+    _events_query_dispatch,
+    EVENTS_QUERY_WHITELIST,
+)
+from iai_mcp.core._identity import (  # noqa: E402
+    _load_l0_identity_seed,
+    _seed_l0_identity,
+    L0_ID,
+    _DEFAULT_L0_SEED,
+)
+
+__all__ = [
+    "dispatch",
+    "main",
+    "UnknownMethodError",
+    "_profile_state",
+    "LIVE_KNOBS",
+    "DEFERRED_KNOBS",
+    "FORCE_WAKE_TIMEOUT_SEC",
+    "SOCKET_PATH",
+    "get_pending_digest",
+    "load_state",
+    "L0_ID",
+    "_seed_l0_identity",
+    "_load_l0_identity_seed",
+    "EVENTS_QUERY_WHITELIST",
+    "_inject_overnight_digest",
+    "_inject_sleep_suggestion",
+    "_first_turn_recall_hook",
+    "_send_to_daemon",
+    "handle_initiate_sleep_mode",
+    "handle_force_wake",
+    "_hit_to_json",
+    "_payload_to_json",
+    "_schema_list_dispatch",
+    "_events_query_dispatch",
+    "_DEFAULT_L0_SEED",
+]
 
 
 if __name__ == "__main__":

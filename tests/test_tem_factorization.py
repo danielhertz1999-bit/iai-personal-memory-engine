@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pytest
 
 def test_role_vocabulary_has_18_entries() -> None:
     from iai_mcp.tem import ROLE_VOCABULARY
@@ -56,7 +55,6 @@ def test_unbind_inverts_bind() -> None:
 def _fidelity_at(n_pairs: int) -> float:
     from iai_mcp.tem import (
         ROLE_VOCABULARY,
-        bind,
         filler_hv,
         pack_pairs,
         role_hv,

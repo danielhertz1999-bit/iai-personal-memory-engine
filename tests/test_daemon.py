@@ -2,11 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import plistlib
-import signal
-import subprocess
-from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -239,11 +235,16 @@ def test_systemd_unit_required_keys():
 
 
 def test_c3_no_anthropic_api_key_in_artifacts():
-    daemon_src = (PROJECT_ROOT / "src" / "iai_mcp" / "daemon.py").read_text()
+    daemon_dir = PROJECT_ROOT / "src" / "iai_mcp" / "daemon"
+    daemon_src = (
+        (daemon_dir / "__init__.py").read_text()
+        + "\n"
+        + (daemon_dir / "_watchdog.py").read_text()
+    )
     plist_src = PLIST_PATH.read_text()
     service_src = SERVICE_PATH.read_text()
 
-    for name, src in (("daemon.py", daemon_src), ("plist", plist_src), ("service", service_src)):
+    for name, src in (("daemon", daemon_src), ("plist", plist_src), ("service", service_src)):
         assert "ANTHROPIC_API_KEY" not in src, (
             f"C3 VIOLATION: ANTHROPIC_API_KEY found in {name}"
         )

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
-from iai_mcp.exceptions import CaptureError, CaptureDeduplicationError, CaptureDrainError, NativeError
+from iai_mcp.exceptions import NativeError
 
 MAX_DRAIN_EVENTS_PER_RUN = 5000
 

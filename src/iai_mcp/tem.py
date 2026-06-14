@@ -3,15 +3,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from iai_mcp.lilli.tiers.bsc import (
-    BSC_ROLE_VOCABULARY as ROLE_VOCABULARY,
-    bind,
+    BSC_ROLE_VOCABULARY as ROLE_VOCABULARY,  # noqa: F401  (re-exported; imported by tests)
+    bind,  # noqa: F401
     bundle as _bundle,
     filler_hv as _filler_hv,
     role_hv as _role_hv,
-    unbind,
+    unbind,  # noqa: F401
     unpack_role as _unpack_role,
 )
-from iai_mcp.types import STRUCTURE_HV_BYTES, STRUCTURE_HV_DIM
+from iai_mcp.types import STRUCTURE_HV_DIM
 
 if TYPE_CHECKING:
     from iai_mcp.types import MemoryRecord

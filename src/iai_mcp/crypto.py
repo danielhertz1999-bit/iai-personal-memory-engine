@@ -23,16 +23,7 @@ _KEY_FILE_NAME: str = ".crypto.key"
 
 
 class CryptoKeyError(RuntimeError):
-    """Raised when a CryptoKey cannot be loaded or created.
-
-    Typical triggers:
-    - The key file exists at the resolved path but is unreadable, has an
-      insecure mode, is owned by a different uid, or has the wrong length.
-    - Neither a key file NOR ``IAI_MCP_CRYPTO_PASSPHRASE`` is present;
-      ``MemoryStore`` surfaces the error so the daemon refuses to start with
-      a clear actionable message instead of silently proceeding without
-      encryption.
-    """
+    pass
 
 
 def is_encrypted(field: Optional[str]) -> bool:
@@ -182,7 +173,7 @@ class CryptoKey:
             f"is not set.\n"
             f"\n"
             f"To fix:\n"
-            f"  - Existing install (key was in macOS Keychain): "
+            f"  - Existing install (key already in macOS Keychain): "
             f"run `iai-mcp crypto migrate-to-file` from a Terminal where the "
             f"Keychain prompt can appear, then click \"Always Allow\".\n"
             f"  - Fresh install: run `iai-mcp crypto init` to generate a new key "

@@ -1,20 +1,15 @@
 from __future__ import annotations
 
-import logging
-import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
-
 
 @pytest.fixture(autouse=True)
 def _opt_out_of_buffer_autoflush(monkeypatch):
     monkeypatch.setenv("IAI_MCP_TEST_NO_AUTOFLUSH", "1")
 
 import pytest
-
 
 def _make_record(literal_surface: str = "test memory content"):
     from datetime import datetime, timezone
@@ -44,13 +39,11 @@ def _make_record(literal_surface: str = "test memory content"):
         language="en",
     )
 
-
 def _clear_buffer(store) -> None:
     from iai_mcp import store as store_mod
 
     store_mod._record_buffer.pop(id(store), None)
     store_mod._record_last_flush_at.pop(id(store), None)
-
 
 def test_insert_sync_path_buffers_row_not_lancedb(tmp_path):
     from iai_mcp import store as store_mod
@@ -67,7 +60,6 @@ def test_insert_sync_path_buffers_row_not_lancedb(tmp_path):
 
         buf = store_mod._record_buffer.get(id(store), [])
         assert len(buf) >= 1, "expected _record_buffer to accumulate rows after insert"
-
 
 def test_buffer_record_row_does_not_write_to_lancedb(tmp_path):
     from iai_mcp import store as store_mod
@@ -86,11 +78,10 @@ def test_buffer_record_row_does_not_write_to_lancedb(tmp_path):
         tbl = store.db.open_table(RECORDS_TABLE)
         n_after = len(tbl.to_pandas())
         assert n_after == n_before, (
-            f"buffer append changed store row count: {n_before} -> {n_after}"
+            f"buffer append changed LanceDB row count: {n_before} -> {n_after}"
         )
 
         assert len(store_mod._record_buffer.get(id(store), [])) >= 1
-
 
 def test_flush_record_buffer_writes_batch_and_clears(tmp_path):
     from iai_mcp import store as store_mod
@@ -118,7 +109,6 @@ def test_flush_record_buffer_writes_batch_and_clears(tmp_path):
         n_after = len(tbl.to_pandas())
         assert n_after == n_before + 3
 
-
 def test_flush_record_buffer_empty_returns_zero(tmp_path):
     from iai_mcp.store import MemoryStore, flush_record_buffer
 
@@ -130,7 +120,6 @@ def test_flush_record_buffer_empty_returns_zero(tmp_path):
 
         flushed2 = flush_record_buffer(store)
         assert flushed2 == 0
-
 
 def test_should_flush_record_buffer_size_threshold(tmp_path, monkeypatch):
     from iai_mcp import store as store_mod
@@ -156,7 +145,6 @@ def test_should_flush_record_buffer_size_threshold(tmp_path, monkeypatch):
 
         assert should_flush_record_buffer(id(store), max_size=100) is False
 
-
 def test_should_flush_record_buffer_by_time(tmp_path):
     from iai_mcp import store as store_mod
     from iai_mcp.store import MemoryStore, should_flush_record_buffer_by_time
@@ -181,7 +169,6 @@ def test_should_flush_record_buffer_by_time(tmp_path):
         old = datetime.now(timezone.utc) - timedelta(seconds=6)
         assert should_flush_record_buffer_by_time(id(store), old) is True
 
-
 def test_buffered_row_carries_ciphertext_prefix(tmp_path):
     from iai_mcp import store as store_mod
     from iai_mcp.store import MemoryStore
@@ -202,9 +189,8 @@ def test_buffered_row_carries_ciphertext_prefix(tmp_path):
             f"got plaintext: {literal_val[:50]!r}"
         )
 
-
 def test_store_sync_path_uses_record_buffer():
-    store_py = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "store.py"
+    store_py = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "store" / "_store.py"
     text = store_py.read_text(encoding="utf-8")
 
     count = text.count("_record_buffer.setdefault")
@@ -216,9 +202,8 @@ def test_store_sync_path_uses_record_buffer():
         "old direct tbl.add([self._to_row(record)]) call site was not removed from store.py"
     )
 
-
 def test_store_has_three_flush_helpers():
-    store_py = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "store.py"
+    store_py = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "store" / "_buffers.py"
     text = store_py.read_text(encoding="utf-8")
 
     for fn_name in (
@@ -230,9 +215,8 @@ def test_store_has_three_flush_helpers():
             f"expected '{fn_name}' to be defined in store.py"
         )
 
-
 def test_daemon_periodic_tick_calls_flush_record_buffer():
-    daemon_py = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "daemon.py"
+    daemon_py = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "daemon" / "__init__.py"
     text = daemon_py.read_text(encoding="utf-8")
 
     assert "flush_record_buffer" in text, (
@@ -245,9 +229,8 @@ def test_daemon_periodic_tick_calls_flush_record_buffer():
     tick_idx = text.find("should_flush_record_buffer_by_time")
     assert tick_idx > 0, "should_flush_record_buffer_by_time must appear in daemon.py"
 
-
 def test_daemon_wake_drain_calls_flush_record_buffer():
-    daemon_py = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "daemon.py"
+    daemon_py = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "daemon" / "__init__.py"
     text = daemon_py.read_text(encoding="utf-8")
 
     assert "flush_record_buffer" in text, (
@@ -269,9 +252,8 @@ def test_daemon_wake_drain_calls_flush_record_buffer():
         f"records_gate_idx={records_gate_idx}, records_flush_idx={records_flush_idx}"
     )
 
-
 def test_daemon_shutdown_calls_flush_record_buffer():
-    daemon_py = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "daemon.py"
+    daemon_py = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "daemon" / "__init__.py"
     text = daemon_py.read_text(encoding="utf-8")
 
     shutdown_idx = text.find("records buffer flushed on shutdown")

@@ -22,12 +22,11 @@ from iai_mcp.graph import MemoryGraph  # noqa: E402
 FIXTURE_PATH = (
     pathlib.Path(__file__).parent / "fixtures" / "sigma_baseline.json"
 )
-PERF_GATE_JSON_PATH = (
-    pathlib.Path(__file__).parent.parent
-    / ".planning"
-    / "phases"
-    / "50-mosaicsigma-networkx-custom-rust-pyo3-graph-engine-lilli-gra"
-    / "50-10-perf-gate.json"
+PERF_GATE_JSON_PATH = pathlib.Path(
+    os.environ.get(
+        "IAI_PERF_GATE_JSON",
+        str(pathlib.Path(__file__).parent / "fixtures" / "perf_gate.json"),
+    )
 )
 
 

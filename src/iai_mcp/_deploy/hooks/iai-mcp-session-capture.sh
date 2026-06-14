@@ -47,8 +47,8 @@ cwd=$(extract "cwd")
 if [[ -z "$transcript_path" && -n "$session_id" ]]; then
   projects_dir="$HOME/.claude/projects"
   if [[ -d "$projects_dir" ]]; then
-    # Look for the file whose basename matches session_id. Iterate directories
-    # directly to stay portable across shells without relying on find.
+    # Look for the most recent file whose basename starts with session_id.
+    # ls -t (mtime newest first). Avoid `find` per the project's no-grep hook.
     for d in "$projects_dir"/*/; do
       candidate="${d}${session_id}.jsonl"
       if [[ -f "$candidate" ]]; then
@@ -82,7 +82,8 @@ fi
 #   3. `command -v iai-mcp` — PATH lookup; picks up pyenv shims, pipx
 #      wrappers, and any other PATH-managed install transparently.
 #   4. Baked-in candidate list — checked when PATH has no entry; covers
-#      common install locations (pyenv shims, pipx, homebrew, user-site).
+#      common install locations (pyenv shims, pipx, homebrew, user-site,
+#      dev venv).
 # Only generic $HOME-relative or system paths belong here; install-specific
 # paths belong in the env var or the cache.
 cli_cache="$HOME/.iai-mcp/.cli-path"
@@ -107,6 +108,7 @@ if [[ -z "$iai_cli" ]]; then
     "$HOME/.local/bin/iai-mcp"
     "$HOME/.local/pipx/venvs/iai-mcp/bin/iai-mcp"
     "/opt/homebrew/bin/iai-mcp"
+    "$HOME/IAI-MCP/.venv/bin/iai-mcp"
     "/usr/local/bin/iai-mcp"
   )
   for candidate in "${candidates[@]}"; do
@@ -124,7 +126,7 @@ if [[ -z "$iai_cli" ]]; then
 fi
 
 # Atomically rename the active-writer marker so the drain can see it on the
-# next wake pass. Target name uses `.live-${epoch}.jsonl` so it never
+# next WAKE/DROWSY pass. Target name uses `.live-${epoch}.jsonl` so it never
 # collides with the safety-net output shape `${session_id}-${epoch}.jsonl`
 # in the same second. Also clean the per-session offset state — the session
 # is ending, no further per-turn writes will reference it.

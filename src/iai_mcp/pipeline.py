@@ -16,7 +16,6 @@ from iai_mcp.community import CommunityAssignment
 from iai_mcp.embed import Embedder
 from iai_mcp.events import TELEMETRY_EMBED_NATIVE_FAILURE, write_event
 from iai_mcp.exceptions import (
-    RetrievalError, EmbeddingError, CommunityGateError, BudgetExceededError, StoreError,
     NativeError,
 )
 from iai_mcp.graph import MemoryGraph
@@ -430,7 +429,7 @@ def _recall_core(
             l0_hit = MemoryHit(
                 record_id=l0_rec.id,
                 score=1.0,
-                reason="L0 identity (skipped)",
+                reason="L0 identity (always skipped)",
                 literal_surface=l0_rec.literal_surface,
                 adjacent_suggestions=[],
                 session_id=_l0_prov.get("session_id"),
@@ -698,7 +697,8 @@ def _recall_core(
     else:
         degree = {str(nid): deg for nid, deg in graph.degrees()}
 
-    mode_bias = _gate_bias_for_mode(mode) + _arousal_mode_bias_adjust
+    mode_bias = _gate_bias_for_mode(mode)
+    mode_bias = mode_bias + _arousal_mode_bias_adjust
 
     fts_hits: set[UUID] = set()
     if cue and len(cue) >= 4:
@@ -1302,4 +1302,3 @@ def recall_for_benchmark(
         cue_mode=core.cue_mode,
         patterns_observed=patterns_observed,
     )
-

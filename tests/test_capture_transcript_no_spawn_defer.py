@@ -189,7 +189,7 @@ def test_no_spawn_zero_embedder_imports_in_fresh_process(tmp_path):
 
 
 def test_no_spawn_branch_has_no_inline_imports():
-    cli_src = (REPO / "src" / "iai_mcp" / "cli.py").read_text()
+    cli_src = (REPO / "src" / "iai_mcp" / "cli" / "_capture.py").read_text()
 
     fn_match = re.search(
         r"^def cmd_capture_transcript\(.*?\n(.*?)^def ",
@@ -205,7 +205,7 @@ def test_no_spawn_branch_has_no_inline_imports():
         flags=re.MULTILINE | re.DOTALL,
     )
     assert no_spawn_match, (
-        "could not isolate `if no_spawn:` block; layout drifted from expected structure"
+        "could not isolate `if no_spawn:` block; layout drifted"
     )
     no_spawn_block = no_spawn_match.group(1)
 

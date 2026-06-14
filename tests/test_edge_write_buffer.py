@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -127,7 +127,7 @@ def test_should_flush_edge_buffer_size_threshold(tmp_path, monkeypatch):
 
 
 def test_merge_insert_remains_synchronous():
-    store_py = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "store.py"
+    store_py = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "store" / "_store.py"
     text = store_py.read_text(encoding="utf-8")
 
     assert "tbl.merge_insert" in text, (
@@ -241,7 +241,7 @@ def test_flush_edge_buffer_emits_telemetry_event(tmp_path):
 
 
 def test_edge_buffer_setdefault_used_at_two_call_sites():
-    store_py = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "store.py"
+    store_py = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "store" / "_store.py"
     text = store_py.read_text(encoding="utf-8")
 
     count = text.count("_edge_buffer.setdefault")
@@ -251,7 +251,7 @@ def test_edge_buffer_setdefault_used_at_two_call_sites():
 
 
 def test_store_has_three_edge_flush_helpers():
-    store_py = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "store.py"
+    store_py = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "store" / "_buffers.py"
     text = store_py.read_text(encoding="utf-8")
 
     for fn_name in (
@@ -265,7 +265,7 @@ def test_store_has_three_edge_flush_helpers():
 
 
 def test_daemon_periodic_tick_calls_flush_edge_buffer():
-    daemon_py = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "daemon.py"
+    daemon_py = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "daemon" / "__init__.py"
     text = daemon_py.read_text(encoding="utf-8")
 
     assert "flush_edge_buffer" in text, (
@@ -280,7 +280,7 @@ def test_daemon_periodic_tick_calls_flush_edge_buffer():
 
 
 def test_daemon_wake_drain_calls_flush_edge_buffer():
-    daemon_py = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "daemon.py"
+    daemon_py = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "daemon" / "__init__.py"
     text = daemon_py.read_text(encoding="utf-8")
 
     assert "flush_edge_buffer" in text, (
@@ -304,7 +304,7 @@ def test_daemon_wake_drain_calls_flush_edge_buffer():
 
 
 def test_daemon_shutdown_calls_flush_edge_buffer():
-    daemon_py = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "daemon.py"
+    daemon_py = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "daemon" / "__init__.py"
     text = daemon_py.read_text(encoding="utf-8")
 
     shutdown_idx = text.find("edges buffer flushed on shutdown")
@@ -322,9 +322,8 @@ def test_contradict_buffered_src_no_unknown_record_error(tmp_path, monkeypatch):
     from datetime import datetime, timezone
     from uuid import uuid4
 
-    from iai_mcp import store as store_mod
     from iai_mcp.retrieve import contradict
-    from iai_mcp.store import RECORDS_TABLE, MemoryStore, _record_buffer
+    from iai_mcp.store import MemoryStore, _record_buffer
     from iai_mcp.types import EMBED_DIM, MemoryRecord
 
     monkeypatch.setenv("IAI_MCP_RECORD_BUFFER_MAX", "9999")

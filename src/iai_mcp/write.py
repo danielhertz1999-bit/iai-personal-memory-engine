@@ -55,7 +55,7 @@ def guarded_insert(
     session_id: str = "-",
 ) -> tuple[bool, str]:
     from iai_mcp.s5 import check_identity_anchor_on_write
-    from iai_mcp.shield import ShieldTier, apply_shield
+    from iai_mcp.shield import apply_shield
 
     tier = _shield_tier_for_record(record)
     verdict = apply_shield(store, record, tier, session_id=session_id)

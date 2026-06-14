@@ -67,7 +67,7 @@ def test_first_turn_pending_drain_helper_imported_in_daemon_main():
 
 
 def test_daemon_wire_in_passes_explicit_now_kwarg_at_both_sites():
-    daemon_src = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "daemon.py"
+    daemon_src = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "daemon" / "__init__.py"
     text = daemon_src.read_text()
 
     pat = re.compile(

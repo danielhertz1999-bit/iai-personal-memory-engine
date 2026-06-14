@@ -450,7 +450,7 @@ def _make_graph_sync_hook(graph):
 
 
 def build_runtime_graph(store: MemoryStore):
-    from iai_mcp.community import CommunityAssignment, detect_communities
+    from iai_mcp.community import detect_communities
     from iai_mcp.graph import MemoryGraph
     from iai_mcp.richclub import rich_club_nodes
     from iai_mcp import runtime_graph_cache

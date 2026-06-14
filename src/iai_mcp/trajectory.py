@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any
+from datetime import datetime
 
 from iai_mcp.events import flush_event_buffer, query_events, write_event
 from iai_mcp.store import MemoryStore

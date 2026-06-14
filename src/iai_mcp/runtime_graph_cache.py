@@ -62,6 +62,21 @@ def get_dirty_counter() -> int:
         return _dirty_counter
 
 
+# One shared graph instance reused across refreshes so the allocator footprint
+# stays bounded (a fresh instance per cycle fragments the heap arenas). The lock
+# serializes concurrent refreshes so adjacency cannot be corrupted mid-rebuild.
+_persistent_graph = None
+_PERSISTENT_GRAPH_LOCK = threading.Lock()
+
+
+def _get_persistent_graph():
+    global _persistent_graph  # noqa: PLW0603
+    if _persistent_graph is None:
+        from iai_mcp.graph import MemoryGraph
+        _persistent_graph = MemoryGraph()
+    return _persistent_graph
+
+
 MAX_CACHE_BYTES: int = 10 * 1024 * 1024
 
 
@@ -681,70 +696,95 @@ def invalidate(store: Any) -> None:
         logger.debug("runtime_graph_cache invalidate failed: %s", exc)
 
 
-def _rebuild_and_save_rgc(store: Any) -> dict:
+def _rebuild_and_save_rgc(store: Any, *, force: bool = False) -> dict:
     from iai_mcp.community import detect_communities
-    from iai_mcp.graph import MemoryGraph
     from iai_mcp.richclub import rich_club_nodes
 
-    graph = MemoryGraph()
+    with _PERSISTENT_GRAPH_LOCK:
+        if not force:
+            # Skip the rebuild (and its allocation) only when the cached snapshot
+            # is still usable for recall. The read path's own structural source is
+            # the authoritative signal: warm iff overlay/normal, cold otherwise.
+            # It already folds in no-snapshot / parity / epoch / generation==0 /
+            # age+dirty fuse. The dirty counter is a separate write-volume signal,
+            # so a cache can be cold while the counter is zero — gate on both.
+            try:
+                structural_source = load_recall_structural(store)[3]
+            except Exception:  # noqa: BLE001 -- a probe failure must never drop a warm-up
+                structural_source = "cold_degrade"  # fail toward rebuilding
+            cache_is_warm = structural_source in ("overlay", "normal")
+            if cache_is_warm and get_dirty_counter() <= _FUSE_DIRTY_THRESHOLD:
+                return {
+                    "rebuilt": False,
+                    "skipped": "warm_and_below_dirty_threshold",
+                    "structural_source": structural_source,
+                    "node_count": 0,
+                    "generation": get_current_generation(),
+                }
 
-    try:
-        all_records = list(store.all_records())
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("_rebuild_and_save_rgc: all_records failed: %s", exc)
-        raise
+        graph = _get_persistent_graph()
 
-    for rec in all_records:
         try:
-            graph.add_node(
-                rec.id,
-                community_id=None,
-                embedding=list(rec.embedding),
-            )
-            graph.set_node_payload(rec.id, {
-                "embedding": list(rec.embedding),
-                "surface": rec.literal_surface,
-                "centrality": float(rec.centrality),
-                "tier": rec.tier,
-                "pinned": bool(rec.pinned),
-                "tags": list(getattr(rec, "tags", []) or []),
-                "language": str(getattr(rec, "language", "en") or "en"),
-            })
+            all_records = list(store.all_records())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("_rebuild_and_save_rgc: all_records failed: %s", exc)
+            raise
+
+        nodes: list = []
+        for rec in all_records:
+            try:
+                nodes.append((
+                    rec.id,
+                    None,
+                    list(rec.embedding),
+                    {
+                        "embedding": list(rec.embedding),
+                        "surface": rec.literal_surface,
+                        "centrality": float(rec.centrality),
+                        "tier": rec.tier,
+                        "pinned": bool(rec.pinned),
+                        "tags": list(getattr(rec, "tags", []) or []),
+                        "language": str(getattr(rec, "language", "en") or "en"),
+                    },
+                ))
+            except Exception:  # noqa: BLE001
+                pass
+
+        edges: list = []
+        try:
+            edges_df = store.db.open_table("edges").to_pandas()
+            if not edges_df.empty:
+                from uuid import UUID as _UUID
+                for _, row in edges_df.iterrows():
+                    try:
+                        src = _UUID(str(row["src"]))
+                        dst = _UUID(str(row["dst"]))
+                        w = float(row.get("weight", 1.0) or 1.0)
+                        edges.append((src, dst, w, "hebbian"))
+                    except Exception:  # noqa: BLE001
+                        pass
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("_rebuild_and_save_rgc: edge load failed: %s", exc)
+
+        graph.clear_and_rebuild(nodes, edges)
+
+        assignment = detect_communities(graph, prior_mode="cold")
+        rc = rich_club_nodes(graph)
+
+        max_degree = 0
+        try:
+            for _nid, deg in graph.degrees():
+                if deg > max_degree:
+                    max_degree = deg
         except Exception:  # noqa: BLE001
             pass
 
-    try:
-        edges_df = store.db.open_table("edges").to_pandas()
-        if not edges_df.empty:
-            from uuid import UUID as _UUID
-            for _, row in edges_df.iterrows():
-                try:
-                    src = _UUID(str(row["src"]))
-                    dst = _UUID(str(row["dst"]))
-                    w = float(row.get("weight", 1.0) or 1.0)
-                    graph.add_edge(src, dst, weight=w)
-                except Exception:  # noqa: BLE001
-                    pass
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("_rebuild_and_save_rgc: edge load failed: %s", exc)
+        saved = save_with_generation(store, assignment, rc, max_degree=max_degree)
 
-    assignment = detect_communities(graph, prior_mode="cold")
-    rc = rich_club_nodes(graph)
-
-    max_degree = 0
-    try:
-        for _nid, deg in graph.degrees():
-            if deg > max_degree:
-                max_degree = deg
-    except Exception:  # noqa: BLE001
-        pass
-
-    saved = save_with_generation(store, assignment, rc, max_degree=max_degree)
-
-    node_count = graph.node_count()
-    return {
-        "rebuilt": True,
-        "saved": saved,
-        "node_count": int(node_count),
-        "generation": get_current_generation(),
-    }
+        node_count = graph.node_count()
+        return {
+            "rebuilt": True,
+            "saved": saved,
+            "node_count": int(node_count),
+            "generation": get_current_generation(),
+        }

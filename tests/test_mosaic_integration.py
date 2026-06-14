@@ -5,7 +5,7 @@ import random
 import subprocess
 import sys
 from pathlib import Path
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 
@@ -97,8 +97,7 @@ def test_lineage_report_empty_on_flat_fallback() -> None:
 def test_aggregate_uses_pick_merge_survivor() -> None:
     src = (REPO_ROOT / "src" / "iai_mcp" / "mosaic.py").read_text()
     assert "pick_merge_survivor" in src, (
-        "_aggregate must call lineage.pick_merge_survivor(...) instead of the "
-        "old placeholder survivor selection"
+        "_aggregate must call lineage.pick_merge_survivor(...)"
     )
 
 
@@ -136,10 +135,10 @@ def test_existing_community_tests_still_pass_smoke() -> None:
 
 
 def test_sleep_pipeline_crisis_mode_uses_prior_mode_cold() -> None:
-    src = (REPO_ROOT / "src" / "iai_mcp" / "lilli" / "cycle" / "sleep_pipeline.py").read_text()
+    src = (REPO_ROOT / "src" / "iai_mcp" / "lilli" / "cycle" / "sleep_pipeline" / "_crisis.py").read_text()
     assert 'prior_mode="cold"' in src, (
         "sleep_pipeline.py crisis_recluster must call detect_communities "
-        "with prior_mode=\"cold\" to honour the discard-prior invariant"
+        "with prior_mode=\"cold\""
     )
 
 

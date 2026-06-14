@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] — 2026-06-12
+
+### Changed
+
+- **Source restructured into focused packages.** The largest modules — `cli`,
+  `store`, `daemon`, `hippo`, `doctor`, `migrate`, and `core` — are now packages
+  with concern-grouped sub-modules instead of single large files. The public API,
+  the `iai-mcp` / `iai` CLI surface, the MCP tool set, and the on-disk store
+  format are unchanged; this is an internal reorganization that makes the storage,
+  daemon, community-detection, and migration layers easier to read and navigate.
+- Background daemon and graph-cache rebuild paths gained additional
+  resource-isolation and reliability hardening.
+
 ## [1.0.3] — 2026-06-11
 
 ### Fixed

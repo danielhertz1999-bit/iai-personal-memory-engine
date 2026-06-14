@@ -17,7 +17,6 @@ from iai_mcp.lilli.tiers.bsc import (
     role_hv,
     similarity,
     unbind,
-    unpack_role,
 )
 
 GOLDEN_PATH = Path(__file__).parent / "golden_tem_pre_shim.json"

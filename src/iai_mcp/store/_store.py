@@ -2,26 +2,22 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import enum
 import functools
 import json
 import os
 import random
-import re
 import sys
 import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from collections.abc import Sequence
-from typing import Any, Callable, Union
+from typing import Any, Callable
 from uuid import UUID
 
 import logging
 
 from iai_mcp.hippo import _REAL_IAI_ROOT, AccessMode, HippoDB, HippoIntegrityError
-
-CPU_HAS_AVX2: bool = True
 
 import pyarrow as pa
 
@@ -34,134 +30,30 @@ from iai_mcp.crypto import (
     encrypt_field,
     is_encrypted,
 )
-from iai_mcp.exceptions import (
-    StoreCorruptionError,
-    StoreInsertError,
-    StoreQueryError,
-    StoreSchemaError,
-)
 from iai_mcp.types import (
-    DEFAULT_EMBED_DIM,
-    EMBED_DIM,
     HV_TIER_ENUM,
     SCHEMA_VERSION_CURRENT,
     MemoryRecord,
     TIER_ENUM,
 )
 
-logger = logging.getLogger(__name__)
-
-DEFAULT_STORAGE_PATH = Path.home() / ".iai-mcp"
-
-RECORDS_TABLE = "records"
-EDGES_TABLE = "edges"
-
-EVENTS_TABLE = "events"
-BUDGET_TABLE = "budget_ledger"
-RATELIMIT_TABLE = "ratelimit_ledger"
-
-_STC_TIER_ORDER: dict[str, int] = {"semantic": 0, "episodic": 1, "procedural": 2}
-
-EDGE_TYPES: frozenset[str] = frozenset({
-    "hebbian",
-    "contradicts",
-    "consolidated_from",
-    "schema_instance_of",
-    "temporal_next",
-    "invariant_anchor",
-    "curiosity_bridge",
-    "profile_modulates",
-    "hebbian_structure",
-    "pattern_separation_seed",
-    "hebbian_cluster_replay",
-})
-
-
-class GateAction(enum.Enum):
-    SKIP = "skip"
-    INSERT = "insert"
-
-
-GatePayload = Union[UUID, list[tuple[UUID, float]]]
-
-
-_UUID_STR_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+from iai_mcp.store import (
+    RECORDS_TABLE, EDGES_TABLE, EDGE_TYPES, _STC_TIER_ORDER, GateAction, GatePayload, _resolve_embed_dim, _PendingTurn,
+)
+from iai_mcp.store._buffers import (
+    _record_buffer, _record_last_flush_at,
+    _edge_buffer, _edge_last_flush_at,
+    flush_record_buffer, should_flush_record_buffer,
+    flush_edge_buffer, should_flush_edge_buffer,
 )
 
-
-def _uuid_literal(value: UUID | str) -> str:
-    s = str(value).lower()
-    if not _UUID_STR_RE.match(s):
-        raise ValueError(f"not a canonical UUID: {value!r}")
-    return s
+logger = logging.getLogger(__name__)
 
 
-def _resolve_embed_dim() -> int:
-    env_dim = os.environ.get("IAI_MCP_EMBED_DIM")
-    if env_dim:
-        try:
-            return int(env_dim)
-        except ValueError:
-            pass
-    return DEFAULT_EMBED_DIM
-
-
-class _PendingTurn:
-
-    __slots__ = ("_text", "_session_id", "_ts", "_idem_tag", "_source_uuid", "_role")
-
-    def __init__(
-        self,
-        *,
-        text: str,
-        session_id: str,
-        ts: "datetime",
-        idem_tag: str,
-        source_uuid: "str | None",
-        role: str = "user",
-    ) -> None:
-        self._text = text
-        self._session_id = session_id
-        self._ts = ts
-        self._idem_tag = idem_tag
-        self._source_uuid = source_uuid
-        self._role = role
-
-    @property
-    def id(self):
-        return None
-
-    @property
-    def tier(self) -> str:
-        return "episodic"
-
-    @property
-    def literal_surface(self) -> str:
-        return self._text
-
-    @property
-    def tags(self) -> list:
-        return [f"role:{self._role}", self._idem_tag]
-
-    @property
-    def provenance(self) -> list:
-        prov: dict = {"session_id": self._session_id, "role": self._role}
-        if self._source_uuid is not None:
-            prov["source_uuid"] = self._source_uuid
-        return [prov]
-
-    @property
-    def created_at(self):
-        return self._ts
-
-    @property
-    def _pending_idem_tag(self) -> str:
-        return self._idem_tag
-
-    @property
-    def _pending_source_uuid(self) -> "str | None":
-        return self._source_uuid
+def _uuid_literal(value):
+    # late import so the package attribute is re-fetched per call and monkeypatches stay visible
+    from iai_mcp.store import _uuid_literal as _impl
+    return _impl(value)
 
 
 class MemoryStore:
@@ -175,13 +67,15 @@ class MemoryStore:
         access_mode: AccessMode = AccessMode.EXCLUSIVE,
         read_only: bool = False,
     ) -> None:
+        # late import so the package attribute is re-fetched per call and monkeypatches stay visible
+        from iai_mcp.store import DEFAULT_STORAGE_PATH as _DSP
         env_path = os.environ.get("IAI_MCP_STORE")
         if path is not None:
             self.root = Path(path)
         elif env_path:
             self.root = Path(env_path)
         else:
-            self.root = Path(DEFAULT_STORAGE_PATH)
+            self.root = Path(_DSP)
         if os.environ.get("PYTEST_CURRENT_TEST") and self.root == _REAL_IAI_ROOT:
             raise RuntimeError(
                 "hermeticity guard: store-root resolved to the real home store "
@@ -326,7 +220,9 @@ class MemoryStore:
 
     @functools.cached_property
     def _cached_aesgcm(self) -> AESGCM:
-        return AESGCM(self._key())
+        # late import so the package attribute is re-fetched per call and monkeypatches stay visible
+        from iai_mcp.store import AESGCM as _AESGCM
+        return _AESGCM(self._key())
 
     def _invalidate_aesgcm_cache(self) -> None:
         self.__dict__.pop("_cached_aesgcm", None)
@@ -1173,11 +1069,11 @@ class MemoryStore:
 
         if edge_types is not None:
             et_ph = ", ".join("?" for _ in edge_types)
-            sql += f" AND edge_type IN ({et_ph})"  # nosemgrep: sql-injection
+            sql += f" AND edge_type IN ({et_ph})"
             params += list(edge_types)
 
         with self.db._conn_lock:
-            rows = self.db._conn.execute(sql, params).fetchall()  # nosemgrep: sql-injection
+            rows = self.db._conn.execute(sql, params).fetchall()
 
         result: dict[UUID, list[tuple[UUID, str, float]]] = {i: [] for i in ids}
         id_to_uuid: dict[str, UUID] = {str(i): i for i in ids}
@@ -1222,7 +1118,7 @@ class MemoryStore:
             f" WHERE id IN ({ph})"
         )
         with self.db._conn_lock:
-            raw_rows = self.db._conn.execute(sql, str_ids).fetchall()  # nosemgrep: sql-injection
+            raw_rows = self.db._conn.execute(sql, str_ids).fetchall()
 
         out: dict[UUID, MemoryRecord] = {}
         for raw in raw_rows:
@@ -1527,7 +1423,7 @@ class MemoryStore:
         if _STC_TIER_ORDER[new_tier] <= _STC_TIER_ORDER[current_tier]:
             raise ValueError(
                 f"upgrade_tier: refusing non-upgrade "
-                f"{current_tier!r} -> {new_tier!r}: tier upgrades are one-directional"
+                f"{current_tier!r} -> {new_tier!r} (never downgrade)"
             )
 
         if not dry_run:
@@ -1948,115 +1844,3 @@ class MemoryStore:
         if language == "__LEGACY_EMPTY__":
             rec.language = ""
         return rec
-
-
-_record_buffer: dict[int, list[dict]] = {}
-_record_last_flush_at: dict[int, datetime] = {}
-
-
-def flush_record_buffer(store: "MemoryStore") -> int:
-    from iai_mcp.events import _BUFFER_LOCK
-
-    with _BUFFER_LOCK:
-        store_id = id(store)
-        pending = _record_buffer.pop(store_id, [])
-        if not pending:
-            return 0
-        try:
-            store.db.open_table(RECORDS_TABLE).add(pending)
-            _record_last_flush_at[store_id] = datetime.now(timezone.utc)
-        except (OSError, RuntimeError, ValueError) as exc:
-            logger.warning(
-                "flush_record_buffer_failed",
-                extra={"n": len(pending), "err": str(exc)[:120]},
-            )
-        if pending:
-            try:
-                from iai_mcp.events import write_event
-                write_event(
-                    store,
-                    "lance_buffer_flush",
-                    {"table": "records", "count": len(pending)},
-                    severity="info",
-                    buffered=False,
-                )
-            except Exception as exc:  # noqa: BLE001 -- telemetry MUST NOT crash flush
-                logger.debug("lance_buffer_flush telemetry failed: %s", str(exc)[:120])
-        return len(pending)
-
-
-def should_flush_record_buffer(store_id: int, max_size: int | None = None) -> bool:
-    if max_size is None:
-        try:
-            max_size = int(os.environ.get("IAI_MCP_RECORD_BUFFER_MAX", "500"))
-        except ValueError:
-            max_size = 500
-    return len(_record_buffer.get(store_id, [])) >= max_size
-
-
-def should_flush_record_buffer_by_time(
-    store_id: int,
-    last_flush_at: datetime | None,
-    max_age_sec: float = 5.0,
-) -> bool:
-    if not _record_buffer.get(store_id):
-        return False
-    if last_flush_at is None:
-        return True
-    return (datetime.now(timezone.utc) - last_flush_at).total_seconds() >= max_age_sec
-
-
-_edge_buffer: dict[int, list[dict]] = {}
-_edge_last_flush_at: dict[int, datetime] = {}
-
-
-def flush_edge_buffer(store: "MemoryStore") -> int:
-    from iai_mcp.events import _BUFFER_LOCK
-
-    with _BUFFER_LOCK:
-        store_id = id(store)
-        pending = _edge_buffer.pop(store_id, [])
-        if not pending:
-            return 0
-        try:
-            store.db.open_table(EDGES_TABLE).merge_insert(["src", "dst", "edge_type"]).execute(pending)
-            _edge_last_flush_at[store_id] = datetime.now(timezone.utc)
-        except (OSError, RuntimeError, ValueError) as exc:
-            logger.warning(
-                "flush_edge_buffer_failed",
-                extra={"n": len(pending), "err": str(exc)[:120]},
-            )
-        if pending:
-            try:
-                from iai_mcp.events import write_event
-                write_event(
-                    store,
-                    "lance_buffer_flush",
-                    {"table": "edges", "count": len(pending)},
-                    severity="info",
-                    buffered=False,
-                )
-            except Exception as exc:  # noqa: BLE001 -- telemetry MUST NOT crash flush
-                logger.debug("lance_buffer_flush telemetry failed: %s", str(exc)[:120])
-        return len(pending)
-
-
-def should_flush_edge_buffer(store_id: int, max_size: int | None = None) -> bool:
-    if max_size is None:
-        try:
-            max_size = int(os.environ.get("IAI_MCP_EDGE_BUFFER_MAX", "500"))
-        except ValueError:
-            max_size = 500
-    return len(_edge_buffer.get(store_id, [])) >= max_size
-
-
-def should_flush_edge_buffer_by_time(
-    store_id: int,
-    last_flush_at: datetime | None,
-    max_age_sec: float = 5.0,
-) -> bool:
-    if not _edge_buffer.get(store_id):
-        return False
-    if last_flush_at is None:
-        return True
-    return (datetime.now(timezone.utc) - last_flush_at).total_seconds() >= max_age_sec

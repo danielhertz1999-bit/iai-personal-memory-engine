@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import pytest
 
 
 def _clear_buffer(store) -> None:
@@ -99,7 +97,6 @@ def test_flush_event_buffer_failure_logs_and_doesnt_raise(tmp_path, caplog):
 
 
 def test_should_flush_size_threshold(tmp_path, monkeypatch):
-    from iai_mcp import events
     from iai_mcp.events import should_flush, write_event
     from iai_mcp.store import MemoryStore
 
@@ -121,7 +118,6 @@ def test_should_flush_size_threshold(tmp_path, monkeypatch):
 
 
 def test_should_flush_time_threshold(tmp_path):
-    from iai_mcp import events
     from iai_mcp.events import should_flush_by_time, write_event
     from iai_mcp.store import MemoryStore
 
@@ -143,7 +139,7 @@ def test_should_flush_time_threshold(tmp_path):
 
 
 def test_store_pattern_separation_pass_uses_buffered_writes():
-    store_py = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "store.py"
+    store_py = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "store" / "_store.py"
     text = store_py.read_text(encoding="utf-8")
 
     pattern = re.compile(
@@ -170,7 +166,7 @@ def test_store_pattern_separation_pass_uses_buffered_writes():
 
 
 def test_daemon_wake_wires_flush_event_buffer():
-    daemon_py = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "daemon.py"
+    daemon_py = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "daemon" / "__init__.py"
     text = daemon_py.read_text(encoding="utf-8")
 
     assert text.count("flush_event_buffer") >= 3, (
@@ -195,7 +191,7 @@ def test_daemon_wake_wires_flush_event_buffer():
 
 
 def test_daemon_periodic_tick_wires_should_flush_by_time():
-    daemon_py = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "daemon.py"
+    daemon_py = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "daemon" / "__init__.py"
     text = daemon_py.read_text(encoding="utf-8")
 
     assert "should_flush_by_time" in text, (
@@ -222,12 +218,11 @@ def test_daemon_periodic_tick_wires_should_flush_by_time():
 
 
 def test_daemon_shutdown_wires_flush_event_buffer_sync(tmp_path):
-    daemon_py = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "daemon.py"
+    daemon_py = Path(__file__).resolve().parent.parent / "src" / "iai_mcp" / "daemon" / "__init__.py"
     text = daemon_py.read_text(encoding="utf-8")
 
     assert "flush_event_buffer" in text, "shutdown flush missing"
 
-    from iai_mcp import events
     from iai_mcp.events import flush_event_buffer, write_event
     from iai_mcp.store import EVENTS_TABLE, MemoryStore
 

@@ -30,7 +30,7 @@ if P_SHA256_HASH != "BOOTSTRAP_PENDING":
     _actual_hash = hashlib.sha256(P.tobytes()).hexdigest()
     if _actual_hash != P_SHA256_HASH:
         raise RuntimeError(
-            f"P matrix has drifted. "
+            f"Locked P matrix has drifted. "
             f"Expected hash {P_SHA256_HASH}, got {_actual_hash}. "
             f"This invalidates every stored hypervector across every Hippo store."
         )

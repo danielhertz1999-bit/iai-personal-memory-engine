@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# iai-mcp UserPromptSubmit hook — per-turn ambient capture.
+# IAI-MCP UserPromptSubmit hook — per-turn ambient capture.
 #
 # Pure file IO: appends one JSONL event line per new transcript turn to
 # ~/.iai-mcp/.deferred-captures/{session_id}.live.jsonl. Inline system

@@ -3,10 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from unittest.mock import patch, MagicMock
-from uuid import uuid4
 
-import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 from test_store import _make
@@ -26,7 +23,7 @@ class TestEFEIntegration:
 class TestGABAIntegration:
 
     def test_knob_tune_calls_gaba(self, tmp_path):
-        import iai_mcp.lilli.cycle.sleep_pipeline as sp_mod
+        import iai_mcp.lilli.cycle.sleep_pipeline._knob_tune as sp_mod
         import inspect
         source = inspect.getsource(sp_mod)
         assert "from iai_mcp.gaba_annealing import compute_annealed_k" in source
@@ -56,7 +53,7 @@ class TestTimeCellsIntegration:
         assert len(th) == 128, f"temporal_hash dimension wrong: {len(th)}"
 
     def test_time_cells_source_in_store(self):
-        import iai_mcp.store as store_mod
+        import iai_mcp.store._store as store_mod
         import inspect
         source = inspect.getsource(store_mod)
         assert "from iai_mcp.time_cells import compute_temporal_hash" in source
@@ -65,7 +62,7 @@ class TestTimeCellsIntegration:
 class TestWALIntegration:
 
     def test_erasure_agent_imports_wal(self):
-        import iai_mcp.lilli.cycle.sleep_pipeline as sp_mod
+        import iai_mcp.lilli.cycle.sleep_pipeline._erasure as sp_mod
         import inspect
         source = inspect.getsource(sp_mod)
         assert "from iai_mcp.sleep_wal import SleepWAL" in source

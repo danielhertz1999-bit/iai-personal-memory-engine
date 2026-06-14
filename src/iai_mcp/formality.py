@@ -154,7 +154,7 @@ def formality_score(
     if lang not in LEX_MARKERS:
         warnings.warn(
             f"formality_score: lang={lang!r} outside RU+EN baseline; "
-            "returning neutral 0.5",
+            "returning neutral 0.5 (graceful degradation for unsupported languages)",
             stacklevel=2,
         )
         _logger.debug("formality_score unknown lang=%s text_len=%d", lang, len(text))

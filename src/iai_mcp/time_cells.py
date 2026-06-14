@@ -3,8 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import struct
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import datetime
 
 import numpy as np
 

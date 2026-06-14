@@ -15,7 +15,6 @@ from iai_mcp.lifecycle_state import (
     LIFECYCLE_STATE_PATH,
     LifecycleState,
     LifecycleStateRecord,
-    default_state,
     load_state,
     save_state,
 )

@@ -73,7 +73,7 @@ def _build_records(
     n: int,
     session_id: str | None,
 ) -> list:
-    from iai_mcp.types import MemoryRecord, SCHEMA_VERSION_CURRENT, HV_TIER_ENUM
+    from iai_mcp.types import MemoryRecord
 
     results: list[MemoryRecord] = []
     for row in rows:

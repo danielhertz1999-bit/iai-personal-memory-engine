@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-CORE_PY = REPO / "src" / "iai_mcp" / "core.py"
+CORE_PY = REPO / "src" / "iai_mcp" / "core" / "__init__.py"
 TOOLS_TS = REPO / "mcp-wrapper" / "src" / "tools.ts"
 
 TOOL_NAMES: list[str] = [

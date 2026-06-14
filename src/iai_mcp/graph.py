@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Iterator
+from typing import Any, Iterable, Iterator
 from uuid import UUID
 
 import numpy as np
@@ -19,6 +19,39 @@ class MemoryGraph:
         self._centrality_cache: dict[UUID, float] | None = None
         self._dirty_since_centrality: bool = True
 
+
+    def clear_and_rebuild(
+        self,
+        nodes: Iterable[tuple[UUID, UUID | None, list[float], dict[str, Any]]],
+        edges: Iterable[tuple[UUID, UUID, float, str]],
+    ) -> None:
+        """Repopulate the adjacency structure in place from scratch.
+
+        The three core containers are cleared in place (their objects are kept
+        so freed value sub-dicts are returned to the existing heap arenas for
+        reuse) and refilled exclusively through the public mutators, so the end
+        state is identical to a fresh instance fed the same mutator sequence.
+
+        All derived/memoized state is invalidated FIRST so a reused instance can
+        never serve stale centrality, label order, or community results:
+        the centrality cache is dropped, the dirty flag is raised, and the lazily
+        built CSR label order is deleted.
+        """
+        self._centrality_cache = None
+        self._dirty_since_centrality = True
+        if hasattr(self, "_node_ids_csr_order"):
+            del self._node_ids_csr_order
+
+        self._adj.clear()
+        self._attrs.clear()
+        self._node_payload.clear()
+
+        for node_id, community_id, embedding, payload in nodes:
+            self.add_node(node_id, community_id=community_id, embedding=embedding)
+            self.set_node_payload(node_id, payload)
+
+        for src, dst, weight, edge_type in edges:
+            self.add_edge(src, dst, weight=weight, edge_type=edge_type)
 
     def node_count(self) -> int:
         return len(self._adj)

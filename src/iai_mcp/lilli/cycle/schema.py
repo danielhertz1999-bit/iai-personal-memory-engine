@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -9,7 +8,7 @@ from typing import Iterable
 from uuid import UUID, uuid4
 
 from iai_mcp.events import write_event
-from iai_mcp.guard import BudgetLedger, RateLimitLedger, should_call_llm
+from iai_mcp.guard import BudgetLedger, RateLimitLedger
 from iai_mcp.store import MemoryStore
 from iai_mcp.types import MemoryRecord, SCHEMA_VERSION_CURRENT
 
