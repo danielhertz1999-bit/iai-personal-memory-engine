@@ -59,7 +59,7 @@ I built this for myself. It worked. I've been running it daily for months, and n
 
 Under the hood it's not a wrapper around someone else's vector store and graph library — the parts that matter are my own code: the storage engine, the community-detection algorithm, the hyperdimensional memory substrate, and a native engine that makes it fast. More on that in [Built our own](#built-our-own).
 
-And unlike cloud memory services, nothing leaves your machine: no API key, no account, no telemetry. The local engine, the store, and the embeddings are all local.
+And unlike cloud memory services, there's no API key, no account, and no telemetry: the engine, the store, and the embeddings all run locally. The only thing that leaves your machine is the normal model call your CLI already makes.
 
 <p align="center"><img src="docs/assets/slides/slide-04.jpg" width="850" alt="iai-pme"></p>
 
