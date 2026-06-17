@@ -652,10 +652,35 @@ def _set_process_title(title: str = "iai lilli (iai_mcp.daemon)") -> None:
         pass
 
 
+def _auto_set_embed_offline() -> None:
+    """Set IAI_MCP_EMBED_OFFLINE if the bge-small-en-v1.5 model is already cached locally.
+
+    The Rust hf-hub client uses a different TLS stack than Python and may fail to reach
+    huggingface.co in restricted network environments (e.g., containers with custom CA
+    certificates). When the model files are already present in the HF cache, setting this
+    env var tells the Rust embedder to skip the network entirely.
+    """
+    if os.environ.get("IAI_MCP_EMBED_OFFLINE"):
+        return
+    import pathlib
+
+    revision = "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
+    hf_home = os.environ.get("HF_HOME") or os.environ.get("HUGGINGFACE_HUB_CACHE")
+    if hf_home:
+        cache_base = pathlib.Path(hf_home)
+    else:
+        cache_base = pathlib.Path.home() / ".cache" / "huggingface" / "hub"
+    snap = cache_base / "models--BAAI--bge-small-en-v1.5" / "snapshots" / revision
+    if (snap / "model.safetensors").exists() and (snap / "tokenizer.json").exists():
+        os.environ["IAI_MCP_EMBED_OFFLINE"] = "1"
+        log.debug("bge-small-en-v1.5 found in HF cache — setting IAI_MCP_EMBED_OFFLINE=1")
+
+
 async def main() -> int:
     _set_process_title()
     _require_native()
     _raise_fd_limit()
+    _auto_set_embed_offline()
 
     store = await _open_exclusive_store_with_backoff(
         lambda: MemoryStore(
