@@ -167,7 +167,8 @@ def check_b_socket_fresh() -> CheckResult:
 
 def check_c_lock_healthy() -> CheckResult:
     import errno as _errno
-    import fcntl as _fcntl
+    from iai_mcp._filelock import LOCK_NB, LOCK_SH, LOCK_UN
+    from iai_mcp._filelock import flock as _flock
 
     lock_path = _resolve_hippo_db_path().parent / ".lock"
     if not lock_path.exists():
@@ -178,10 +179,12 @@ def check_c_lock_healthy() -> CheckResult:
         )
     fd = None
     try:
-        fd = os.open(str(lock_path), os.O_RDONLY)
+        # O_RDWR required on Windows (msvcrt.locking needs write access);
+        # harmless on POSIX since flock ignores open mode.
+        fd = os.open(str(lock_path), os.O_RDWR)
         try:
-            _fcntl.flock(fd, _fcntl.LOCK_SH | _fcntl.LOCK_NB)
-            _fcntl.flock(fd, _fcntl.LOCK_UN)
+            _flock(fd, LOCK_SH | LOCK_NB)
+            _flock(fd, LOCK_UN)
             return CheckResult(
                 "(c) lock file healthy",
                 True,
@@ -195,7 +198,7 @@ def check_c_lock_healthy() -> CheckResult:
                     f"{lock_path} held (consolidating or recall active — normal)",
                 )
             raise
-    except Exception as e:  # noqa: BLE001 — fcntl/OSError/permission all FAIL
+    except Exception as e:  # noqa: BLE001 — flock/OSError/permission all FAIL
         logger.debug("check_c: store-lock probe failed: %s", e)
         return CheckResult(
             "(c) lock file healthy",
