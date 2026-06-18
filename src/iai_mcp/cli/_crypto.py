@@ -35,8 +35,10 @@ def cmd_crypto_status(args: argparse.Namespace) -> int:
         length = st.st_size
         status["mode"] = mode_octal
         status["mode_secure"] = (st.st_mode & 0o077 == 0)
-        status["uid"] = st.st_uid
-        status["uid_matches_process"] = (st.st_uid == _os.geteuid())
+        status["uid"] = getattr(st, "st_uid", -1)
+        status["uid_matches_process"] = (
+            hasattr(_os, "geteuid") and st.st_uid == _os.geteuid()
+        )
         status["length_bytes"] = length
         status["length_valid"] = (length == KEY_BYTES)
         status["passphrase_fallback_set"] = bool(
