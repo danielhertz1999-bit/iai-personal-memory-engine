@@ -62,6 +62,54 @@ def _render_systemd_unit() -> str:
     return text
 
 
+def _find_pythonw() -> str:
+    exe = Path(sys.executable)
+    pythonw = exe.parent / "pythonw.exe"
+    if pythonw.exists():
+        return str(pythonw)
+    return sys.executable
+
+
+def _render_schtasks_xml() -> str:
+    pythonw = _find_pythonw()
+    username = os.environ.get("USERNAME", "")
+    log_dir = Path(os.environ.get("APPDATA", str(Path.home()))) / "iai-mcp" / "logs"
+    return f"""\
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>iai-mcp sleep daemon — background memory consolidation for Claude Code</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>{username}</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>{username}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Hidden>true</Hidden>
+  </Settings>
+  <Actions>
+    <Exec>
+      <Command>{pythonw}</Command>
+      <Arguments>-m iai_mcp.daemon</Arguments>
+      <WorkingDirectory>{log_dir}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>"""
+
+
 def _prompt_consent(stream_out=None) -> bool:
     from iai_mcp import cli as _cli
     if stream_out is None:
@@ -124,13 +172,61 @@ def cmd_daemon_install(args: argparse.Namespace) -> int:
     elif _cli._is_linux():
         content = _render_systemd_unit()
         target = _cli.SYSTEMD_TARGET
+    elif _cli._is_windows():
+        content = _render_schtasks_xml()
+        target = None
     else:
         print(f"Unsupported OS: {platform.system()}", file=sys.stderr)
         return 1
 
     if dry_run:
-        print(f"# Would install to: {target}")
+        if target is not None:
+            print(f"# Would install to: {target}")
+        else:
+            print(f"# Would create scheduled task: {_cli.SCHTASKS_TASK_NAME}")
         print(content)
+        return 0
+
+    _cli._ensure_crypto_key_present()
+
+    if _cli._is_windows():
+        import subprocess as _sp
+        import tempfile as _tmpmod
+
+        log_dir = Path(os.environ.get("APPDATA", str(Path.home()))) / "iai-mcp" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        fd, xml_path = _tmpmod.mkstemp(suffix=".xml", prefix="iai-mcp-task-")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-16") as f:
+                f.write(content)
+            result = _sp.run(
+                [
+                    "schtasks", "/Create",
+                    "/TN", _cli.SCHTASKS_TASK_NAME,
+                    "/XML", xml_path,
+                    "/F",
+                ],
+                check=False, capture_output=True, text=True,
+            )
+            if result.returncode != 0:
+                print(
+                    f"schtasks /Create failed ({result.returncode}): "
+                    f"{result.stderr.strip()}",
+                    file=sys.stderr,
+                )
+                return 1
+        finally:
+            try:
+                os.unlink(xml_path)
+            except OSError:
+                pass
+
+        _sp.run(
+            ["schtasks", "/Run", "/TN", _cli.SCHTASKS_TASK_NAME],
+            check=False, capture_output=True,
+        )
+        print(f"Installed scheduled task: {_cli.SCHTASKS_TASK_NAME}")
         return 0
 
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -139,8 +235,6 @@ def cmd_daemon_install(args: argparse.Namespace) -> int:
         os.chmod(target, 0o644)
     except OSError:
         pass
-
-    _cli._ensure_crypto_key_present()
 
     uid = os.getuid() if hasattr(os, "getuid") else 0
     if _cli._is_macos():
@@ -236,6 +330,16 @@ def cmd_daemon_uninstall(args: argparse.Namespace) -> int:
                 ["systemctl", "--user", "daemon-reload"],
                 check=False, capture_output=True,
             )
+    elif _cli._is_windows():
+        import subprocess as _sp
+        _sp.run(
+            ["schtasks", "/End", "/TN", _cli.SCHTASKS_TASK_NAME],
+            check=False, capture_output=True,
+        )
+        _sp.run(
+            ["schtasks", "/Delete", "/TN", _cli.SCHTASKS_TASK_NAME, "/F"],
+            check=False, capture_output=True,
+        )
 
     _remove_state_files()
     print("Daemon uninstalled. State files removed.")
@@ -263,6 +367,12 @@ def cmd_daemon_start(args: argparse.Namespace) -> int:
         _cli.subprocess.run(
             ["systemctl", "--user", "start", _cli.SERVICE_NAME],
             check=False,
+        )
+    elif _cli._is_windows():
+        import subprocess as _sp
+        _sp.run(
+            ["schtasks", "/Run", "/TN", _cli.SCHTASKS_TASK_NAME],
+            check=False, capture_output=True,
         )
     else:
         print(f"Unsupported OS: {platform.system()}", file=sys.stderr)
@@ -326,6 +436,36 @@ def cmd_daemon_stop(args: argparse.Namespace) -> int:
             ["systemctl", "--user", "stop", _cli.SERVICE_NAME],
             check=False,
         )
+    elif _cli._is_windows():
+        import subprocess as _sp
+        from iai_mcp.lifecycle_lock import LifecycleLock, _is_pid_alive
+
+        _sp.run(
+            ["schtasks", "/End", "/TN", _cli.SCHTASKS_TASK_NAME],
+            check=False, capture_output=True,
+        )
+
+        payload = LifecycleLock().read()
+        pid = payload["pid"] if payload else None
+        if pid is not None and _is_pid_alive(pid):
+            try:
+                os.kill(pid, _signal.SIGINT)
+            except (ProcessLookupError, PermissionError) as exc:
+                logger.debug("SIGINT to daemon pid=%d failed: %s", pid, exc)
+                return 0
+
+            deadline = _time.monotonic() + _stop_escalation_bound()
+            interval = _stop_poll_interval()
+            while _time.monotonic() < deadline:
+                if not _is_pid_alive(pid):
+                    return 0
+                _time.sleep(interval)
+
+            if _is_pid_alive(pid):
+                _sp.run(
+                    ["taskkill", "/F", "/PID", str(pid)],
+                    check=False, capture_output=True,
+                )
     else:
         print(f"Unsupported OS: {platform.system()}", file=sys.stderr)
         return 1
