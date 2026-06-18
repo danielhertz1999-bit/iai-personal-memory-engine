@@ -142,7 +142,7 @@ def cmd_daemon_install(args: argparse.Namespace) -> int:
 
     _cli._ensure_crypto_key_present()
 
-    uid = os.getuid()
+    uid = os.getuid() if hasattr(os, "getuid") else 0
     if _cli._is_macos():
         _cli.subprocess.run(
             ["launchctl", "bootout", f"gui/{uid}", str(target)],
@@ -211,7 +211,7 @@ def cmd_daemon_uninstall(args: argparse.Namespace) -> int:
             print("Uninstall cancelled.", file=sys.stderr)
             return 1
 
-    uid = os.getuid()
+    uid = os.getuid() if hasattr(os, "getuid") else 0
     if _cli._is_macos():
         if _cli.LAUNCHD_TARGET.exists():
             _cli.subprocess.run(
@@ -244,7 +244,7 @@ def cmd_daemon_uninstall(args: argparse.Namespace) -> int:
 
 def cmd_daemon_start(args: argparse.Namespace) -> int:
     from iai_mcp import cli as _cli
-    uid = os.getuid()
+    uid = os.getuid() if hasattr(os, "getuid") else 0
     if _cli._is_macos():
         target = _cli.LAUNCHD_TARGET
         _cli.subprocess.run(
@@ -284,7 +284,7 @@ def cmd_daemon_stop(args: argparse.Namespace) -> int:
     except (OSError, ValueError, RuntimeError) as exc:
         logger.debug("sentinel write failed (non-blocking): %s", exc)
 
-    uid = os.getuid()
+    uid = os.getuid() if hasattr(os, "getuid") else 0
     if _cli._is_macos():
         from iai_mcp.lifecycle_lock import LifecycleLock, _is_pid_alive
 
@@ -300,8 +300,9 @@ def cmd_daemon_stop(args: argparse.Namespace) -> int:
             return 0
 
         if _is_pid_alive(pid):
+            _term_sig = getattr(_signal, "SIGTERM", _signal.SIGINT)
             try:
-                os.kill(pid, _signal.SIGTERM)
+                os.kill(pid, _term_sig)
             except (ProcessLookupError, PermissionError) as exc:
                 logger.debug("SIGTERM to daemon pid=%d failed: %s", pid, exc)
                 return 0
@@ -314,8 +315,9 @@ def cmd_daemon_stop(args: argparse.Namespace) -> int:
                 _time.sleep(interval)
 
             if _is_pid_alive(pid):
+                _kill_sig = getattr(_signal, "SIGKILL", _term_sig)
                 try:
-                    os.kill(pid, _signal.SIGKILL)
+                    os.kill(pid, _kill_sig)
                 except (ProcessLookupError, PermissionError) as exc:
                     logger.debug("SIGKILL to daemon pid=%d failed: %s", pid, exc)
         return 0
@@ -419,12 +421,20 @@ def cmd_daemon_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _get_daemon_log_path() -> Path:
+    if platform.system() == "Darwin":
+        return Path.home() / "Library" / "Logs" / "iai-mcp-daemon.stderr.log"
+    if platform.system() == "Windows":
+        return Path(os.environ.get("APPDATA", str(Path.home()))) / "iai-mcp" / "logs" / "daemon.log"
+    return Path.home() / ".local" / "share" / "iai-mcp" / "logs" / "daemon.log"
+
+
 def cmd_daemon_logs(args: argparse.Namespace) -> int:
     from iai_mcp import cli as _cli
     follow = bool(getattr(args, "follow", False))
     lines = int(getattr(args, "lines", 50))
     if _cli._is_macos():
-        path = Path.home() / "Library" / "Logs" / "iai-mcp-daemon.stderr.log"
+        path = _get_daemon_log_path()
         argv = ["tail"]
         if follow:
             argv.append("-f")
@@ -435,6 +445,15 @@ def cmd_daemon_logs(args: argparse.Namespace) -> int:
         if follow:
             argv.append("-f")
         _cli.subprocess.run(argv, check=False)
+    elif platform.system() == "Windows":
+        path = _get_daemon_log_path()
+        if not path.exists():
+            print(f"No log file at {path}", file=sys.stderr)
+            return 1
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            all_lines = f.readlines()
+        for line in all_lines[-lines:]:
+            print(line, end="")
     else:
         print(f"Unsupported OS: {platform.system()}", file=sys.stderr)
         return 1

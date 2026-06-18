@@ -305,7 +305,8 @@ def _kill_orphan_cores() -> tuple[bool, str, int]:
             if "iai_mcp.core" not in cl:
                 continue
             pid = p.info["pid"]
-            os.kill(pid, signal.SIGTERM)
+            _term = getattr(signal, "SIGTERM", signal.SIGINT)
+            os.kill(pid, _term)
             killed.append(pid)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
