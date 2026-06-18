@@ -32,7 +32,7 @@ Updated all 9 callsites that previously used raw `asyncio.open_unix_connection` 
 
 ## Completion Status
 
-**Steps 1-6: COMPLETED** ✅
+**Steps 1-7: COMPLETED** ✅
 
 - **Step 1** (`1dc1d64`): Platform-agnostic IPC (Unix sockets → TCP loopback on Windows)
 - **Step 2** (`8154b9b`): fcntl file locking → `_filelock.py` shim
@@ -40,10 +40,14 @@ Updated all 9 callsites that previously used raw `asyncio.open_unix_connection` 
 - **Steps 7+10** (`8ecd257`): uid/geteuid guards, os.fchmod guards, icacls file security
 - **Step 5** (`0e8321c`): Windows Task Scheduler daemon installer (schtasks.exe)
 - **Step 6** (`f4865bf`): PowerShell hook equivalents (.ps1 scripts + hook installer updates)
+- **Step 7 — bench files**: `resource.getrusage()` → psutil `peak_wset` on Windows;
+  POSIX path unchanged. All four bench files (`memory_footprint.py`,
+  `memorygraph_memory.py`, `consolidation_rss_peak.py`, `embed_warm_cost.py`)
+  now import cleanly on Windows.
 
 ## What remains
 
-Bench files (lower priority) and any final edge cases.
+Manual end-to-end testing on a Windows machine, and any final edge cases discovered there.
 
 ### Bench Files — resource.getrusage() (OPTIONAL — not required for daemon)
 
@@ -307,15 +311,10 @@ def _secure_key_file(path: Path) -> None:
 
 ## Next Steps (for the next session)
 
-The core daemon + hook infrastructure is now Windows-ready. Remaining work:
+The core daemon + hook infrastructure is now Windows-ready, and bench files
+no longer crash on Windows import. Remaining work:
 
-1. **Bench files (OPTIONAL, lower priority):** Update bench files that use `resource.getrusage()` to use `psutil.Process().memory_info().rss` instead. Affects:
-   - `bench/memory_footprint.py`
-   - `bench/embed_warm_cost.py`
-   - `bench/consolidation_rss_peak.py`
-   - `bench/memorygraph_memory.py`
-
-2. **Manual testing on Windows:** Verify the port works by:
+1. **Manual testing on Windows:** Verify the port works by:
    ```powershell
    cd "C:\Users\Daniel Hertz\Documents\GitHub\iai-personal-memory-engine"
    python -m venv .venv
@@ -325,7 +324,7 @@ The core daemon + hook infrastructure is now Windows-ready. Remaining work:
    python -m iai_mcp capture-hooks install --dry-run  # Check hook paths
    ```
 
-3. **Update CLAUDE.md:** Add Windows-specific setup notes to the project's CLAUDE.md (if it exists) or create one with:
+2. **Update CLAUDE.md:** Add Windows-specific setup notes to the project's CLAUDE.md (if it exists) or create one with:
    - Running `iai-mcp daemon install` on Windows (uses Task Scheduler)
    - Running `iai-mcp capture-hooks install` on Windows (uses PowerShell hooks)
    - Expected log locations (`%APPDATA%\iai-mcp\logs\`)
