@@ -32,7 +32,7 @@ def _find_transcript_ts(
     Fast path: match by source_uuid. Fallback: match by content hash of literal_surface
     against the transcript line text field.
     """
-    from iai_mcp.capture import _resolve_ts
+    from iai_mcp.capture import MAX_CAPTURE_LEN, _resolve_ts
 
     # Validate session_id to prevent path traversal.
     if not session_id or "/" in session_id or ".." in session_id:
@@ -64,21 +64,23 @@ def _find_transcript_ts(
                     # Fast path: uuid match.
                     if source_uuid and obj.get("uuid") == source_uuid:
                         return _resolve_ts(ts_str)
-                    # Content-hash fallback: compare against message text fields.
-                    text_candidate = (
-                        obj.get("text")
-                        or obj.get("content")
-                        or ""
-                    )
-                    if isinstance(text_candidate, list):
-                        # Content is sometimes a list of blocks.
+                    # Content-hash fallback: real transcript lines nest the
+                    # text under message.content, not at the top level — mirror
+                    # the extraction capture_transcript_into_episodic() uses so
+                    # the hash matches what was actually stored as literal_surface.
+                    msg = obj.get("message")
+                    msg = msg if isinstance(msg, dict) else obj
+                    content = msg.get("content", "")
+                    if isinstance(content, list):
                         parts = []
-                        for block in text_candidate:
-                            if isinstance(block, dict):
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "text":
                                 parts.append(block.get("text") or "")
-                            elif isinstance(block, str):
-                                parts.append(block)
-                        text_candidate = "".join(parts)
+                        text_candidate = "\n".join(parts).strip()
+                    else:
+                        text_candidate = str(content or "").strip()
+                    if len(text_candidate) > MAX_CAPTURE_LEN:
+                        text_candidate = text_candidate[:MAX_CAPTURE_LEN]
                     if text_candidate:
                         candidate_hash = hashlib.sha256(
                             text_candidate.encode("utf-8")

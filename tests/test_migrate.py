@@ -475,6 +475,60 @@ def test_migrate_rederive_skips_missing_transcript(tmp_path):
         assert after.created_at == collapsed_ts
 
 
+def test_migrate_rederive_content_hash_fallback_matches_nested_message(tmp_path):
+    """Records without source_uuid fall back to content-hash matching against
+    the transcript's nested message.content — the real Claude Code shape."""
+    from iai_mcp.migrate import migrate_rederive_collapsed_timestamps
+    from iai_mcp.store import MemoryStore
+
+    store = MemoryStore(path=tmp_path)
+    session_id = "sess-content-hash"
+    transcript_root = tmp_path / "transcripts"
+
+    collapsed_ts = datetime(2026, 7, 1, 0, 0, 0, tzinfo=timezone.utc)
+    texts = [f"User turn content-hash {i}" for i in range(3)]
+    real_ts_strs = [
+        "2026-07-01T05:00:00Z",
+        "2026-07-01T05:01:00Z",
+        "2026-07-01T05:02:00Z",
+    ]
+
+    # No source_uuid recorded in provenance — forces the content-hash fallback.
+    records = [
+        _make_episodic_record(texts[i], session_id, "", collapsed_ts)
+        for i in range(3)
+    ]
+    for r in records:
+        store.insert(r)
+
+    # Real transcript lines nest text under message.content, not at the top level.
+    transcript_entries = [
+        {
+            "type": "user",
+            "timestamp": real_ts_strs[i],
+            "sessionId": session_id,
+            "uuid": str(uuid4()),
+            "message": {"role": "user", "content": texts[i]},
+        }
+        for i in range(3)
+    ]
+    # One entry uses the list-of-content-blocks shape too.
+    transcript_entries[0]["message"]["content"] = [
+        {"type": "text", "text": texts[0]}
+    ]
+    _write_fake_transcript(transcript_root, session_id, transcript_entries)
+
+    result = migrate_rederive_collapsed_timestamps(store, transcript_root=transcript_root)
+
+    assert result["records_updated"] == 3
+    assert result["skipped_no_match"] == 0
+
+    fetched_ts = {r.id: store.get(r.id).created_at for r in records}
+    assert len(set(fetched_ts.values())) == 3
+    for ts in fetched_ts.values():
+        assert ts != collapsed_ts
+
+
 def test_migrate_rederive_writes_event(tmp_path):
     """A migration_rederive_timestamps event is written after a non-dry run."""
     from iai_mcp.events import query_events
