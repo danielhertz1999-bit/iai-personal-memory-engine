@@ -72,15 +72,16 @@ def _ensure_crypto_key_present():
 
 
 def _try_short_timeout_connect(timeout_ms: int = 250) -> bool:
-    import socket as _socket
-
-    sock_path = os.environ.get("IAI_DAEMON_SOCKET_PATH") or str(SOCKET_PATH)
-    s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    from iai_mcp._ipc import make_sync_ipc_socket
+    try:
+        s, addr = make_sync_ipc_socket()
+    except (FileNotFoundError, OSError):
+        return False
     s.settimeout(timeout_ms / 1000.0)
     try:
-        s.connect(sock_path)
+        s.connect(addr)
         return True
-    except (FileNotFoundError, ConnectionRefusedError, OSError, _socket.timeout):
+    except (FileNotFoundError, ConnectionRefusedError, OSError):
         return False
     finally:
         try:
@@ -99,18 +100,14 @@ def _send_jsonrpc_request(
     read_timeout: float = 30.0,
 ) -> dict | None:
     import asyncio
+    from iai_mcp._ipc import open_ipc_connection
     from iai_mcp.cli._capture import _is_custom_store as _isc
     if not os.environ.get("IAI_DAEMON_SOCKET_PATH") and _isc():
         return None
 
-    sock_path = os.environ.get("IAI_DAEMON_SOCKET_PATH") or str(SOCKET_PATH)
-
     async def _runner() -> dict | None:
         try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_unix_connection(sock_path),
-                timeout=connect_timeout,
-            )
+            reader, writer = await open_ipc_connection(timeout=connect_timeout)
         except (FileNotFoundError, ConnectionRefusedError, OSError, asyncio.TimeoutError):
             return None
         try:
@@ -142,17 +139,12 @@ def _send_jsonrpc_request(
 
 def _send_socket_request(req: dict, *, timeout: float = 30.0) -> dict | None:
     import asyncio
+    from iai_mcp._ipc import open_ipc_connection
 
     async def _runner() -> dict | None:
-        _sock = os.environ.get("IAI_DAEMON_SOCKET_PATH") or str(SOCKET_PATH)
         try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_unix_connection(_sock),
-                timeout=5.0,
-            )
-        except (FileNotFoundError, ConnectionRefusedError):
-            return None
-        except OSError:
+            reader, writer = await open_ipc_connection(timeout=5.0)
+        except (FileNotFoundError, ConnectionRefusedError, OSError):
             return None
         try:
             writer.write((json.dumps(req) + "\n").encode("utf-8"))

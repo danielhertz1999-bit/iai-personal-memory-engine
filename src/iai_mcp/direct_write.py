@@ -116,19 +116,17 @@ def _find_record_by_tag_direct(db: Any, tag: str) -> str | None:
 
 
 def _try_get_embedding_fast(text: str, cue: str) -> list[float] | None:
-    socket_path = os.environ.get("IAI_DAEMON_SOCKET_PATH")
-    if socket_path:
-        try:
-            import socket as _socket
-            s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
-            s.settimeout(0.1)
-            s.connect(socket_path)
-            s.close()
-        except (OSError, ConnectionRefusedError, FileNotFoundError):
-            return None
-    else:
+    from iai_mcp._ipc import IS_WINDOWS, make_sync_ipc_socket
+    # On POSIX only proceed when IAI_DAEMON_SOCKET_PATH is explicitly set
+    if not IS_WINDOWS and not os.environ.get("IAI_DAEMON_SOCKET_PATH"):
         return None
-
+    try:
+        s, addr = make_sync_ipc_socket()
+        s.settimeout(0.1)
+        s.connect(addr)
+        s.close()
+    except (OSError, ConnectionRefusedError, FileNotFoundError):
+        return None
     return None
 
 

@@ -13,15 +13,8 @@ SOCKET_PATH: Path = Path.home() / ".iai-mcp" / ".daemon.sock"
 
 
 def cleanup_stale_socket(path: Path = SOCKET_PATH) -> None:
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        pass
-    except OSError:
-        try:
-            path.unlink()
-        except OSError:
-            pass
+    from iai_mcp._ipc import cleanup_ipc_address
+    cleanup_ipc_address(path)
 
 
 def _validate_socket_message(req: dict) -> tuple[bool, str | None]:
@@ -238,19 +231,11 @@ async def serve_control_socket(
     dispatcher: Callable[[dict], Awaitable[dict]] | None = None,
     socket_path: Path = SOCKET_PATH,
 ) -> None:
-    cleanup_stale_socket(socket_path)
-    socket_path.parent.mkdir(parents=True, exist_ok=True)
+    from iai_mcp._ipc import IS_WINDOWS, cleanup_ipc_address, start_ipc_server, shutdown_ipc
 
-    _supports_cleanup_socket = False
-    try:
-        import inspect as _inspect
-        import asyncio as _asyncio_mod
-        _loop_sig = _inspect.signature(
-            _asyncio_mod.get_event_loop_policy().new_event_loop().create_unix_server
-        )
-        _supports_cleanup_socket = "cleanup_socket" in _loop_sig.parameters
-    except (TypeError, ValueError, AttributeError):
-        _supports_cleanup_socket = False
+    cleanup_ipc_address(socket_path)
+    if not IS_WINDOWS:
+        socket_path.parent.mkdir(parents=True, exist_ok=True)
 
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
@@ -280,23 +265,16 @@ async def serve_control_socket(
             except (OSError, ConnectionError):  # noqa: BLE001 -- cleanup is best-effort
                 pass
 
-    _server_kwargs = {"cleanup_socket": True} if _supports_cleanup_socket else {}
-    server = await asyncio.start_unix_server(
-        handle, path=str(socket_path), **_server_kwargs,
-    )
-    try:
-        os.chmod(str(socket_path), 0o600)
-    except OSError:
-        pass
+    server, actual_addr, needs_cleanup = await start_ipc_server(handle, socket_path)
+    if not IS_WINDOWS:
+        try:
+            os.chmod(str(socket_path), 0o600)
+        except OSError:
+            pass
 
     try:
         async with server:
             await shutdown.wait()
     finally:
-        if not _supports_cleanup_socket:
-            try:
-                socket_path.unlink()
-            except FileNotFoundError:
-                pass
-            except OSError:
-                pass
+        if needs_cleanup:
+            shutdown_ipc(actual_addr)
