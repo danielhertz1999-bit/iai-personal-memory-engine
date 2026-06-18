@@ -30,13 +30,24 @@ Updated all 9 callsites that previously used raw `asyncio.open_unix_connection` 
 - `src/iai_mcp/doctor/__init__.py`
 - `src/iai_mcp/semantic_recall.py`
 
-## What remains — ordered by priority
+## Completion Status
 
-Work through these in order. Each step should be a separate commit.
+**Steps 1-6: COMPLETED** ✅
 
----
+- **Step 1** (`1dc1d64`): Platform-agnostic IPC (Unix sockets → TCP loopback on Windows)
+- **Step 2** (`8154b9b`): fcntl file locking → `_filelock.py` shim
+- **Steps 3+4+9** (`c009736`): POSIX signals, resource module, CLI daemon logging
+- **Steps 7+10** (`8ecd257`): uid/geteuid guards, os.fchmod guards, icacls file security
+- **Step 5** (`0e8321c`): Windows Task Scheduler daemon installer (schtasks.exe)
+- **Step 6** (`f4865bf`): PowerShell hook equivalents (.ps1 scripts + hook installer updates)
 
-### Step 2 — fcntl file locking (CRITICAL — daemon crashes on import)
+## What remains
+
+Bench files (lower priority) and any final edge cases.
+
+### Bench Files — resource.getrusage() (OPTIONAL — not required for daemon)
+
+Lower priority, affects only benchmarking tools (not runtime code).
 
 `fcntl` is POSIX-only. On Windows, importing any of these files raises `ModuleNotFoundError`.
 
@@ -294,17 +305,48 @@ def _secure_key_file(path: Path) -> None:
 
 ---
 
-## How to test after each step
+## Next Steps (for the next session)
 
-After Step 2–4 (when daemon can import without crashing):
-```powershell
-cd "C:\Users\Daniel Hertz\Documents\GitHub\iai-personal-memory-engine"
-python -m venv .venv
-.venv\Scripts\activate
-pip install -e ".[dev]"
-python -c "from iai_mcp._ipc import IS_WINDOWS; print('Windows:', IS_WINDOWS)"
-python -c "from iai_mcp.daemon import __init__"  # should not crash
-```
+The core daemon + hook infrastructure is now Windows-ready. Remaining work:
+
+1. **Bench files (OPTIONAL, lower priority):** Update bench files that use `resource.getrusage()` to use `psutil.Process().memory_info().rss` instead. Affects:
+   - `bench/memory_footprint.py`
+   - `bench/embed_warm_cost.py`
+   - `bench/consolidation_rss_peak.py`
+   - `bench/memorygraph_memory.py`
+
+2. **Manual testing on Windows:** Verify the port works by:
+   ```powershell
+   cd "C:\Users\Daniel Hertz\Documents\GitHub\iai-personal-memory-engine"
+   python -m venv .venv
+   .venv\Scripts\activate
+   pip install -e ".[dev]"
+   python -m iai_mcp daemon install --dry-run  # Check schtasks XML renders
+   python -m iai_mcp capture-hooks install --dry-run  # Check hook paths
+   ```
+
+3. **Update CLAUDE.md:** Add Windows-specific setup notes to the project's CLAUDE.md (if it exists) or create one with:
+   - Running `iai-mcp daemon install` on Windows (uses Task Scheduler)
+   - Running `iai-mcp capture-hooks install` on Windows (uses PowerShell hooks)
+   - Expected log locations (`%APPDATA%\iai-mcp\logs\`)
+
+## Verification Checklist
+
+After all steps complete:
+- [ ] Daemon imports without crashing on Windows
+- [ ] `iai-mcp daemon install` creates a Task Scheduler entry
+- [ ] `iai-mcp capture-hooks install` creates PowerShell hooks and registers in settings.json
+- [ ] Hook commands reference `.ps1` files (not `.sh`) on Windows in settings.json
+- [ ] Logs go to `%APPDATA%\iai-mcp\logs\` (Windows) not `~/.local/share` (Linux)
+- [ ] Crypto key file created with appropriate icacls permissions
+
+## Key Design Decisions
+
+1. **Platform detection:** Uses `platform.system()` checks (`== "Windows"`, `== "Darwin"`, `== "Linux"`) throughout
+2. **File locking:** `_filelock.py` shim normalizes `msvcrt.locking()` (Windows) to `fcntl.flock()` interface (POSIX)
+3. **Daemon management:** Task Scheduler on Windows, launchd on macOS, systemd on Linux
+4. **Hooks:** Python calls wrapped in shell scripts (.sh on POSIX) or PowerShell scripts (.ps1 on Windows)
+5. **No cross-platform abstractions:** Branching logic is explicit per-platform to avoid accidental breakage
 
 After Step 5 (daemon installer):
 ```powershell
