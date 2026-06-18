@@ -323,15 +323,17 @@ def cmd_capture_turn_deferred(args: argparse.Namespace) -> int:
 
 
 def _capture_hook_paths() -> tuple:
-    src = _res.files("iai_mcp") / "_deploy" / "hooks" / "iai-mcp-session-capture.sh"
-    dst = Path.home() / ".claude" / "hooks" / "iai-mcp-session-capture.sh"
+    ext = _hook_ext()
+    src = _res.files("iai_mcp") / "_deploy" / "hooks" / f"iai-mcp-session-capture{ext}"
+    dst = Path.home() / ".claude" / "hooks" / f"iai-mcp-session-capture{ext}"
     settings = Path.home() / ".claude" / "settings.json"
     return src, dst, settings
 
 
 def _turn_hook_paths() -> tuple:
-    src = _res.files("iai_mcp") / "_deploy" / "hooks" / "iai-mcp-turn-capture.sh"
-    dst = Path.home() / ".claude" / "hooks" / "iai-mcp-turn-capture.sh"
+    ext = _hook_ext()
+    src = _res.files("iai_mcp") / "_deploy" / "hooks" / f"iai-mcp-turn-capture{ext}"
+    dst = Path.home() / ".claude" / "hooks" / f"iai-mcp-turn-capture{ext}"
     return src, dst
 
 
@@ -486,14 +488,21 @@ def _patch_claude_code_config(action: str) -> str:
     return "Claude Code: patched ~/.claude.json (iai-mcp registered)"
 
 
-_CAPTURE_HOOK_MARKER = "iai-mcp-session-capture.sh"
-_TURN_HOOK_MARKER = "iai-mcp-turn-capture.sh"
-_SESSION_RECALL_HOOK_MARKER = "iai-mcp-session-recall.sh"
+import platform as _platform
+
+_CAPTURE_HOOK_MARKER = "iai-mcp-session-capture"
+_TURN_HOOK_MARKER = "iai-mcp-turn-capture"
+_SESSION_RECALL_HOOK_MARKER = "iai-mcp-session-recall"
+
+
+def _hook_ext() -> str:
+    return ".ps1" if _platform.system() == "Windows" else ".sh"
 
 
 def _session_recall_hook_paths() -> tuple:
-    src = _res.files("iai_mcp") / "_deploy" / "hooks" / "iai-mcp-session-recall.sh"
-    dst = Path.home() / ".claude" / "hooks" / "iai-mcp-session-recall.sh"
+    ext = _hook_ext()
+    src = _res.files("iai_mcp") / "_deploy" / "hooks" / f"iai-mcp-session-recall{ext}"
+    dst = Path.home() / ".claude" / "hooks" / f"iai-mcp-session-recall{ext}"
     settings = Path.home() / ".claude" / "settings.json"
     return src, dst, settings
 
@@ -525,12 +534,14 @@ def cmd_capture_hooks_install(args: argparse.Namespace) -> int:
 
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_bytes(src.read_bytes())
-    dst.chmod(dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
+    if hasattr(os, "chmod") and _platform.system() != "Windows":
+        dst.chmod(dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
     print(f"installed: {dst}")
 
     turn_dst.parent.mkdir(parents=True, exist_ok=True)
     turn_dst.write_bytes(turn_src.read_bytes())
-    turn_dst.chmod(turn_dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
+    if hasattr(os, "chmod") and _platform.system() != "Windows":
+        turn_dst.chmod(turn_dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
     print(f"installed: {turn_dst}")
 
     settings.parent.mkdir(parents=True, exist_ok=True)
@@ -539,8 +550,12 @@ def cmd_capture_hooks_install(args: argparse.Namespace) -> int:
     stop_list = data["hooks"].setdefault("Stop", [])
     submit_list = data["hooks"].setdefault("UserPromptSubmit", [])
 
-    hook_cmd = f"bash {dst}"
-    turn_cmd = f"bash {turn_dst}"
+    if _platform.system() == "Windows":
+        hook_cmd = f"powershell -ExecutionPolicy Bypass -File \"{dst}\""
+        turn_cmd = f"powershell -ExecutionPolicy Bypass -File \"{turn_dst}\""
+    else:
+        hook_cmd = f"bash {dst}"
+        turn_cmd = f"bash {turn_dst}"
 
     already_stop = any(
         any(_CAPTURE_HOOK_MARKER in (h.get("command") or "")
@@ -568,11 +583,15 @@ def cmd_capture_hooks_install(args: argparse.Namespace) -> int:
     if src_recall.exists():
         dst_recall.parent.mkdir(parents=True, exist_ok=True)
         dst_recall.write_bytes(src_recall.read_bytes())
-        dst_recall.chmod(dst_recall.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
+        if hasattr(os, "chmod") and _platform.system() != "Windows":
+            dst_recall.chmod(dst_recall.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
         print(f"installed: {dst_recall}")
 
         ss_list = data["hooks"].setdefault("SessionStart", [])
-        recall_cmd = f"bash {dst_recall}"
+        if _platform.system() == "Windows":
+            recall_cmd = f"powershell -ExecutionPolicy Bypass -File \"{dst_recall}\""
+        else:
+            recall_cmd = f"bash {dst_recall}"
         already_recall = any(
             any(_SESSION_RECALL_HOOK_MARKER in (h.get("command") or "")
                 for h in (entry.get("hooks") or []))
