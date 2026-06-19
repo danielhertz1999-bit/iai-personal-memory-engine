@@ -5,9 +5,9 @@ import gzip
 import json
 import os
 import shutil
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
-from iai_mcp._filelock import LOCK_EX, LOCK_UN, flock, timedelta, timezone
+from iai_mcp._filelock import LOCK_EX, LOCK_UN, flock
 from pathlib import Path
 from typing import Any
 
