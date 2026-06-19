@@ -40,14 +40,46 @@ Updated all 9 callsites that previously used raw `asyncio.open_unix_connection` 
 - **Steps 7+10** (`8ecd257`): uid/geteuid guards, os.fchmod guards, icacls file security
 - **Step 5** (`0e8321c`): Windows Task Scheduler daemon installer (schtasks.exe)
 - **Step 6** (`f4865bf`): PowerShell hook equivalents (.ps1 scripts + hook installer updates)
-- **Step 7 — bench files**: `resource.getrusage()` → psutil `peak_wset` on Windows;
+- **Step 7 — bench files** (`59839a3`): `resource.getrusage()` → psutil `peak_wset` on Windows;
   POSIX path unchanged. All four bench files (`memory_footprint.py`,
   `memorygraph_memory.py`, `consolidation_rss_peak.py`, `embed_warm_cost.py`)
   now import cleanly on Windows.
+- **Fix** (`13808e1`): `lifecycle_event_log.py` was importing `timedelta` /
+  `timezone` from `iai_mcp._filelock` (regression from the Step 2 rewrite).
+  Moved them back to the `datetime` import. Was broken on ALL platforms, not
+  just Windows — surfaced only when we exercised the full import chain.
+- **Help text** (`019e52f`): `daemon install` / `uninstall` / `start` / `stop` /
+  `logs` argparse help now lists the Windows backend (Task Scheduler / schtasks /
+  `%APPDATA%\\iai-mcp\\logs`) alongside launchd and systemd.
+
+## Verified on Windows in-situ (this session)
+
+Running from `C:\\Users\\Daniel Hertz\\Documents\\GitHub\\iai-personal-memory-engine`
+with system Python 3.14 (no venv, no full project install):
+
+- All 23 files touched by the port: **AST parse clean**.
+- 10/10 ported runtime modules (excluding ones that need numpy/hnswlib at
+  import-time): **import clean** on Windows.
+- `python -m iai_mcp.cli --help`: **lists all subcommands**, no crash.
+- `python -m iai_mcp.cli daemon install --dry-run`: **emits a valid Task
+  Scheduler XML** with the right user, pythonw path, log dir, and LogonTrigger.
+  XML file write uses `encoding="utf-16"` — schtasks-compatible.
+- `python -m iai_mcp.cli capture-hooks status`: **detects all three `.ps1`
+  hook templates** in the source tree, reports the expected
+  `~/.claude/hooks/*.ps1` install paths and "NOT WIRED" status.
+
+Cosmetic only (not blocking): the em-dash in the schtasks XML description
+renders as `�` when printed to a cp1252 console, but the file written to
+disk for `schtasks /Create /XML` is UTF-16 and round-trips fine.
 
 ## What remains
 
-Manual end-to-end testing on a Windows machine, and any final edge cases discovered there.
+Full end-to-end testing inside a real venv (`pip install -e ".[dev]"`,
+which pulls the Rust extension via setuptools-rust + numpy + hnswlib),
+then actually running `daemon install --yes` and `capture-hooks install`
+to verify the scheduled task and `~/.claude/settings.json` registration
+land correctly. These would be live actions on the user's machine and were
+deliberately not run autonomously.
 
 ### Bench Files — resource.getrusage() (OPTIONAL — not required for daemon)
 
