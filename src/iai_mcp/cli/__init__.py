@@ -380,6 +380,16 @@ def _build_parser() -> argparse.ArgumentParser:
             "are left unchanged."
         ),
     )
+    m.add_argument(
+        "--dedupe-episodic",
+        action="store_true",
+        help=(
+            "Tombstone duplicate episodic records sharing an idem-tag (cleanup "
+            "for the capture_turn() check-then-insert race, fixed separately). "
+            "One-time operation; idempotent. Soft-delete only -- literal_surface, "
+            "provenance, and embeddings are never touched."
+        ),
+    )
     m.set_defaults(func=cmd_migrate)
 
     c = sub.add_parser(

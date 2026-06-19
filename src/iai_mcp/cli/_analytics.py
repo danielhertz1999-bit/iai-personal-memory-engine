@@ -121,6 +121,17 @@ def cmd_migrate(args: argparse.Namespace) -> int:
         )
         return 0
 
+    if bool(getattr(args, "dedupe_episodic", False)):
+        from iai_mcp.migrate import migrate_dedupe_episodic_captures
+        dry_run = bool(getattr(args, "dry_run", False))
+        result = migrate_dedupe_episodic_captures(store, dry_run=dry_run)
+        prefix = "[dry-run] would tombstone" if dry_run else "tombstoned"
+        print(
+            f"{prefix} {result['tombstoned']} duplicate records "
+            f"across {result['groups']} group(s)"
+        )
+        return 0
+
     from_v = int(getattr(args, "from_", 1))
     to_v = int(getattr(args, "to", 2))
     dry_run = bool(getattr(args, "dry_run", False))

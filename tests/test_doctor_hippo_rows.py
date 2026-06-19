@@ -288,7 +288,7 @@ def _build_records_table(db_path: Path) -> None:
     conn = sqlite3.connect(str(db_path))
     conn.execute(
         "CREATE TABLE IF NOT EXISTS records "
-        "(id TEXT PRIMARY KEY, tier TEXT, created_at TEXT)"
+        "(id TEXT PRIMARY KEY, tier TEXT, created_at TEXT, tombstoned_at TEXT)"
     )
     conn.commit()
     conn.close()
@@ -319,6 +319,32 @@ def test_check_x_collapsed_timestamps_warns(tmp_path, monkeypatch):
     assert result.status == "WARN"
     assert "7" in result.detail
     assert "iai-mcp migrate --rederive-timestamps" in result.detail
+
+
+def test_check_x_collapsed_timestamps_ignores_tombstoned(tmp_path, monkeypatch):
+    """Tombstoned duplicates must not count toward the >=5 collapsed-group threshold."""
+    monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path))
+    hippo = tmp_path / "hippo"
+    hippo.mkdir()
+    db_path = hippo / "brain.sqlite3"
+
+    _build_records_table(db_path)
+    collapsed_ts = "2024-01-01T00:00:00+00:00"
+    conn = sqlite3.connect(str(db_path))
+    for i in range(7):
+        tombstoned = "2024-06-01T00:00:00+00:00" if i < 3 else None
+        conn.execute(
+            "INSERT INTO records (id, tier, created_at, tombstoned_at) VALUES (?, ?, ?, ?)",
+            (f"r-{i}", "episodic", collapsed_ts, tombstoned),
+        )
+    conn.commit()
+    conn.close()
+
+    from iai_mcp.doctor import check_x_no_collapsed_timestamps
+
+    result = check_x_no_collapsed_timestamps()
+    assert result.passed is True, result.detail
+    assert result.status != "WARN"
 
 
 def test_check_x_collapsed_timestamps_pass(tmp_path, monkeypatch):
