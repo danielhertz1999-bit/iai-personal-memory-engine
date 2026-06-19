@@ -602,14 +602,17 @@ def _build_parser() -> argparse.ArgumentParser:
     di = daemon_sub.add_parser(
         "install",
         help=(
-            "install launchd plist (macOS) / systemd user unit (Linux); "
-            "first-run consent banner unless --yes"
+            "install launchd plist (macOS) / systemd user unit (Linux) / "
+            "Task Scheduler job (Windows); first-run consent banner unless --yes"
         ),
     )
     di.add_argument(
         "--dry-run",
         action="store_true",
-        help="print plist/unit contents without writing or invoking launchctl/systemctl",
+        help=(
+            "print service definition (plist / unit / schtasks XML) without "
+            "writing or invoking launchctl/systemctl/schtasks"
+        ),
     )
     di.add_argument(
         "--yes", "-y",
@@ -620,17 +623,19 @@ def _build_parser() -> argparse.ArgumentParser:
 
     du = daemon_sub.add_parser(
         "uninstall",
-        help="C4 clean uninstall: remove plist/unit + 3 state files",
+        help="C4 clean uninstall: remove plist/unit/scheduled task + 3 state files",
     )
     du.add_argument("--yes", "-y", action="store_true")
     du.set_defaults(func=cmd_daemon_uninstall)
 
     daemon_sub.add_parser(
-        "start", help="launchctl kickstart / systemctl --user start",
+        "start",
+        help="launchctl kickstart / systemctl --user start / schtasks /Run",
     ).set_defaults(func=cmd_daemon_start)
 
     daemon_sub.add_parser(
-        "stop", help="launchctl kill SIGTERM / systemctl --user stop",
+        "stop",
+        help="launchctl kill SIGTERM / systemctl --user stop / schtasks /End",
     ).set_defaults(func=cmd_daemon_stop)
 
     daemon_sub.add_parser(
@@ -643,7 +648,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     dlogs = daemon_sub.add_parser(
         "logs",
-        help="tail daemon log file (macOS Library/Logs) or journalctl (Linux)",
+        help=(
+            "tail daemon log file (macOS Library/Logs, "
+            "Linux journalctl, Windows %%APPDATA%%\\iai-mcp\\logs)"
+        ),
     )
     dlogs.add_argument("-f", "--follow", action="store_true")
     dlogs.add_argument("-n", "--lines", type=int, default=50)
