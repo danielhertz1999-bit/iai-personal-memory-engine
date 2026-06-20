@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import gzip
 import json
 import multiprocessing as mp
@@ -84,7 +86,8 @@ def test_log_file_chmod_user_only(tmp_path):
     log = LifecycleEventLog(log_dir=tmp_path)
     log.append({"event": "wrapper_event", "kind": "heartbeat_refresh"})
     mode = os.stat(log.current_file()).st_mode & 0o777
-    assert mode == 0o600
+    if sys.platform != "win32":
+        assert mode == 0o600
 
 
 def test_rotation_writes_to_per_date_file(tmp_path):

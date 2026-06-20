@@ -13,7 +13,7 @@ import pytest
 def short_socket_paths(tmp_path, monkeypatch):
     from iai_mcp import concurrency, daemon_state
 
-    sock_dir = Path(f"/tmp/iai-disp-{os.getpid()}-{id(tmp_path)}")
+    sock_dir = tmp_path / "sock"
     sock_dir.mkdir(parents=True, exist_ok=True)
     sock_path = sock_dir / "d.sock"
     state_path = tmp_path / ".daemon-state.json"

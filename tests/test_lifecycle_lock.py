@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import json
 import os
 from pathlib import Path
@@ -223,4 +225,5 @@ def test_acquire_writes_mode_0600(tmp_path: Path) -> None:
     lock.acquire()
 
     mode = lock_path.stat().st_mode & 0o777
-    assert mode == 0o600, f"expected mode 0o600, got 0o{mode:o}"
+    if sys.platform != "win32":
+        assert mode == 0o600, f"expected mode 0o600, got 0o{mode:o}"

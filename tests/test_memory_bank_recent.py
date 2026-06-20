@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import base64
 import json
 import os
@@ -110,7 +112,8 @@ def test_recent_append_creates_dated_window_file(iai_home):
 
     file_mode = stat.S_IMODE(os.stat(target).st_mode)
     parent_mode = stat.S_IMODE(os.stat(target.parent).st_mode)
-    assert file_mode == 0o600, f"file mode = 0o{file_mode:o}, expected 0o600"
+    if sys.platform != "win32":
+        assert file_mode == 0o600, f"file mode = 0o{file_mode:o}, expected 0o600"
     assert parent_mode == 0o700, f"parent mode = 0o{parent_mode:o}, expected 0o700"
 
     body = target.read_text(encoding="utf-8")

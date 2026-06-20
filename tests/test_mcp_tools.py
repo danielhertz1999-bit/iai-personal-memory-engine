@@ -33,7 +33,7 @@ def built_wrapper() -> Path:
 
 @pytest.fixture(scope="module")
 def daemon_sock() -> "Path":
-    sock_dir = Path(f"/tmp/iai-mcp-tools-{os.getpid()}")
+    sock_dir = tmp_path / "sock"
     sock_dir.mkdir(parents=True, exist_ok=True)
     sock_path = sock_dir / "d.sock"
     store_dir = sock_dir / "store"

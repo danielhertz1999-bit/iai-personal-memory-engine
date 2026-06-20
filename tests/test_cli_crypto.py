@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import json
 import os
 import secrets
@@ -30,7 +32,8 @@ def test_cli_crypto_status_shows_file_backend(tmp_path, monkeypatch, capsys):
     assert "default" in out
     assert "file" in out_lower, f"status must report backend=file; got:\n{out}"
     assert ".crypto.key" in out, f"status must include the file path; got:\n{out}"
-    assert "600" in out, f"status must expose mode 0o600; got:\n{out}"
+    if sys.platform != "win32":
+        assert "600" in out, f"status must expose mode 0o600; got:\n{out}"
     assert "keyring" not in out_lower, (
         f"status must NOT mention keyring (backend retired in 07.10); got:\n{out}"
     )
@@ -89,7 +92,8 @@ def test_cli_crypto_rotate_regenerates_key(tmp_path, monkeypatch, capsys):
     assert len(new_key_bytes) == 32
     assert new_key_bytes != key_a, "rotate must write a fresh key to the file"
     mode = stat.S_IMODE(os.stat(key_path).st_mode)
-    assert mode == 0o600, f"rotated key file must be 0o600, got 0o{mode:03o}"
+    if sys.platform != "win32":
+        assert mode == 0o600, f"rotated key file must be 0o600, got 0o{mode:03o}"
 
     store2 = MemoryStore()
     post_ct = store2.db.open_table(RECORDS_TABLE).to_pandas()[
@@ -260,7 +264,8 @@ def test_cli_crypto_init_creates_fresh_file(tmp_path, monkeypatch, capsys):
     assert key_path.exists()
     assert key_path.stat().st_size == 32
     mode = stat.S_IMODE(os.stat(key_path).st_mode)
-    assert mode == 0o600, f"init key file must be 0o600, got 0o{mode:03o}"
+    if sys.platform != "win32":
+        assert mode == 0o600, f"init key file must be 0o600, got 0o{mode:03o}"
     assert ".crypto.key" in out
     raw = key_path.read_bytes()
     for i in range(0, 32, 4):
