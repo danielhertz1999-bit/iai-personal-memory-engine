@@ -998,7 +998,23 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _force_utf8_streams() -> None:
+    """Recalled memory is arbitrary UTF-8 (emoji, CJK, smart quotes, em-dashes).
+    The session-recall hook reads this CLI's stdout, but on Windows — and under
+    a POSIX C/POSIX locale — stdout/stderr default to a non-UTF-8 codepage, so
+    writing recalled memory would raise UnicodeEncodeError and the hook would
+    silently produce no context. Force UTF-8 on the std streams."""
+    for _stream in (sys.stdout, sys.stderr):
+        _reconfigure = getattr(_stream, "reconfigure", None)
+        if _reconfigure is not None:
+            try:
+                _reconfigure(encoding="utf-8")
+            except (ValueError, OSError):
+                pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_streams()
     parser = _build_parser()
     args = parser.parse_args(argv)
     return args.func(args)
