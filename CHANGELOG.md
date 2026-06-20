@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2] — 2026-06-17
+
+### Fixed
+
+- **macOS Keychain credentials for nightly consolidation.** When `claude /login`
+  stores OAuth credentials in the macOS login Keychain instead of
+  `~/.claude/.credentials.json` (the file is absent on a normal desktop-app
+  setup), the subscription check now falls back to the Keychain item, so the
+  nightly `claude -p` path is found. Added `IAI_MCP_CLAUDE_BARE=0` to drop the
+  `--bare` flag for setups where `claude --bare -p` reports "Not logged in"
+  while plain `claude -p` authenticates. Default behavior unchanged.
+
 ## [1.1.1] — 2026-06-15
 
 ### Fixed

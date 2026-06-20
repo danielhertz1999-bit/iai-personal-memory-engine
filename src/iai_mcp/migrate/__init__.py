@@ -154,6 +154,7 @@ from iai_mcp.migrate._timestamps import (  # noqa: E402
     migrate_rederive_collapsed_timestamps,
     _find_transcript_ts,
 )
+from iai_mcp.migrate._dedupe import migrate_dedupe_episodic_captures  # noqa: E402
 
 
 __all__ = [
@@ -172,4 +173,5 @@ __all__ = [
     "migrate_codec_metadata_v4_to_v5",
     "cleanup_schema_duplicates",
     "migrate_rederive_collapsed_timestamps",
+    "migrate_dedupe_episodic_captures",
 ]

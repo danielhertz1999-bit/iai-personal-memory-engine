@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import shutil
+import threading
 import time
 from collections import deque
 from datetime import datetime, timezone
@@ -32,6 +33,13 @@ log = logging.getLogger(__name__)
 DEDUP_COS_THRESHOLD = 0.95
 MIN_CAPTURE_LEN = 12
 MAX_CAPTURE_LEN = 8000
+
+# Daemon RPC dispatch runs each request on its own thread (asyncio.to_thread),
+# so concurrent capture_turn() calls (e.g. several sessions/forks draining
+# deferred captures at once) can race the dedup check-then-insert sequence.
+# This serializes that sequence so a tag can never be checked-as-absent by
+# two threads before either has inserted it.
+_CAPTURE_DEDUP_LOCK = threading.Lock()
 
 FAILED_MAX_ATTEMPTS: int = 3
 FAILED_BACKOFF_BASE_SEC: float = 60.0
@@ -286,94 +294,95 @@ def capture_turn(
         raise NativeError(f"capture encode failed: {exc}") from exc
     embedding = list(emb)
 
-    if _is_episodic_conversational(tier, role):
-        ts_iso = now.isoformat()
-        idem_t = _idem_tag(session_id, role, ts_iso, text, source_uuid=source_uuid)
-        existing_id = store.find_record_by_tag(idem_t)
-        if existing_id is not None:
-            try:
-                store.reinforce_record(existing_id)
-            except (ValueError, IOError) as exc:
-                log.warning(
-                    "capture_dedup_reinforce_failed",
-                    extra={
-                        "err_type": type(exc).__name__,
-                        "record_id": str(existing_id),
-                    },
-                )
-            return {
-                "status": "reinforced",
-                "record_id": str(existing_id),
-                "reason": "exact-key re-drain",
-            }
-    else:
-        try:
-            neighbours = store.query_similar(embedding, k=3, tier=tier)
-        except (ValueError, IOError) as exc:
-            log.warning(
-                "capture_dedup_query_failed",
-                extra={"err_type": type(exc).__name__, "err": str(exc)[:120]},
-            )
-            neighbours = []
-
-        for record, score in neighbours:
-            if score >= DEDUP_COS_THRESHOLD:
+    with _CAPTURE_DEDUP_LOCK:
+        if _is_episodic_conversational(tier, role):
+            ts_iso = now.isoformat()
+            idem_t = _idem_tag(session_id, role, ts_iso, text, source_uuid=source_uuid)
+            existing_id = store.find_record_by_tag(idem_t)
+            if existing_id is not None:
                 try:
-                    store.reinforce_record(record.id)
+                    store.reinforce_record(existing_id)
                 except (ValueError, IOError) as exc:
                     log.warning(
                         "capture_dedup_reinforce_failed",
                         extra={
                             "err_type": type(exc).__name__,
-                            "record_id": str(record.id),
+                            "record_id": str(existing_id),
                         },
                     )
                 return {
                     "status": "reinforced",
-                    "record_id": str(record.id),
-                    "reason": f"cos={score:.3f} >= {DEDUP_COS_THRESHOLD}",
+                    "record_id": str(existing_id),
+                    "reason": "exact-key re-drain",
                 }
+        else:
+            try:
+                neighbours = store.query_similar(embedding, k=3, tier=tier)
+            except (ValueError, IOError) as exc:
+                log.warning(
+                    "capture_dedup_query_failed",
+                    extra={"err_type": type(exc).__name__, "err": str(exc)[:120]},
+                )
+                neighbours = []
 
-    tags = ["capture", f"role:{role}"]
-    if verdict == "FLAG_FOR_REVIEW":
-        tags.append("shield:flagged")
-        tags.extend(f"shield:{t}" for t in shield_tags[:3])
+            for record, score in neighbours:
+                if score >= DEDUP_COS_THRESHOLD:
+                    try:
+                        store.reinforce_record(record.id)
+                    except (ValueError, IOError) as exc:
+                        log.warning(
+                            "capture_dedup_reinforce_failed",
+                            extra={
+                                "err_type": type(exc).__name__,
+                                "record_id": str(record.id),
+                            },
+                        )
+                    return {
+                        "status": "reinforced",
+                        "record_id": str(record.id),
+                        "reason": f"cos={score:.3f} >= {DEDUP_COS_THRESHOLD}",
+                    }
 
-    if _is_episodic_conversational(tier, role):
-        ts_iso = now.isoformat()
-        tags.append(_idem_tag(session_id, role, ts_iso, text, source_uuid=source_uuid))
+        tags = ["capture", f"role:{role}"]
+        if verdict == "FLAG_FOR_REVIEW":
+            tags.append("shield:flagged")
+            tags.extend(f"shield:{t}" for t in shield_tags[:3])
 
-    rec = MemoryRecord(
-        id=uuid4(),
-        tier=tier,
-        literal_surface=text,
-        aaak_index="",
-        embedding=embedding,
-        community_id=None,
-        centrality=0.0,
-        detail_level=2,
-        pinned=False,
-        stability=0.0,
-        difficulty=0.0,
-        last_reviewed=None,
-        never_decay=False,
-        never_merge=False,
-        provenance=[{"ts": now.isoformat(), "cue": cue or "(auto-capture)",
-                     "session_id": session_id, "role": role}],
-        created_at=now,
-        updated_at=now,
-        tags=tags,
-        language="en",
-        s5_trust_score=0.5,
-        profile_modulation_gain={},
-        schema_version=SCHEMA_VERSION_CURRENT,
-    )
+        if _is_episodic_conversational(tier, role):
+            ts_iso = now.isoformat()
+            tags.append(_idem_tag(session_id, role, ts_iso, text, source_uuid=source_uuid))
 
-    try:
-        store.insert(rec)
-    except Exception as e:
-        log.exception("capture_turn insert failed")
-        return {"status": "skipped", "record_id": None, "reason": f"insert-failed: {type(e).__name__}"}
+        rec = MemoryRecord(
+            id=uuid4(),
+            tier=tier,
+            literal_surface=text,
+            aaak_index="",
+            embedding=embedding,
+            community_id=None,
+            centrality=0.0,
+            detail_level=2,
+            pinned=False,
+            stability=0.0,
+            difficulty=0.0,
+            last_reviewed=None,
+            never_decay=False,
+            never_merge=False,
+            provenance=[{"ts": now.isoformat(), "cue": cue or "(auto-capture)",
+                         "session_id": session_id, "role": role}],
+            created_at=now,
+            updated_at=now,
+            tags=tags,
+            language="en",
+            s5_trust_score=0.5,
+            profile_modulation_gain={},
+            schema_version=SCHEMA_VERSION_CURRENT,
+        )
+
+        try:
+            store.insert(rec)
+        except Exception as e:
+            log.exception("capture_turn insert failed")
+            return {"status": "skipped", "record_id": None, "reason": f"insert-failed: {type(e).__name__}"}
 
     try:
         from iai_mcp.peri_event_buffer import get_buffer

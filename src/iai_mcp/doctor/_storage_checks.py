@@ -212,7 +212,8 @@ def check_x_no_collapsed_timestamps() -> CheckResult:
     try:
         conn = sqlite3.connect(str(db_path), timeout=2.0)
         rows = conn.execute(
-            "SELECT created_at, COUNT(*) AS n FROM records WHERE tier = 'episodic'"
+            "SELECT created_at, COUNT(*) AS n FROM records"
+            " WHERE tier = 'episodic' AND tombstoned_at IS NULL"
             " GROUP BY created_at HAVING n >= 5 ORDER BY n DESC LIMIT 20"
         ).fetchall()
     except sqlite3.Error as exc:

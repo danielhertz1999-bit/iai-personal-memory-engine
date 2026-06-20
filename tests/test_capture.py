@@ -169,3 +169,76 @@ def test_capture_idempotent_after_cap_raise(iai_home, tmp_path):
         f"Second pass must reinforce all {_N_TURNS} turns (not re-insert). "
         f"counts_second={counts_second!r}"
     )
+
+
+def test_capture_turn_concurrent_drains_do_not_duplicate(iai_home, tmp_path):
+    """Concurrent capture_turn() calls for the same turn (simulating the daemon
+    draining several Stop-hook full-transcript replays on separate
+    asyncio.to_thread workers at once) must serialize the dedup
+    check-then-insert and produce exactly one record."""
+    import threading
+    import time as _time
+
+    from iai_mcp import capture as capture_mod
+
+    store = _open_store()
+    text = "Duplicate turn raced by concurrent drains for race regression test"
+    source_uuid = str(uuid.uuid4())
+    ts = "2026-07-01T00:00:00Z"
+
+    n_threads = 6
+    state_lock = threading.Lock()
+    in_flight = 0
+    max_in_flight = 0
+    original_find = store.find_record_by_tag
+
+    def tracking_find(tag):
+        nonlocal in_flight, max_in_flight
+        with state_lock:
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+        _time.sleep(0.05)  # widen the race window the bug needed
+        try:
+            return original_find(tag)
+        finally:
+            with state_lock:
+                in_flight -= 1
+
+    store.find_record_by_tag = tracking_find
+
+    results: list[dict] = []
+    results_lock = threading.Lock()
+
+    def worker():
+        r = capture_mod.capture_turn(
+            store,
+            cue="race test",
+            text=text,
+            tier="episodic",
+            session_id=SESSION_ID,
+            role="user",
+            ts=ts,
+            source_uuid=source_uuid,
+        )
+        with results_lock:
+            results.append(r)
+
+    threads = [threading.Thread(target=worker) for _ in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert len(results) == n_threads, f"Not all threads completed: {results!r}"
+    assert max_in_flight == 1, (
+        f"max_in_flight={max_in_flight}; dedup check-then-insert is not serialized "
+        f"across threads -- this is the race that produced duplicate episodic records"
+    )
+
+    inserted = [r for r in results if r["status"] == "inserted"]
+    reinforced = [r for r in results if r["status"] == "reinforced"]
+    assert len(inserted) == 1, f"Expected exactly 1 insert, got {len(inserted)}: {results!r}"
+    assert len(reinforced) == n_threads - 1, f"results={results!r}"
+
+    count = _count_episodic_records(store)
+    assert count == 1, f"Expected exactly 1 episodic record in the store, found {count}"
