@@ -3,6 +3,22 @@
 On POSIX: thin wrapper around fcntl.flock.
 On Windows: msvcrt.locking with errno normalisation so callers checking
 errno.EWOULDBLOCK / errno.EAGAIN on non-blocking failures work unchanged.
+The file offset is saved/restored around each call (msvcrt locks relative to
+the file position; fcntl.flock does not move it) and the blocking path polls
+so it waits indefinitely like POSIX rather than giving up after msvcrt's ~10 s.
+
+Known divergence — shared locks are not truly shared on Windows.
+``msvcrt.locking`` only offers exclusive byte-range locks, so LOCK_SH is
+serviced as an exclusive lock: a second concurrent reader blocks where POSIX
+would let both in. This is a throughput limitation, not a correctness one, and
+it is deliberately NOT fixed with Win32 ``LockFileEx`` (which does support
+shared locks) because callers in ``hippo/_db.py`` rely on fcntl.flock's atomic
+lock *conversion* — downgrading EXCLUSIVE->SHARED and escalating SHARED->
+EXCLUSIVE in place on the same fd. ``LockFileEx`` has no atomic conversion
+(you must Unlock then re-Lock, racing other waiters), so swapping it in would
+trade a throughput limit for a correctness hazard on the conversion paths.
+A faithful port would need those call sites reworked to a conversion-free
+protocol first.
 """
 from __future__ import annotations
 
