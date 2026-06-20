@@ -64,7 +64,9 @@ def _strip_processing_marker(
         return path, True
     new_path = path.with_name(new_name)
     try:
-        path.rename(new_path)
+        # replace (not rename): rename raises on Windows if the dest exists;
+        # POSIX rename already replaces, so behaviour is unchanged there.
+        path.replace(new_path)
     except OSError as e:
         if log_path is not None:
             try:
@@ -162,7 +164,7 @@ def _advance_failed_path(
     if next_attempt > FAILED_MAX_ATTEMPTS:
         new_name = f"{base}.permanent-failed-{ts_str}.jsonl"
         failed_path = fpath.with_name(new_name)
-        fpath.rename(failed_path)
+        fpath.replace(failed_path)
         try:
             from iai_mcp.events import write_event
 
@@ -190,7 +192,7 @@ def _advance_failed_path(
         return failed_path
     new_name = f"{base}.failed-{ts_str}-attempt-{next_attempt}.jsonl"
     failed_path = fpath.with_name(new_name)
-    fpath.rename(failed_path)
+    fpath.replace(failed_path)
     return failed_path
 
 
@@ -733,7 +735,7 @@ def drain_deferred_captures(store: MemoryStore) -> dict[str, int]:
                 ".jsonl", f".crash-{next_n}.jsonl"
             )
             try:
-                fpath.rename(fpath.with_name(new_name))
+                fpath.replace(fpath.with_name(new_name))
             except Exception as exc:  # noqa: BLE001
                 log.debug("crash_rename_failed %s: %s", fpath.name, exc)
 
@@ -767,7 +769,7 @@ def drain_deferred_captures(store: MemoryStore) -> dict[str, int]:
             fpath.stem + f".processing-{os.getpid()}.jsonl"
         )
         try:
-            fpath.rename(claim_path)
+            fpath.replace(claim_path)
         except FileNotFoundError:
             continue
         except OSError as e:

@@ -168,7 +168,10 @@ class CryptoKey:
             os.close(fd)
         if not hasattr(os, "fchmod"):
             _secure_key_file(tmp)
-        os.rename(str(tmp), str(final))
+        # os.replace (not os.rename): on Windows rename raises if the
+        # destination exists, which it always does during key rotation. POSIX
+        # rename already replaces, so this is behaviour-preserving there.
+        os.replace(str(tmp), str(final))
 
 
     def get_or_create(self) -> bytes:

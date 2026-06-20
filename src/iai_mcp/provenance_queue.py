@@ -124,7 +124,7 @@ class ProvenanceWriteQueue:
             with tmp_path.open("w", encoding="utf-8") as fh:
                 for rid, entry in pairs:
                     fh.write(json.dumps({"id": str(rid), "entry": entry}) + "\n")
-            tmp_path.rename(fpath)
+            tmp_path.replace(fpath)
         except (OSError, TypeError, ValueError) as exc:
             logger.warning("provenance_queue_spill_failed", extra={"err": str(exc)[:200], "n_pairs": len(pairs)})
             try:
@@ -164,7 +164,7 @@ class ProvenanceWriteQueue:
                 logger.warning("provenance_queue_spill_drain_failed", extra={"err": str(exc)[:200]})
                 try:
                     failed = fpath.with_suffix(f".failed-{int(time.time())}.jsonl")
-                    fpath.rename(failed)
+                    fpath.replace(failed)
                     sys.stderr.write(
                         '{"event":"provenance_queue_spill_drain_failed","error":'
                         + _json_str(str(exc)) + '}\n'
