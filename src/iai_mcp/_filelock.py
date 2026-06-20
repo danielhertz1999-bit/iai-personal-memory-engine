@@ -21,9 +21,10 @@ if platform.system() == "Windows":
     def flock(fd: int, operation: int) -> None:
         if not isinstance(fd, int):
             fd = fd.fileno()
-        # msvcrt.locking locks bytes starting from the current file position;
-        # always seek to 0 so competing callers lock the same byte range.
-        os.lseek(fd, 0, os.SEEK_SET)
+        # msvcrt.locking locks bytes from the current file position.
+        # Do NOT seek here: callers that need a specific offset already seek
+        # themselves, and fcntl.flock (POSIX) never moves the offset — matching
+        # that behaviour avoids surprising callers that read/write after locking.
         if operation & LOCK_UN:
             try:
                 _msvcrt.locking(fd, _msvcrt.LK_UNLCK, 2**30)

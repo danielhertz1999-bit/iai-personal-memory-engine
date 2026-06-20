@@ -401,7 +401,14 @@ def _patch_claude_desktop_config(action: str) -> str:
         if action == "uninstall":
             return f"Claude Desktop: {cfg_path} absent — skipped"
         cfg_path.parent.mkdir(parents=True, exist_ok=True)
-        data = {"mcpServers": {"iai-mcp": _build_iai_mcp_server_entry()}}
+        try:
+            entry = _build_iai_mcp_server_entry()
+        except FileNotFoundError:
+            return (
+                "Claude Desktop: MCP wrapper not built yet — skipped. "
+                "Run: cd mcp-wrapper && npm ci && npm run build"
+            )
+        data = {"mcpServers": {"iai-mcp": entry}}
         cfg_path.write_text(_json.dumps(data, indent=2))
         return f"Claude Desktop: created {cfg_path} with iai-mcp registered"
 
@@ -419,7 +426,13 @@ def _patch_claude_desktop_config(action: str) -> str:
             return f"Claude Desktop: removed iai-mcp from {cfg_path}"
         return f"Claude Desktop: iai-mcp not in config — no change"
 
-    new_entry = _build_iai_mcp_server_entry()
+    try:
+        new_entry = _build_iai_mcp_server_entry()
+    except FileNotFoundError:
+        return (
+            "Claude Desktop: MCP wrapper not built yet — skipped. "
+            "Run: cd mcp-wrapper && npm ci && npm run build"
+        )
     if servers.get("iai-mcp") == new_entry:
         return f"Claude Desktop: {cfg_path} already has iai-mcp — no change"
     servers["iai-mcp"] = new_entry
