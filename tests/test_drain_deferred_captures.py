@@ -373,7 +373,7 @@ def test_daemon_main_drain_does_not_crash_on_bad_file(tmp_path, monkeypatch):
     )
     assert bad.exists()
 
-    sock_dir = Path(f"/tmp/iai-drn-{os.getpid()}-{id(tmp_path)}")
+    sock_dir = tmp_path / "sock"
     sock_dir.mkdir(parents=True, exist_ok=True)
     sock_path = sock_dir / "d.sock"
 

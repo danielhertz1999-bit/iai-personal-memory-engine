@@ -160,7 +160,7 @@ def _drop_fake_daemon_conn(proc: subprocess.Popen) -> None:
 
 @pytest.fixture
 def fake_daemon():
-    sock_dir = Path(f"/tmp/iai-mcp-disconnect-{os.getpid()}")
+    sock_dir = tmp_path / "sock"
     sock_dir.mkdir(parents=True, exist_ok=True)
     sock_path = sock_dir / "d.sock"
 

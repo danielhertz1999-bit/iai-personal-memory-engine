@@ -176,7 +176,7 @@ def _wait_for_daemon_socket(sock_path: Path, timeout_sec: float = 30.0) -> bool:
 def test_start_throws_DaemonUnreachableError_when_socket_missing(
     built_wrapper, tmp_path
 ):
-    sock_dir = Path(f"/tmp/iai-7.1-noconn-{os.getpid()}-{id(tmp_path)}")
+    sock_dir = tmp_path / "sock"
     sock_dir.mkdir(parents=True, exist_ok=True)
     sock_path = sock_dir / "d.sock"
     store_dir = sock_dir / "store"
@@ -294,7 +294,7 @@ def test_start_throws_DaemonUnreachableError_when_socket_missing(
 
 
 def test_start_succeeds_with_warm_daemon_no_extra_spawn(built_wrapper, tmp_path):
-    sock_dir = Path(f"/tmp/iai-7.1-warm-{os.getpid()}-{id(tmp_path)}")
+    sock_dir = tmp_path / "sock"
     sock_dir.mkdir(parents=True, exist_ok=True)
     sock_path = sock_dir / "d.sock"
     store_dir = sock_dir / "store"

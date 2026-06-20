@@ -23,7 +23,7 @@ def _short_socket_paths(tmp_path, monkeypatch):
     import os
     from iai_mcp import concurrency
     lock_path = tmp_path / ".lock"
-    sock_dir = Path(f"/tmp/iai-daemon-{os.getpid()}-{id(tmp_path)}")
+    sock_dir = tmp_path / "sock"
     sock_dir.mkdir(parents=True, exist_ok=True)
     sock_path = sock_dir / "d.sock"
     monkeypatch.setattr(concurrency, "SOCKET_PATH", sock_path)

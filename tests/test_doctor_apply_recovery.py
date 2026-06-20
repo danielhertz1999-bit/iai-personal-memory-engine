@@ -23,7 +23,7 @@ def isolated_daemon_paths(tmp_path, monkeypatch):
     store_dir = iai_dir / "store"
     store_dir.mkdir(parents=True, exist_ok=True)
 
-    sock_dir = Path(f"/tmp/iai-rec-{os.getpid()}-{id(tmp_path)}")
+    sock_dir = tmp_path / "sock"
     sock_dir.mkdir(parents=True, exist_ok=True)
     sock_path = sock_dir / "d.sock"
 

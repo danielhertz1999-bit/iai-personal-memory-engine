@@ -14,7 +14,7 @@ import pytest
 @pytest.fixture
 def short_socket_paths(tmp_path, monkeypatch):
     lock_path = tmp_path / ".lock"
-    sock_dir = Path(f"/tmp/iai-doc-{os.getpid()}-{id(tmp_path)}")
+    sock_dir = tmp_path / "sock"
     sock_dir.mkdir(parents=True, exist_ok=True)
     sock_path = sock_dir / "d.sock"
     state_path = tmp_path / ".daemon-state.json"

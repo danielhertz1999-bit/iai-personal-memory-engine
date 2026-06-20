@@ -5,6 +5,8 @@ and that re-running capture on the same transcript inserts no duplicates.
 """
 from __future__ import annotations
 
+import tempfile
+
 import json
 import platform
 import uuid
@@ -124,7 +126,7 @@ def test_deferred_capture_beyond_200(iai_home, tmp_path):
     out_path = write_deferred_captures(
         session_id=SESSION_ID,
         transcript_path=transcript,
-        cwd="/tmp/test",
+        cwd=str(Path(tempfile.gettempdir()) / "test"),
     )
 
     assert out_path.exists(), f"Deferred capture file not created at {out_path}"

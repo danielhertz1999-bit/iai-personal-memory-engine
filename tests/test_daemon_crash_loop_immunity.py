@@ -225,7 +225,7 @@ def test_socket_binds_before_drain_completes(tmp_path, monkeypatch, request):
 
     keyring.core._keyring_backend = None
 
-    tmp_socket = Path(f"/tmp/iai-test-{os.getpid()}-{int(time.time()*1000)}.sock")
+    tmp_socket = tmp_path / f"iai-test-{os.getpid()}.sock"
     monkeypatch.setenv("IAI_DAEMON_SOCKET_PATH", str(tmp_socket))
 
     def _cleanup_socket():

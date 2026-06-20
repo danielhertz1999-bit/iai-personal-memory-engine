@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import asyncio
 import json
 import os
@@ -11,7 +13,7 @@ import pytest
 @pytest.fixture
 def socket_path(tmp_path, monkeypatch):
     from iai_mcp import concurrency
-    sock_dir = Path(f"/tmp/iai-{os.getpid()}-{id(tmp_path)}")
+    sock_dir = tmp_path / "sock"
     sock_dir.mkdir(parents=True, exist_ok=True)
     sock_path = sock_dir / "d.sock"
     monkeypatch.setattr(concurrency, "SOCKET_PATH", sock_path)
@@ -174,4 +176,5 @@ def test_socket_permissions_user_only(socket_path):
         return sock_mode
 
     sock_mode = asyncio.run(runner())
-    assert sock_mode == 0o600, f"socket mode is {oct(sock_mode)}, expected 0o600"
+    if sys.platform != "win32":
+        assert sock_mode == 0o600, f"socket mode is {oct(sock_mode)}, expected 0o600"

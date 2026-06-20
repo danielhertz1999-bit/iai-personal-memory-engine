@@ -157,10 +157,11 @@ def test_cache_file_mode_is_owner_only(tmp_path, monkeypatch):
     daemon_mod._write_session_start_cache(store, cache_path=cache_path)
 
     assert cache_path.exists(), "cache file was not created"
-    assert oct(stat.S_IMODE(cache_path.stat().st_mode)) == "0o600", (
-        f"cache file mode is not 0o600; got "
-        f"{oct(stat.S_IMODE(cache_path.stat().st_mode))}"
-    )
+    if sys.platform != "win32":
+        assert oct(stat.S_IMODE(cache_path.stat().st_mode)) == "0o600", (
+            f"cache file mode is not 0o600; got "
+            f"{oct(stat.S_IMODE(cache_path.stat().st_mode))}"
+        )
 
 def test_precache_does_not_compress_payload(tmp_path, monkeypatch):
     from iai_mcp import daemon as daemon_mod

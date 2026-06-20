@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import tempfile
+
 import json
 import platform
 from pathlib import Path
@@ -41,7 +43,7 @@ def _write_live_file(
         "version": 1,
         "deferred_at": "2026-05-31T04:45:00.000000+00:00",
         "session_id": session_id,
-        "cwd": "/tmp/test",
+        "cwd": str(Path(tempfile.gettempdir()) / "test"),
     }
     lines = [json.dumps(header, ensure_ascii=False)]
     for ev in events:

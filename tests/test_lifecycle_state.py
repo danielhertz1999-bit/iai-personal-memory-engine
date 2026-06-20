@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import json
 import os
 from datetime import datetime, timezone
@@ -123,7 +125,8 @@ def test_save_state_chmod_user_only(tmp_path):
     target = tmp_path / "lifecycle_state.json"
     save_state(default_state(), target)
     mode = os.stat(target).st_mode & 0o777
-    assert mode == 0o600
+    if sys.platform != "win32":
+        assert mode == 0o600
 
 
 def test_save_state_rejects_invalid_record(tmp_path):
