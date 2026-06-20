@@ -119,7 +119,7 @@ def build_markdown(
         "",
         "**Implementation:** Custom MIT-Licensed Leiden",
         "**Bench:** Contradiction-longitudinal Regime 2 "
-        "(`bench/contradiction_longitudinal_claude.py`)",
+        "(`bench/contradiction_longitudinal.py`)",
         f"**CSV:** `{csv_name}`",
         "**Gate:** Rescue@10 within ±0.02 of baseline (1.000)",
         f"**Backend measured:** `{summary['backend']}`",
