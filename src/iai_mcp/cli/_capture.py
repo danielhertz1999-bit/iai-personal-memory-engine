@@ -389,6 +389,38 @@ def _build_iai_mcp_server_entry() -> dict:
     }
 
 
+def _iai_entry_or_placeholder(config_label: str, *, include_type: bool) -> dict:
+    """Build the MCP server entry, or a placeholder (with a stderr warning)
+    when the wrapper isn't built yet, so ``capture-hooks install`` doesn't
+    crash mid-run after it has already written the hooks. ``include_type``
+    controls the stdio ``type`` field that Claude Code expects but Claude
+    Desktop omits."""
+    from iai_mcp import cli as _cli
+
+    try:
+        entry = _build_iai_mcp_server_entry()
+    except FileNotFoundError as exc:
+        print(
+            f"WARN: MCP wrapper not found — {config_label} entry written with "
+            f"placeholder args. Build it first: cd mcp-wrapper && npm run build. "
+            f"({exc})",
+            file=_cli.sys.stderr,
+        )
+        entry = {
+            "command": "node",
+            "args": ["<run: cd mcp-wrapper && npm run build>"],
+            "env": {
+                "IAI_MCP_PYTHON": _cli.sys.executable,
+                "IAI_MCP_STORE": str(Path.home() / ".iai-mcp"),
+                "TRANSFORMERS_VERBOSITY": "error",
+                "TOKENIZERS_PARALLELISM": "false",
+            },
+        }
+    if include_type:
+        entry.setdefault("type", "stdio")
+    return entry
+
+
 def _patch_claude_desktop_config(action: str) -> str:
     from iai_mcp import cli as _cli
     import json as _json
@@ -401,7 +433,8 @@ def _patch_claude_desktop_config(action: str) -> str:
         if action == "uninstall":
             return f"Claude Desktop: {cfg_path} absent — skipped"
         cfg_path.parent.mkdir(parents=True, exist_ok=True)
-        data = {"mcpServers": {"iai-mcp": _build_iai_mcp_server_entry()}}
+        entry = _iai_entry_or_placeholder("Claude Desktop", include_type=False)
+        data = {"mcpServers": {"iai-mcp": entry}}
         cfg_path.write_text(_json.dumps(data, indent=2))
         return f"Claude Desktop: created {cfg_path} with iai-mcp registered"
 
@@ -419,7 +452,7 @@ def _patch_claude_desktop_config(action: str) -> str:
             return f"Claude Desktop: removed iai-mcp from {cfg_path}"
         return f"Claude Desktop: iai-mcp not in config — no change"
 
-    new_entry = _build_iai_mcp_server_entry()
+    new_entry = _iai_entry_or_placeholder("Claude Desktop", include_type=False)
     if servers.get("iai-mcp") == new_entry:
         return f"Claude Desktop: {cfg_path} already has iai-mcp — no change"
     servers["iai-mcp"] = new_entry
@@ -428,7 +461,6 @@ def _patch_claude_desktop_config(action: str) -> str:
 
 
 def _patch_claude_code_config(action: str) -> str:
-    from iai_mcp import cli as _cli
     import json as _json
 
     cfg_path = Path.home() / ".claude.json"
@@ -448,28 +480,7 @@ def _patch_claude_code_config(action: str) -> str:
             return "Claude Code: removed iai-mcp from ~/.claude.json"
         return "Claude Code: iai-mcp not in ~/.claude.json — no change"
 
-    try:
-        entry = _build_iai_mcp_server_entry()
-    except FileNotFoundError as exc:
-        entry = {
-            "type": "stdio",
-            "command": "node",
-            "args": ["<run: cd mcp-wrapper && npm run build>"],
-            "env": {
-                "IAI_MCP_PYTHON": _cli.sys.executable,
-                "IAI_MCP_STORE": str(Path.home() / ".iai-mcp"),
-                "TRANSFORMERS_VERBOSITY": "error",
-                "TOKENIZERS_PARALLELISM": "false",
-            },
-        }
-        print(
-            f"WARN: MCP wrapper not found — ~/.claude.json entry written with "
-            f"placeholder args. Build it first: cd mcp-wrapper && npm run build. "
-            f"({exc})",
-            file=_cli.sys.stderr,
-        )
-    else:
-        entry.setdefault("type", "stdio")
+    entry = _iai_entry_or_placeholder("~/.claude.json", include_type=True)
 
     if not cfg_path.exists():
         cfg_path.write_text(_json.dumps({"mcpServers": {"iai-mcp": entry}}, indent=2))
