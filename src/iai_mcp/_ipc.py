@@ -28,14 +28,14 @@ PORT_FILE: Path = _BASE_DIR / ".daemon.port"     # Windows only
 
 def _read_port() -> int | None:
     try:
-        return int(PORT_FILE.read_text().strip())
+        return int(PORT_FILE.read_text(encoding="utf-8").strip())
     except (FileNotFoundError, ValueError, OSError):
         return None
 
 
 def _write_port(port: int) -> None:
     PORT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    PORT_FILE.write_text(str(port))
+    PORT_FILE.write_text(str(port), encoding="utf-8")
 
 
 def _remove_port_file() -> None:

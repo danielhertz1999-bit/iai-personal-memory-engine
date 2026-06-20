@@ -36,7 +36,7 @@ def verify_credentials_subscription() -> dict:
     if not CREDENTIALS_PATH.exists():
         return {"ok": False, "reason": "credentials_file_missing"}
     try:
-        data = json.loads(CREDENTIALS_PATH.read_text())
+        data = json.loads(CREDENTIALS_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return {"ok": False, "reason": "credentials_unreadable", "error": str(exc)}
 

@@ -47,7 +47,7 @@ def _launchd_template():
 
 def _render_launchd_plist() -> str:
     from iai_mcp import cli as _cli
-    text = _launchd_template().read_text()
+    text = _launchd_template().read_text(encoding="utf-8")
     username = os.environ.get("USER") or Path.home().name
     text = text.replace("/usr/local/bin/python3", _cli.sys.executable)
     text = text.replace("{USERNAME}", username)
@@ -57,7 +57,7 @@ def _render_launchd_plist() -> str:
 def _render_systemd_unit() -> str:
     from iai_mcp import cli as _cli
     tmpl = _res.files("iai_mcp") / "_deploy" / "systemd" / "iai-mcp-daemon.service"
-    text = tmpl.read_text()
+    text = tmpl.read_text(encoding="utf-8")
     text = text.replace("/usr/bin/python3", _cli.sys.executable)
     return text
 
@@ -138,7 +138,7 @@ def _record_consent_receipt() -> None:
     safe_ts = ts.replace(":", "").replace("-", "").replace(".", "")
     receipt = state_dir / f".consent-{safe_ts}.json"
     try:
-        receipt.write_text(json.dumps(payload, indent=2))
+        receipt.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         os.chmod(receipt, 0o600)
     except OSError as exc:
         print(f"warning: could not write consent receipt: {exc}", file=sys.stderr)
@@ -230,7 +230,7 @@ def cmd_daemon_install(args: argparse.Namespace) -> int:
         return 0
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content)
+    target.write_text(content, encoding="utf-8")
     try:
         os.chmod(target, 0o644)
     except OSError:

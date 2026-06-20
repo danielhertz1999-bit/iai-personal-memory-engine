@@ -63,7 +63,7 @@ def _maintenance_compact_preflight_daemon_alive() -> str | None:
     if not _cli.STATE_PATH.exists():
         return None
     try:
-        state = _json.loads(_cli.STATE_PATH.read_text())
+        state = _json.loads(_cli.STATE_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     pid = state.get("daemon_pid")
@@ -181,7 +181,7 @@ def _maintenance_compact_apply(
         }
         try:
             failed_path.parent.mkdir(parents=True, exist_ok=True)
-            failed_path.write_text(_json.dumps(failed_payload, indent=2))
+            failed_path.write_text(_json.dumps(failed_payload, indent=2), encoding="utf-8")
         except OSError:
             pass
         print(
@@ -206,7 +206,7 @@ def _maintenance_compact_apply(
     }
     try:
         audit_path.parent.mkdir(parents=True, exist_ok=True)
-        audit_path.write_text(_json.dumps(payload, indent=2))
+        audit_path.write_text(_json.dumps(payload, indent=2), encoding="utf-8")
     except OSError as exc:
         print(
             f"warning: could not write audit file {audit_path}: {exc}",
