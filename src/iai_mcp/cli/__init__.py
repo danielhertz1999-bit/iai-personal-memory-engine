@@ -77,7 +77,7 @@ def _ensure_crypto_key_present():
 
 
 def _try_short_timeout_connect(timeout_ms: int = 250) -> bool:
-    from iai_mcp._ipc import make_sync_ipc_socket
+    from iai_mcp._ipc import make_sync_ipc_socket, send_sync_auth_token
     try:
         s, addr = make_sync_ipc_socket()
     except (FileNotFoundError, OSError):
@@ -85,6 +85,7 @@ def _try_short_timeout_connect(timeout_ms: int = 250) -> bool:
     s.settimeout(timeout_ms / 1000.0)
     try:
         s.connect(addr)
+        send_sync_auth_token(s)
         return True
     except (FileNotFoundError, ConnectionRefusedError, OSError):
         return False
