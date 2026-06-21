@@ -1146,10 +1146,15 @@ def recall_for_response(
     apply_stale_downweight(core.anti_hits, cue_intent=_cue_intent)
     # Rank on the internal unclamped key (falls back to score when a hit was
     # built without sort_score), so ordering is preserved across the display
-    # clamp applied at serialization.
+    # clamp applied at serialization. Tie-break on record_id so equal-scoring
+    # hits resolve deterministically — two code paths that produce the same
+    # score via different summation orders (e.g. empty profile_state falling
+    # back to the medium scale) must yield byte-identical orderings.
     core.scored_hits.sort(
-        key=lambda h: (h.sort_score if h.sort_score is not None else h.score),
-        reverse=True,
+        key=lambda h: (
+            -(h.sort_score if h.sort_score is not None else h.score),
+            str(h.record_id),
+        ),
     )
 
     if (
