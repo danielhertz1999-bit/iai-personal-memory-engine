@@ -932,11 +932,13 @@ async def main() -> int:
             async def _boot_preload() -> None:
                 try:
                     from iai_mcp import retrieve as _retrieve_preload
-                    _g, _a, _rc = await asyncio.to_thread(
-                        _retrieve_preload.build_runtime_graph, store,
-                    )
+                    # build_runtime_graph already persists the cache internally
+                    # (with the full node_payload) on a miss. The previous extra
+                    # save(..., node_payload=None, ...) here overwrote that good
+                    # cache with a payload-less one (forcing a pandas re-read on
+                    # the next hit) — so we just warm the cache and drop it.
                     await asyncio.to_thread(
-                        _rgc_mod.save, store, _a, _rc, None, 0,
+                        _retrieve_preload.build_runtime_graph, store,
                     )
                 except Exception as _exc:  # noqa: BLE001 -- preload MUST NOT crash daemon
                     log.debug("boot_preload failed: %s", _exc, exc_info=True)
