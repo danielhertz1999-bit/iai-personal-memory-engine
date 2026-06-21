@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.4] — 2026-06-21
+
+### Fixed
+
+- **`migrate --reembed-from-text` repaired nothing on bulk-loaded stores.** The
+  version added in v1.1.3 fetched each record through a path that returned
+  nothing on stores populated in bulk, so it re-embedded zero records and exited
+  reporting success — a silent no-op. It now reads records directly, actually
+  re-embeds from the stored text, and is resumable with bounded memory use.
+  **If you ran the migration on v1.1.3, run it again on v1.1.4** — your vectors
+  were not repaired. Throughput is embedder-bound (no batch speedup yet), so a
+  large store takes a while; the run is resumable and reports progress.
+
 ## [1.1.3] — 2026-06-21
 
 ### Fixed

@@ -8,7 +8,7 @@ from iai_mcp.types import (
     TIER_ENUM,
 )
 
-__version__ = "1.1.3"
+__version__ = "1.1.4"
 __all__ = [
     "MemoryRecord",
     "MemoryHit",
