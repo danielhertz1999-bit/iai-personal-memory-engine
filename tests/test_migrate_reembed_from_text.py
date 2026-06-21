@@ -224,3 +224,121 @@ def test_reembed_dry_run_changes_nothing(reembed_home):
         assert cosine(before[str(rid)], after) > 0.999999, (
             f"dry-run must not modify stored vectors; {rid} changed"
         )
+
+
+def test_reembed_uses_batch_embed_once_per_window(reembed_home, monkeypatch):
+    """The window path must call embed_batch once per id-window, never the
+    per-record embed() for the corpus loop. With 6 records and a window of 3,
+    that is exactly 2 batch calls of 3 texts each and zero per-record calls."""
+    from iai_mcp.embed import Embedder, embedder_for_store
+    from iai_mcp.migrate import migrate_reembed_from_text
+
+    store = _open_store()
+    embedder = embedder_for_store(store)
+    ids = _seed_broken(store, embedder)
+    assert len(ids) == 6
+
+    batch_calls: list[int] = []
+    single_calls: list[str] = []
+
+    real_batch = Embedder.embed_batch
+    real_embed = Embedder.embed
+
+    def counting_batch(self, texts):
+        batch_calls.append(len(texts))
+        return real_batch(self, texts)
+
+    def counting_embed(self, text):
+        single_calls.append(text)
+        return real_embed(self, text)
+
+    monkeypatch.setattr(Embedder, "embed_batch", counting_batch)
+    monkeypatch.setattr(Embedder, "embed", counting_embed)
+
+    result = migrate_reembed_from_text(store, batch_size=3)
+    assert result["reembedded"] == 6, result
+
+    assert batch_calls == [3, 3], (
+        f"expected one embed_batch call per 3-record window (windows of 3), "
+        f"got batch sizes {batch_calls}"
+    )
+    assert single_calls == [], (
+        f"corpus loop must not call per-record embed(); saw {len(single_calls)} "
+        f"single calls"
+    )
+
+
+def test_reembed_resume_skips_committed_windows(reembed_home, monkeypatch):
+    """Interrupt after the first window commits, then resume: the resumed run
+    must not re-read or re-embed window 1, must finish the rest, and the final
+    state must equal a clean full run (every vector == embed(its own text))."""
+    from iai_mcp.embed import embedder_for_store
+    from iai_mcp.migrate import migrate_reembed_from_text
+
+    store = _open_store()
+    embedder = embedder_for_store(store)
+    ids = _seed_broken(store, embedder)
+    assert len(ids) == 6
+
+    # Window size 3 -> two windows. Interrupt window 2 at its encode step
+    # (before its transaction opens): window 1 has already committed its write
+    # and saved its checkpoint, window 2 raises before any write -- a faithful
+    # crash after window 1 committed but before window 2 landed. The raise
+    # propagates (the migration's fail-safe wraps only embed_batch, not encode).
+    import iai_mcp.hippo as _hippo
+
+    real_encode = _hippo._encode_embedding
+    encode_windows: list[int] = []
+
+    def fail_on_window2_encode(vec):
+        # First three encode calls = window 1; raise on the fourth (window 2).
+        encode_windows.append(1)
+        if len(encode_windows) > 3:
+            raise RuntimeError("simulated interrupt at window 2 encode")
+        return real_encode(vec)
+
+    monkeypatch.setattr(_hippo, "_encode_embedding", fail_on_window2_encode)
+
+    with pytest.raises(RuntimeError):
+        migrate_reembed_from_text(store, batch_size=3)
+
+    monkeypatch.setattr(_hippo, "_encode_embedding", real_encode)
+
+    # Window 1 (the first three ids, id-ordered) is corrected; window 2 is not.
+    ordered = sorted(ids, key=lambda r: str(r))
+    win1, win2 = ordered[:3], ordered[3:]
+    for rid in win1:
+        content = _CONTENTS[ids.index(rid)]
+        got = _stored_embedding(store, rid)
+        expected = list(embedder.embed(content))
+        assert cosine(got, expected) > 0.9999, (
+            f"window-1 record {rid} should be corrected after the interrupt"
+        )
+
+    # Resume with the encode restored; window 1 must NOT be re-read.
+    reread: list[str] = []
+    real_decrypt = store._decrypt_for_record
+
+    def counting_decrypt(record_id, value):
+        reread.append(str(record_id))
+        return real_decrypt(record_id, value)
+
+    monkeypatch.setattr(store, "_decrypt_for_record", counting_decrypt)
+
+    result = migrate_reembed_from_text(store, batch_size=3, resume=True)
+    assert result["reembedded"] == 3, result
+    assert result["total"] == 3, result
+
+    win1_ids = {str(r) for r in win1}
+    assert not (win1_ids & set(reread)), (
+        f"resume re-read already-committed window-1 ids: {win1_ids & set(reread)}"
+    )
+
+    # Final state: every record == embed(its own literal_surface).
+    for rid in ids:
+        content = _CONTENTS[ids.index(rid)]
+        got = _stored_embedding(store, rid)
+        expected = list(embedder.embed(content))
+        assert cosine(got, expected) > 0.9999, (
+            f"after resume, record {rid} is not embed(its own text)"
+        )

@@ -100,6 +100,30 @@ def cmd_migrate(args: argparse.Namespace) -> int:
     from iai_mcp.store import MemoryStore
     store = MemoryStore()
 
+    # --reembed-from-text owns --resume / --rollback when combined with it:
+    # resume continues the reembed from its last committed window, rollback
+    # discards the reembed checkpoint. Checked before the schema-migration
+    # resume/rollback so the two machines never cross wires.
+    if bool(getattr(args, "reembed_from_text", False)):
+        from iai_mcp.migrate import migrate_reembed_from_text
+        from iai_mcp.migrate._reembed_from_text import _clear_resume_cursor
+        if bool(getattr(args, "rollback", False)):
+            _clear_resume_cursor(store)
+            print("reembed checkpoint cleared")
+            return 0
+        dry_run = bool(getattr(args, "dry_run", False))
+        batch_size = int(getattr(args, "reembed_batch_size", 256))
+        resume = bool(getattr(args, "resume", False))
+        result = migrate_reembed_from_text(
+            store, dry_run=dry_run, batch_size=batch_size, resume=resume
+        )
+        prefix = "[dry-run] would re-embed" if dry_run else "re-embedded"
+        print(
+            f"{prefix} {result['reembedded']} records; "
+            f"skipped={result['skipped']} total={result['total']}"
+        )
+        return 0
+
     if bool(getattr(args, "rollback", False)):
         from iai_mcp import migrate
         return migrate._rollback(store.db, store)
@@ -118,20 +142,6 @@ def cmd_migrate(args: argparse.Namespace) -> int:
             f"{prefix} {result['records_updated']} records; "
             f"skipped_no_transcript={result['skipped_no_transcript']} "
             f"skipped_no_match={result['skipped_no_match']}"
-        )
-        return 0
-
-    if bool(getattr(args, "reembed_from_text", False)):
-        from iai_mcp.migrate import migrate_reembed_from_text
-        dry_run = bool(getattr(args, "dry_run", False))
-        batch_size = int(getattr(args, "reembed_batch_size", 256))
-        result = migrate_reembed_from_text(
-            store, dry_run=dry_run, batch_size=batch_size
-        )
-        prefix = "[dry-run] would re-embed" if dry_run else "re-embedded"
-        print(
-            f"{prefix} {result['reembedded']} records; "
-            f"skipped={result['skipped']} total={result['total']}"
         )
         return 0
 

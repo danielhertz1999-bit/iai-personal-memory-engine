@@ -9,10 +9,17 @@ This migration rebuilds every episodic record's embedding from its intact
 ``literal_surface`` (the verbatim text, which was always stored correctly),
 then rebuilds the recall index from the corrected vectors.
 
-Constitutional boundary: only the ``embedding`` column is rewritten.
+Boundary held by design: only the ``embedding`` column is rewritten.
 ``literal_surface`` is never modified, and the at-rest encryption boundary is
-untouched -- decryption happens in-process via the normal record-read path,
-exactly as graph build and recall already do.
+untouched -- only ``literal_surface`` is decrypted in-process via the normal
+record-read path, exactly as graph build and recall already do.
+
+Throughput: records are processed in id-ordered windows. Within each window the
+read decrypts only ``literal_surface`` (not the whole record), the texts are
+embedded in one batch call, and the corrected vectors are written under a single
+transaction -- one commit per window, not per record. A keyset cursor over the
+primary key bounds memory regardless of corpus size, and the last committed
+cursor is checkpointed so an interrupted run resumes from the next window.
 
 Idempotent: re-embedding the same text yields the same vector, so a second run
 is a no-op in effect. Records whose text is missing or undecryptable are
@@ -20,16 +27,66 @@ skipped and counted -- no vector is ever fabricated.
 """
 from __future__ import annotations
 
+import json
 import logging
-from uuid import UUID
+import os
+import tempfile
 
 from iai_mcp.events import write_event
-from iai_mcp.store import MemoryStore, RECORDS_TABLE, _uuid_literal
 
 log = logging.getLogger(__name__)
 
 
 DEFAULT_BATCH_SIZE = 256
+PROGRESS_FILE = "reembed_progress.json"
+
+
+def _progress_path(store) -> str:
+    return os.path.join(str(store.root), PROGRESS_FILE)
+
+
+def _load_resume_cursor(store) -> str:
+    """Return the last committed id cursor, or "" if no checkpoint exists."""
+    path = _progress_path(store)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        cursor = data.get("last_id")
+        return cursor if isinstance(cursor, str) else ""
+    except (OSError, ValueError, TypeError):
+        return ""
+
+
+def _save_resume_cursor(store, last_id: str, stats: dict) -> None:
+    """Atomically persist the resume cursor after a window commits."""
+    path = _progress_path(store)
+    payload = {
+        "last_id": last_id,
+        "reembedded": int(stats.get("reembedded", 0)),
+        "skipped": int(stats.get("skipped", 0)),
+        "total": int(stats.get("total", 0)),
+    }
+    directory = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(prefix=".reembed_progress.", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _clear_resume_cursor(store) -> None:
+    try:
+        os.unlink(_progress_path(store))
+    except OSError:
+        pass
 
 
 def migrate_reembed_from_text(
@@ -37,24 +94,30 @@ def migrate_reembed_from_text(
     *,
     dry_run: bool = False,
     batch_size: int = DEFAULT_BATCH_SIZE,
+    resume: bool = False,
 ) -> dict:
     """Re-embed every episodic record from its ``literal_surface`` text.
 
     Streams record ids in id-ordered windows so the whole corpus is never
-    loaded at once, decrypts each record's text via the normal read path,
-    re-embeds it, and updates only that record's ``embedding`` column. After
-    all updates land, the HNSW recall index is rebuilt from the corrected
-    vectors.
+    loaded at once. Per window: a light read decrypts only ``literal_surface``,
+    the window's texts are embedded in one batch call, and the corrected vectors
+    are written under one transaction. After all windows land, the HNSW recall
+    index is rebuilt from the corrected vectors.
 
     Returns a dict with keys: reembedded, skipped, total, dry_run.
+
+    With ``resume=True`` the run continues from the last committed window
+    recorded in the on-disk checkpoint, so already-corrected windows are not
+    re-read or re-embedded.
 
     Safe to call multiple times (idempotent): the same text re-embeds to the
     same vector, so re-running has no net effect. Records whose text is empty
     or undecryptable are skipped and counted, never re-embedded with a
     fabricated vector.
     """
+    from iai_mcp.crypto import is_encrypted
     from iai_mcp.embed import embedder_for_store
-    from iai_mcp.hippo import HippoDB, HippoIntegrityError
+    from iai_mcp.hippo import HippoDB, HippoIntegrityError, _encode_embedding
 
     db = store.db
     if not isinstance(db, HippoDB):
@@ -64,20 +127,31 @@ def migrate_reembed_from_text(
         batch_size = DEFAULT_BATCH_SIZE
 
     embedder = embedder_for_store(store)
-    tbl = store.db.open_table(RECORDS_TABLE)
 
     reembedded = 0
     skipped = 0
     total = 0
 
-    # Stream ids in id-ordered windows. A keyset cursor over the primary key
-    # keeps memory bounded regardless of corpus size and is stable under the
-    # in-place embedding updates this loop performs (updates never change id).
-    last_id = ""
+    # Total active episodic count for an observable "done X/total" line. Bounded
+    # single-row read; cheap relative to the per-window embed work.
+    with db._conn_lock:
+        total_target_row = db._conn.execute(
+            "SELECT COUNT(*) AS n FROM records"
+            " WHERE tier = 'episodic' AND tombstoned_at IS NULL"
+        ).fetchone()
+    total_target = int(total_target_row["n"]) if total_target_row is not None else 0
+
+    # Keyset cursor over the primary key. Stable under the in-place embedding
+    # updates this loop performs (updates never change id), and resumable from
+    # the last committed window.
+    last_id = _load_resume_cursor(store) if resume else ""
+    if resume and last_id:
+        log.info("reembed_from_text: resuming from last_id=%s", last_id)
+
     while True:
         with db._conn_lock:
             rows = db._conn.execute(
-                "SELECT id FROM records"
+                "SELECT id, literal_surface FROM records"
                 " WHERE tier = 'episodic'"
                 "   AND tombstoned_at IS NULL"
                 "   AND id > ?"
@@ -87,47 +161,104 @@ def migrate_reembed_from_text(
             ).fetchall()
         if not rows:
             break
-        last_id = rows[-1][0]
+        window_last_id = rows[-1]["id"]
 
+        # Light decrypt: only literal_surface, mirroring the graph-build read
+        # path. Records with empty or undecryptable text are skipped and never
+        # fabricated.
+        window_ids: list[str] = []
+        window_texts: list[str] = []
         for row in rows:
-            rid_str = row[0]
             total += 1
+            rid_str = row["id"]
+            literal_raw = row["literal_surface"] or ""
             try:
-                rec = store.get(UUID(rid_str))
+                from uuid import UUID as _UUID
+                if is_encrypted(literal_raw):
+                    literal_raw = store._decrypt_for_record(
+                        _UUID(rid_str), literal_raw
+                    )
             except (HippoIntegrityError, ValueError, TypeError) as exc:
                 log.warning(
-                    "reembed_from_text: skip id=%s (read failed: %s)",
+                    "reembed_from_text: skip id=%s (decrypt failed: %s)",
                     rid_str,
                     type(exc).__name__,
                 )
                 skipped += 1
                 continue
-            if rec is None:
+            except Exception as exc:  # noqa: BLE001 -- InvalidTag / OSError fail-safe
+                log.warning(
+                    "reembed_from_text: skip id=%s (decrypt failed: %s)",
+                    rid_str,
+                    type(exc).__name__,
+                )
                 skipped += 1
                 continue
 
-            text = (rec.literal_surface or "").strip()
+            text = (literal_raw or "").strip()
             if not text:
                 skipped += 1
                 continue
+            window_ids.append(rid_str)
+            window_texts.append(text)
 
+        # Batch embed: one call per window, id<->text<->vector alignment exact.
+        if window_texts:
             try:
-                vec = list(embedder.embed(text))
-            except Exception as exc:  # noqa: BLE001 -- per-record fail-safe
+                vectors = embedder.embed_batch(window_texts)
+            except Exception as exc:  # noqa: BLE001 -- per-window fail-safe
                 log.warning(
-                    "reembed_from_text: skip id=%s (embed failed: %s)",
-                    rid_str,
+                    "reembed_from_text: skip window ending id=%s (embed failed: %s)",
+                    window_last_id,
                     type(exc).__name__,
                 )
-                skipped += 1
-                continue
+                skipped += len(window_texts)
+                window_ids = []
+                vectors = []
+        else:
+            vectors = []
 
-            if not dry_run:
-                tbl.update(
-                    where=f"id = '{_uuid_literal(rec.id)}'",
-                    values={"embedding": [float(x) for x in vec]},
-                )
-            reembedded += 1
+        # Batch write: one transaction per window, embedding column only. The
+        # raw UPDATE keeps the AES boundary on literal_surface untouched -- only
+        # the plaintext embedding blob is rewritten, encoded the same way the
+        # per-record update path encoded it (float32 little-endian), so the
+        # vectors are byte-identical to embed(literal_surface).
+        if not dry_run and window_ids:
+            blobs = [_encode_embedding(vec) for vec in vectors]
+            with db._conn_lock:
+                db._conn.execute("BEGIN")
+                try:
+                    db._conn.executemany(
+                        "UPDATE records SET embedding = ? WHERE id = ?",
+                        list(zip(blobs, window_ids)),
+                    )
+                    db._conn.execute("COMMIT")
+                except Exception:
+                    db._conn.execute("ROLLBACK")
+                    raise
+            reembedded += len(window_ids)
+        else:
+            # dry-run: count what would be re-embedded without writing.
+            reembedded += len(window_ids)
+
+        # Advance the cursor only after the window's write commits, so an
+        # interrupted run resumes from the next uncommitted window.
+        last_id = window_last_id
+        if not dry_run:
+            _save_resume_cursor(
+                store,
+                last_id,
+                {"reembedded": reembedded, "skipped": skipped, "total": total},
+            )
+
+        log.info(
+            "reembed: done %d/%d, reembedded %d, skipped %d, last_id=%s",
+            total,
+            total_target,
+            reembedded,
+            skipped,
+            last_id,
+        )
 
     if not dry_run and reembedded > 0:
         rebuild = db._rebuild_index_from_sqlite()
@@ -144,6 +275,9 @@ def migrate_reembed_from_text(
             )
         except (OSError, ValueError, RuntimeError) as exc:
             log.error("migration_reembed_from_text event write failed: %s", exc)
+        # The corpus is fully corrected; drop the checkpoint so a later run
+        # starts clean rather than resuming a completed migration.
+        _clear_resume_cursor(store)
 
     return {
         "reembedded": reembedded,
