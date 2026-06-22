@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.6] — 2026-06-21
+
+### Fixed
+
+- **Daemon memory and CPU under sustained load.** On large stores the background
+  daemon's warm state and nightly consolidation could climb in resident memory
+  and spin the CPU. This release isolates the runtime-graph rebuild in a
+  spawn-context worker, computes graph centrality with a bounded sampled
+  estimator (so it never recomputes exact betweenness in-process at scale),
+  streams record reads instead of materializing the whole corpus, drains the
+  deferred-capture backlog in two phases (insert first, embed later) with
+  self-limiting safety rails, and grades the memory watchdog against the kernel's
+  physical-footprint metric rather than raw resident set. Warm memory now stays
+  well under the cap and the consolidation CPU storm is gone. No changes to the
+  public API, CLI, MCP tools, or on-disk store format.
+
 ## [1.1.5] — 2026-06-21
 
 ### Security
