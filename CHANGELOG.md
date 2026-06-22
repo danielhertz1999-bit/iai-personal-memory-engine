@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.7] — 2026-06-22
+
+### Added
+
+- `scripts/install-linux.sh` — a one-shot Fedora / RHEL / Debian setup helper:
+  prerequisite checks (Python ≥3.11, Rust, Node ≥18), venv creation, editable
+  install, MCP-wrapper build, crypto-key init, and systemd user-service install.
+  Idempotent and safe to re-run. Thanks to @MoppelMat.
+
+### Fixed
+
+- Dropped two ineffective directives (`StartLimitIntervalSec`, `StartLimitBurst`)
+  from the systemd unit's `[Service]` section. systemd only honors those keys in
+  `[Unit]`, so in `[Service]` they had no effect and emitted a warning on modern
+  systemd. Thanks to @MoppelMat.
+
 ## [1.1.6] — 2026-06-21
 
 ### Fixed
