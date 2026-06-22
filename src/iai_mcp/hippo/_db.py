@@ -35,6 +35,39 @@ from iai_mcp.hippo import AccessMode  # noqa: E402
 _log = logging.getLogger(__name__)
 
 
+# Bounds for the deferred-embed pass driven by the wake sequence. The pass
+# embeds pending rows (written cheaply by the in-daemon drain) in windows of
+# REEMBED_BATCH_SIZE, releasing idle allocator pages between windows, and yields
+# once the resident set exceeds REEMBED_RSS_SOFT_CAP — leaving the remaining
+# rows pending for the next cycle. This keeps a large deferred backlog from
+# climbing the resident set through one long synchronous embed run. Both are
+# operator-overridable; a non-positive / malformed value disables that bound.
+REEMBED_BATCH_SIZE_DEFAULT = 128
+REEMBED_RSS_SOFT_CAP_DEFAULT_BYTES = 2_684_354_560
+
+
+def _reembed_batch_size() -> int:
+    raw = os.environ.get("IAI_MCP_REEMBED_BATCH_SIZE")
+    if raw is None:
+        return REEMBED_BATCH_SIZE_DEFAULT
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return REEMBED_BATCH_SIZE_DEFAULT
+    return val if val > 0 else 0
+
+
+def _reembed_rss_soft_cap() -> int:
+    raw = os.environ.get("IAI_MCP_REEMBED_RSS_SOFT_CAP_BYTES")
+    if raw is None:
+        return REEMBED_RSS_SOFT_CAP_DEFAULT_BYTES
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return REEMBED_RSS_SOFT_CAP_DEFAULT_BYTES
+    return val if val > 0 else 0
+
+
 _txn_owners: dict[int, int] = {}
 _txn_owners_lock: threading.Lock = threading.Lock()
 
@@ -118,16 +151,32 @@ class HippoDB:
             )
 
         db_path = self._hippo_dir / "brain.sqlite3"
+        _cached_stmts_raw = os.environ.get("IAI_MCP_SQLITE_CACHED_STATEMENTS", "128")
+        try:
+            _cached_stmts = max(0, int(_cached_stmts_raw))
+        except ValueError:
+            _cached_stmts = 128
         self._conn: sqlite3.Connection = sqlite3.connect(
             str(db_path),
             check_same_thread=False,
             isolation_level=None,
+            cached_statements=_cached_stmts,
         )
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.execute("PRAGMA busy_timeout=2000")
+        # Cap the SQLite page cache so a long-running daemon process cannot
+        # let it drift unbounded across cycles. Negative values are KiB.
+        # tracemalloc cannot see C-level allocations, so this cap is the
+        # only explicit bound on the page cache footprint in process RSS.
+        _cache_kib = os.environ.get("IAI_MCP_SQLITE_CACHE_SIZE_KIB", "65536")
+        try:
+            _cache_kib_int = int(_cache_kib)
+        except ValueError:
+            _cache_kib_int = 65536
+        self._conn.execute(f"PRAGMA cache_size=-{abs(_cache_kib_int)}")
         if read_only:
             self._conn.execute("PRAGMA query_only=ON")
 
@@ -612,43 +661,141 @@ class HippoDB:
             ).fetchone()
         return row is not None
 
-    def reembed_pending_rows(self, embedder: Any) -> int:
+    def reembed_pending_rows(
+        self,
+        embedder: Any,
+        *,
+        batch_size: int = 0,
+        rss_soft_cap_bytes: int = 0,
+    ) -> int:
+        """Embed pending rows, optionally bounded by batch size and resident set.
+
+        The deferred-embed pass of the two-phase capture drain. With the defaults
+        (both bounds 0) it embeds every pending row in one pass — the historical
+        behaviour direct-write recovery and the wake sequence rely on.
+
+        When ``batch_size`` is positive the rows are embedded in windows of that
+        size, each window committed before the next is read, with an allocator
+        relief between windows so the per-window embedder/columnar transient is
+        handed back to the OS instead of accumulating. When ``rss_soft_cap_bytes``
+        is positive the pass stops cleanly before reading the next window once the
+        resident set exceeds the cap — the remaining rows stay pending for the
+        next cycle, exactly like the drain's own soft cap. This keeps a large
+        deferred backlog from climbing the resident set through one long run.
+        """
+        import struct as _struct
+
         with self._conn_lock:
-            rows = self._conn.execute(
-                "SELECT id, literal_surface FROM records"
-                " WHERE COALESCE(embedding_pending, 0) = 1"
-                " AND tombstoned_at IS NULL"
-            ).fetchall()
+            ids = [
+                r["id"]
+                for r in self._conn.execute(
+                    "SELECT id FROM records"
+                    " WHERE COALESCE(embedding_pending, 0) = 1"
+                    " AND tombstoned_at IS NULL"
+                    " ORDER BY rowid"
+                ).fetchall()
+            ]
+        if not ids:
+            return 0
+
+        window = batch_size if batch_size and batch_size > 0 else len(ids)
+        soft_cap = rss_soft_cap_bytes if rss_soft_cap_bytes and rss_soft_cap_bytes > 0 else 0
+        bounded = bool(batch_size and batch_size > 0)
+
         count = 0
-        for row in rows:
-            rid = row["id"]
-            surface = row["literal_surface"] or ""
-            # On an encrypted store literal_surface is iai:enc:v1: ciphertext; embedding
-            # the ciphertext would produce a garbage vector. Decrypt first (no-op on a
-            # plaintext store or a value that isn't encrypted). A decrypt failure leaves
-            # the row embedding_pending=1 so it is retried rather than poisoned.
-            try:
-                surface = self._decrypt_record_field(rid, "literal_surface", surface)
-            except Exception as exc:  # noqa: BLE001
-                _log.warning("reembed_pending_rows: decrypt failed for id=%s: %s", rid, exc)
-                continue
-            try:
-                vec = list(embedder.embed(surface))
-            except Exception as exc:  # noqa: BLE001
-                _log.warning("reembed_pending_rows: embed failed for id=%s: %s", rid, exc)
-                continue
-            import struct as _struct
-            blob = _struct.pack(f"<{len(vec)}f", *vec)
-            with self._conn_lock:
-                self._conn.execute(
-                    "UPDATE records SET embedding = ?, embedding_pending = 0 WHERE id = ?",
-                    (blob, rid),
-                )
-            count += 1
-        if count > 0:
-            with self._conn_lock:
-                self._conn.commit()
+        for start in range(0, len(ids), window):
+            # Soft resident-memory ceiling — checked before reading the next
+            # window so the pass yields with the remaining rows still pending
+            # (deferred, not lost). A 0 reading (psutil unavailable) is treated as
+            # unknown and never trips the cap.
+            if soft_cap > 0 and start > 0:
+                rss_now = self._reembed_rss_bytes()
+                if rss_now > soft_cap:
+                    _log.info(
+                        "reembed_pending_rows: rss soft cap hit (rss=%d > cap=%d),"
+                        " %d rows left pending",
+                        rss_now,
+                        soft_cap,
+                        len(ids) - start,
+                    )
+                    break
+
+            window_ids = ids[start:start + window]
+            window_count = 0
+            for rid in window_ids:
+                with self._conn_lock:
+                    row = self._conn.execute(
+                        "SELECT literal_surface FROM records WHERE id = ?",
+                        (rid,),
+                    ).fetchone()
+                if row is None:
+                    continue
+                surface_raw = row["literal_surface"] or ""
+                # Decrypt the at-rest text before embedding, mirroring the
+                # record-read decrypt path. On an unencrypted store (no key
+                # provider) this returns the value unchanged; on an encrypted
+                # store it recovers the plaintext so the vector is of the message,
+                # never of the ciphertext. A row whose text is empty or
+                # undecryptable is skipped, never embedded — no vector is
+                # fabricated.
+                try:
+                    surface = self._decrypt_record_field(
+                        rid, "literal_surface", surface_raw
+                    )
+                except Exception as exc:  # noqa: BLE001 -- decrypt fail-safe, skip
+                    _log.warning(
+                        "reembed_pending_rows: decrypt failed for id=%s: %s", rid, exc
+                    )
+                    continue
+                if not (surface or "").strip():
+                    continue
+                try:
+                    vec = list(embedder.embed(surface))
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning(
+                        "reembed_pending_rows: embed failed for id=%s: %s", rid, exc
+                    )
+                    continue
+                blob = _struct.pack(f"<{len(vec)}f", *vec)
+                with self._conn_lock:
+                    self._conn.execute(
+                        "UPDATE records SET embedding = ?, embedding_pending = 0"
+                        " WHERE id = ?",
+                        (blob, rid),
+                    )
+                count += 1
+                window_count += 1
+
+            if window_count > 0:
+                with self._conn_lock:
+                    self._conn.commit()
+
+            # Hand the per-window embedder/columnar transient back to the OS
+            # between windows so the bounded pass does not build a warm plateau.
+            if bounded and window_count > 0:
+                self._reembed_window_relief()
+
         return count
+
+    @staticmethod
+    def _reembed_rss_bytes() -> int:
+        try:
+            import psutil
+
+            return int(psutil.Process().memory_info().rss)
+        except Exception:  # noqa: BLE001 -- psutil flakiness must not stop the pass
+            return 0
+
+    @staticmethod
+    def _reembed_window_relief() -> None:
+        try:
+            from iai_mcp.lilli.cycle.sleep_pipeline._memory_relief import (
+                _step_memory_relief,
+            )
+
+            _step_memory_relief(label="reembed_pending")
+        except Exception as exc:  # noqa: BLE001 -- relief is advisory, never fatal
+            _log.debug("reembed_pending_rows: window relief failed: %s", exc)
 
     def ingest_pending_embeddings(self) -> int:
         import json as _json
@@ -716,13 +863,38 @@ class HippoDB:
 
         reembed_count = 0
         if has_pending and embedder is not None:
-            reembed_count = self.reembed_pending_rows(embedder)
+            # Bounded deferred-embed pass: windowed embed + per-window allocator
+            # relief + resident-set soft cap, so a large pending backlog (the
+            # two-phase drain writes all genuinely-new turns as pending rows) is
+            # embedded in resident-memory-bounded steps. Rows beyond the cap stay
+            # pending for the next wake.
+            reembed_count = self.reembed_pending_rows(
+                embedder,
+                batch_size=_reembed_batch_size(),
+                rss_soft_cap_bytes=_reembed_rss_soft_cap(),
+            )
 
         ingest_count = 0
         if has_sidecars:
             ingest_count = self.ingest_pending_embeddings()
 
         rebuild_result = self._rebuild_index_from_sqlite()
+
+        # A pending->ready transition (a row flipping embedding_pending 1->0, or a
+        # sidecar embedding landing) adds an active, index-findable row whose +1
+        # corpus delta can stay within the warm graph's drift tolerance and not
+        # flip its staleness-window cache key. Without invalidation the next warm
+        # build reuses the stale node set and the re-embedded row is absent from
+        # community gating and centrality until an unrelated over-tolerance
+        # rebuild. Invalidate at the data-operation boundary so every caller of
+        # the wake sequence — not just the daemon — forces the row into the next
+        # warm graph. The unlink is key-free; the AES fence is untouched.
+        if reembed_count > 0 or ingest_count > 0:
+            try:
+                from iai_mcp import runtime_graph_cache as _rgc
+                _rgc.invalidate_at_root(self._store_root)
+            except Exception:  # noqa: BLE001 -- invalidation must never break wake
+                pass
 
         return {
             "action": "wake_sequence",

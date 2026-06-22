@@ -263,9 +263,20 @@ def _pick_seeds(
 ) -> np.ndarray:
     if candidate_indices.size == 0:
         return np.empty(0, dtype=candidate_indices.dtype)
+    # Per-cycle percentile normalization of the centrality term over the
+    # candidate slice. The centrality map may be an exact betweenness or a
+    # bounded approximation whose raw magnitude drifts with the pivot count and
+    # corpus size; the 0.6/0.4 blend is scale-sensitive, so feeding the rank
+    # rather than the raw value keeps the seed boundary set by topology, not by
+    # the magnitude the centrality variant happened to produce. The relative
+    # ordering -- all the seed blend needs from centrality -- is preserved.
+    from iai_mcp.centrality_approx import _percentile_normalize
+
+    cand_centrality = centrality_arr[candidate_indices].astype(np.float64)
+    cand_centrality_normed = _percentile_normalize(cand_centrality)
     blended = (
         0.6 * shared_cos[candidate_indices]
-        + 0.4 * centrality_arr[candidate_indices]
+        + 0.4 * cand_centrality_normed
     )
     top_local = np.argsort(-blended, kind="stable")[:n]
     return candidate_indices[top_local]
@@ -529,11 +540,11 @@ def _recall_core(
     if cnorm > 0.0:
         cue_vec = cue_vec / cnorm
     if pool_embs.size:
-        _pe = np.nan_to_num(pool_embs, nan=0.0, posinf=0.0, neginf=0.0)
-        _pe_norms = np.linalg.norm(_pe, axis=1)
-        _pe_norms[_pe_norms == 0.0] = 1.0
-        _pe = _pe / _pe_norms[:, None]
-        shared_cos = np.matmul(_pe, cue_vec).astype(np.float32)
+        pool_embs = np.nan_to_num(pool_embs, nan=0.0, posinf=0.0, neginf=0.0)
+        pool_norms = np.linalg.norm(pool_embs, axis=1)
+        pool_norms[pool_norms == 0.0] = 1.0
+        pool_embs = pool_embs / pool_norms[:, None]
+        shared_cos = np.matmul(pool_embs, cue_vec).astype(np.float32)
     else:
         shared_cos = np.empty(0, dtype=np.float32)
     if shared_cos.size:
@@ -606,7 +617,13 @@ def _recall_core(
         centrality_arr[i] = float(graph.get_centrality(rid))
     if not np.any(centrality_arr) and pool_ids:
         try:
-            cen_dict = graph.centrality()
+            from iai_mcp.centrality_approx import centrality_for_runtime
+
+            # Bounded recompute on the recall path: exact below the node-count
+            # cutoff, deterministic k-source sampled betweenness above it. The
+            # long-lived recall process must never run an unbounded O(V*E)
+            # Brandes pass when the warm graph is large.
+            cen_dict = centrality_for_runtime(graph)
             for i, rid in enumerate(pool_ids):
                 centrality_arr[i] = float(cen_dict.get(rid, 0.0))
         except Exception as exc:  # noqa: BLE001 -- emit diagnostic then re-raise as NativeError
@@ -1147,7 +1164,7 @@ def recall_for_response(
     # Rank on the internal unclamped key (falls back to score when a hit was
     # built without sort_score), so ordering is preserved across the display
     # clamp applied at serialization. Tie-break on record_id so equal-scoring
-    # hits resolve deterministically — two code paths that produce the same
+    # hits resolve deterministically -- two code paths that produce the same
     # score via different summation orders (e.g. empty profile_state falling
     # back to the medium scale) must yield byte-identical orderings.
     core.scored_hits.sort(

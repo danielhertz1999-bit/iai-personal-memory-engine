@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import logging
+import math
+import os
 import threading
 import time
 from datetime import datetime, timedelta, timezone
 from itertools import combinations
 from uuid import UUID, uuid4
-
-import pandas as pd
 
 from iai_mcp.aaak import enforce_english_raw, generate_aaak_index
 from iai_mcp.events import query_events, write_event
@@ -36,30 +36,66 @@ STALE_DOWNWEIGHT_FACTOR: float = 0.5
 _STALE_REASON_SUFFIX: str = " · stale"
 
 
-# --- build_runtime_graph single-flight (WAKE CPU-storm fix) -----------------
-# At daemon WAKE several background subsystems (boot preload, sigma identity
-# audit, foraging weak-bridge detection, hippea cascade warming) each call
-# build_runtime_graph concurrently. On a cache MISS each one independently runs
-# the full O(n^2) community detection (mosaic), GIL-bound, in its own to_thread
-# worker. Three+ of those at once contend for the GIL, starve the asyncio event
-# loop, and the liveness watchdog's socket probe times out -> SIGKILL -> relaunch
-# loop. This single-flight gate collapses the concurrent burst into ONE compute:
-# the first caller (leader) computes and saves the on-disk cache; concurrent
-# callers (followers) wait on its Event and then re-load the freshly-saved cache
-# via the cheap path. No mutable graph object is shared between callers (each
-# rebuilds its own MemoryGraph shell + sync hook), and recall is independent of
-# the community assignment, so a slightly-stale shared result is harmless.
-#
-# Followers RE-CONTEND in a bounded loop rather than recomputing unconditionally:
-# if the leader fails before saving (e.g. detect_communities raises), or the cache
-# key shifts mid-burst, or the leader overruns the wait timeout, the woken
-# followers loop back, and exactly ONE of them becomes the next leader while the
-# rest wait again. That degrades those edge cases to *sequential* single-flight
-# (one compute at a time) instead of an N-way concurrent re-storm.
-_BRG_INFLIGHT_LOCK = threading.Lock()
-_BRG_INFLIGHT: dict[str, threading.Event] = {}
-_BRG_WAIT_TIMEOUT_SEC: float = 120.0
-_BRG_MAX_ATTEMPTS: int = 4
+# The community graph is an enhancement layer over the index recall path: a
+# record is findable by cosine/ANN as soon as it lands in the index, before it
+# is ever folded into the community graph. So the community graph may lag the
+# corpus by a bounded number of records without losing recall correctness — the
+# lagging records are still returned by the index. This tolerance defines that
+# bound. While the corpus stays within tolerance of the cached node set, the
+# build reuses the cached graph and cached centrality and skips the heavy
+# betweenness recompute; only an over-tolerance drift triggers a full rebuild
+# (which then folds in every accumulated record at once). Without this bound a
+# single new record changes the corpus count and forces a full betweenness pass
+# on every write.
+_DRIFT_DEFAULT_ABS: int = 500
+_DRIFT_DEFAULT_FRAC: float = 0.05
+
+
+def _drift_tolerance(cached_count: int) -> int:
+    """Largest corpus/cache count delta the cached graph may absorb without a
+    full rebuild.
+
+    `max(abs_floor, ceil(frac * cached_count))` — an absolute floor for small
+    corpora plus a proportional band for large ones. Both bounds are
+    operator-overridable: `IAI_MCP_RGC_DRIFT_ABS` (int ≥ 0) and
+    `IAI_MCP_RGC_DRIFT_FRAC` (float ≥ 0). A malformed or negative override falls
+    back to the default rather than failing recall.
+    """
+    abs_floor = _DRIFT_DEFAULT_ABS
+    raw_abs = os.environ.get("IAI_MCP_RGC_DRIFT_ABS")
+    if raw_abs is not None:
+        try:
+            parsed_abs = int(raw_abs)
+            if parsed_abs >= 0:
+                abs_floor = parsed_abs
+        except (TypeError, ValueError):
+            pass
+
+    frac = _DRIFT_DEFAULT_FRAC
+    raw_frac = os.environ.get("IAI_MCP_RGC_DRIFT_FRAC")
+    if raw_frac is not None:
+        try:
+            parsed_frac = float(raw_frac)
+            if parsed_frac >= 0.0:
+                frac = parsed_frac
+        except (TypeError, ValueError):
+            pass
+
+    proportional = math.ceil(frac * max(0, int(cached_count)))
+    return max(abs_floor, proportional)
+
+
+def _within_drift_tolerance(cached_count: int, records_count: int) -> bool:
+    """True when the live corpus count is close enough to the cached node set
+    that the cached community graph + centrality remain serviceable.
+
+    Single source of truth for the drift decision so the lock-free
+    `_runtime_graph_rebuild_needed` probe and the in-build `use_cached_payload`
+    gate cannot diverge.
+    """
+    return abs(int(records_count) - int(cached_count)) <= _drift_tolerance(
+        int(cached_count)
+    )
 
 
 def recall(
@@ -487,71 +523,149 @@ def _make_graph_sync_hook(graph):
     return _hook
 
 
-def build_runtime_graph(store: MemoryStore):
-    """Single-flight wrapper around the real graph build.
+def _detect_communities_isolated(store: MemoryStore, graph, *, with_centrality: bool = False):
+    """Run community detection without retaining the kernel arenas in-parent.
 
-    On a cache HIT this is cheap and runs directly. On a cache MISS it
-    serialises concurrent callers so the expensive community detection runs
-    exactly once per cache generation: the leader computes + saves the cache,
-    followers wait and then reload it cheaply. See the _BRG_* notes above.
+    The detection kernel's JIT compilation reserves large allocator arenas that
+    the long-lived process never hands back. Running it in a short-lived
+    spawn-context child confines those arenas to that child, which the OS
+    reclaims on exit, keeping the parent footprint flat.
+
+    The child receives only node ids, float32 embeddings, and edges — never the
+    storage handle or the encryption key. The returned partition (which nodes
+    share a community) is identical to the in-process call; only the community
+    identifiers may differ, and callers compare partitions, not identifiers.
+
+    When `with_centrality` is True the same child also computes the full
+    betweenness centrality and the function returns `(assignment,
+    centrality_map)`; on the in-process fallback the centrality map is returned
+    as `None` so the caller computes centrality on its own path. When False the
+    function returns just the assignment.
+
+    If the child path fails for any reason, detection falls back to running
+    in-process so recall is never blocked.
     """
-    from iai_mcp import runtime_graph_cache as _rgc
+    from iai_mcp import runtime_graph_cache
 
-    cached = None
-    for _attempt in range(_BRG_MAX_ATTEMPTS):
-        try:
-            cached = _rgc.try_load(store)
-        except Exception:  # noqa: BLE001 -- never let cache I/O break the build
-            cached = None
+    try:
+        result = runtime_graph_cache.compute_assignment_in_child(
+            graph, prior_mode="seeded", with_centrality=with_centrality
+        )
+        if with_centrality:
+            assignment, centrality_map = result
+            return assignment, centrality_map
+        return result
+    except (
+        runtime_graph_cache.WorkerCrashedError,
+        runtime_graph_cache.WorkerTimeoutError,
+        BrokenPipeError,
+        EOFError,
+        OSError,
+        RuntimeError,
+        ValueError,
+    ) as exc:
+        log.warning(
+            "community detection child failed; "
+            "falling back to in-process detection: %s",
+            exc,
+        )
+        from iai_mcp.community import detect_communities
 
-        # Cache HIT: no contention risk, run directly (the impl reloads cheaply).
-        if cached is not None and cached[0] is not None:
-            return _build_runtime_graph_impl(store, cached)
-
-        # Cache MISS: single-flight on the cache key so a WAKE burst of callers
-        # does not all recompute the full mosaic concurrently.
-        try:
-            keystr = repr(_rgc._cache_key(store))
-        except Exception:  # noqa: BLE001 -- if we can't key it, just compute
-            return _build_runtime_graph_impl(store, cached)
-
-        with _BRG_INFLIGHT_LOCK:
-            event = _BRG_INFLIGHT.get(keystr)
-            is_leader = event is None
-            if is_leader:
-                event = threading.Event()
-                _BRG_INFLIGHT[keystr] = event
-
-        if is_leader:
-            # Leader: compute (the impl saves the cache), then release followers.
-            try:
-                return _build_runtime_graph_impl(store, cached)
-            finally:
-                with _BRG_INFLIGHT_LOCK:
-                    # Only drop our own slot (a key shift could have replaced it).
-                    if _BRG_INFLIGHT.get(keystr) is event:
-                        _BRG_INFLIGHT.pop(keystr, None)
-                event.set()
-
-        # Follower: wait for the leader, then loop. Next iteration's try_load
-        # HITS if the leader saved; if the leader failed / the key shifted /
-        # the wait timed out, we re-contend and one follower becomes the next
-        # leader (sequential single-flight — never an N-way concurrent re-storm).
-        event.wait(timeout=_BRG_WAIT_TIMEOUT_SEC)
-
-    # Attempts exhausted (e.g. the leader keeps failing): compute directly as a
-    # last resort. Bounded, and still correct.
-    return _build_runtime_graph_impl(store, cached)
+        assignment = detect_communities(graph, prior=None, prior_mode="seeded")
+        if with_centrality:
+            # Signal the caller to compute centrality on its own path (the
+            # in-parent fallback) — the child never produced it.
+            return assignment, None
+        return assignment
 
 
-def _build_runtime_graph_impl(store: MemoryStore, cached):
-    from iai_mcp.community import detect_communities
+# Serializes the cache-MISS rebuild of the runtime graph across concurrent
+# callers. The rebuild streams the whole corpus and spawns a child for community
+# detection plus centrality; under a stale or absent cache several callers can
+# fire at once and each run the full rebuild, spawning a redundant fleet of
+# children grinding the same graph. A single-flight guard around the rebuild
+# section collapses that fleet to one: the first caller rebuilds and saves the
+# cache, the rest re-check the freshly-saved cache and take the light path. The
+# daemon's callers run in `asyncio.to_thread` worker threads, so a threading
+# lock serializes them. The cheap cache-hit probe runs OUTSIDE this lock, so the
+# common warm path stays lock-free.
+_RUNTIME_GRAPH_REBUILD_LOCK = threading.Lock()
+
+
+def _runtime_graph_rebuild_needed(store: MemoryStore) -> bool:
+    """Cheap probe: does a full runtime-graph rebuild need to run?
+
+    Returns False only when the cache holds the expensive results — a non-empty
+    community assignment AND a cached centrality map — for a corpus whose size is
+    within drift tolerance of the live count. That is the exact condition under
+    which `_build_runtime_graph_impl` reconstructs the graph by streaming the
+    cheap node_payload from the store and applies the cached centrality, spawning
+    no detection or centrality child. Any other state (no cache, size drift, or
+    no cached centrality) means a child-spawning rebuild is required.
+
+    Crucially this gates on the compact `payload_record_count` + cached
+    `centrality` map, NOT on the large `node_payload`. The node_payload is shed
+    when the cache exceeds its size cap (at production-scale corpora it always
+    is), so gating on its presence would force a betweenness recompute on every
+    warm. The expensive centrality survives the cap and is what the warm path
+    reuses.
+
+    Mirrors the in-function `cache_results_fresh` logic so the single-flight
+    decision and the rebuild decision cannot diverge. Performs only a disk read
+    (`try_load_cache_results`) and a COUNT(*) (`active_records_count`) — no
+    rebuild, no child spawn — so it is safe to call lock-free and again under the
+    lock for the double check.
+    """
+    from iai_mcp import runtime_graph_cache
+
+    results = runtime_graph_cache.try_load_cache_results(store)
+    if results is None:
+        return True
+    cached_centrality, payload_record_count = results
+    # An empty centrality map means the cache carries no expensive result to
+    # reuse — rebuild so the betweenness pass actually runs once.
+    if not cached_centrality:
+        return True
+    # A payload built from an all-zero centrality set is not a usable warm result
+    # (e.g. a single isolated node). Treat it as needing a rebuild.
+    if not any(value != 0.0 for value in cached_centrality.values()):
+        return True
+    # Drift tolerance: a corpus that has grown/shrunk by a bounded number of
+    # records since the cache was built still reuses the cached graph — the
+    # lagging records remain index-findable, so no rebuild is forced for small
+    # drift. Only an over-tolerance delta requires a full child-spawning rebuild.
+    if not _within_drift_tolerance(
+        payload_record_count, store.active_records_count()
+    ):
+        return True
+    return False
+
+
+def build_runtime_graph(store: MemoryStore):
+    # Common path: a warm cache that needs no rebuild reconstructs the graph
+    # without spawning any child — run it lock-free so warm recall never blocks
+    # on a peer's rebuild.
+    if not _runtime_graph_rebuild_needed(store):
+        return _build_runtime_graph_impl(store)
+
+    # Cache miss: single-flight the rebuild so concurrent callers don't each
+    # spawn a redundant child fleet on the same graph. Double-checked — a peer
+    # that held the lock may have rebuilt and saved a fresh cache while this
+    # caller waited, in which case the re-probe passes and the impl takes the
+    # light cache-hit branch, spawning no child of its own. Otherwise this caller
+    # is the single-flight winner and performs the one rebuild.
+    with _RUNTIME_GRAPH_REBUILD_LOCK:
+        return _build_runtime_graph_impl(store)
+
+
+def _build_runtime_graph_impl(store: MemoryStore):
     from iai_mcp.graph import MemoryGraph
     from iai_mcp.richclub import rich_club_nodes
     from iai_mcp import runtime_graph_cache
 
     graph = MemoryGraph()
 
+    cached = runtime_graph_cache.try_load(store)
     assignment = None
     rich_club = None
     cached_node_payload: dict[str, dict] | None = None
@@ -559,25 +673,61 @@ def _build_runtime_graph_impl(store: MemoryStore, cached):
     if cached is not None:
         assignment, rich_club, cached_node_payload, cached_max_degree = cached
 
-    records_tbl = store.db.open_table("records")
-    records_count = store.active_records_count()
-    use_cached_payload = (
+    records_count_for_shrink = store.active_records_count()
+    if (
         cached_node_payload is not None
-        and len(cached_node_payload) == records_count
-    )
-
-    if cached_node_payload is not None and len(cached_node_payload) > records_count:
+        and len(cached_node_payload) > records_count_for_shrink
+    ):
         # The cache holds MORE nodes than are live: records were tombstoned
-        # (dedup/erasure) since it was built, so the cached assignment/rich_club
-        # were computed over now-dead nodes -- drop them and recompute on the
-        # fresh live graph (rebuilt from the records table below, which already
-        # excludes tombstoned rows). Pure GROWTH (cache has FEWER nodes than live)
-        # must NOT drop them: the node set is still rebuilt fresh from the table
-        # (so new records are present and drift/parity stay correct), but
-        # detect_communities is not re-run, so a single insert is absorbed without
-        # an O(n^2) recompute -- the staleness-window contract.
+        # (dedup/erasure) since it was built, so the cached assignment / rich_club
+        # were computed over now-dead nodes. Drop them and recompute on the fresh
+        # live graph (rebuilt from the records table below, which already excludes
+        # tombstoned rows). Pure GROWTH (cache has FEWER nodes than live) is left
+        # to the drift-tolerance gate, which reuses the assignment so a single
+        # insert is absorbed without an O(n^2) recompute. Dropping the cached
+        # payload here also forces the streaming rebuild so no dead node survives
+        # via a verbatim payload reuse, and a stale rich_club can never leak a
+        # tombstoned node downstream.
         assignment = None
         rich_club = None
+        cached_node_payload = None
+
+    # The compact results (community assignment + centrality) survive the size
+    # cap even when the large node_payload is shed; at production-scale corpora
+    # the payload is always shed, so this is the only signal that the expensive
+    # betweenness was already computed. Decoupling it from node_payload presence
+    # is what keeps the betweenness recompute off the warm path.
+    cache_results = runtime_graph_cache.try_load_cache_results(store)
+    cached_centrality: dict | None = None
+    cached_payload_record_count = 0
+    if cache_results is not None:
+        cached_centrality, cached_payload_record_count = cache_results
+
+    records_count = store.active_records_count()
+    # The expensive results are fresh — a non-empty assignment plus a cached
+    # centrality map for a corpus within drift of the live count. When fresh, the
+    # graph is rebuilt cheaply (streaming the node_payload) and the cached
+    # centrality is applied directly: neither community detection nor the
+    # betweenness child fires. Records added since the cache was built are absent
+    # from the community graph until the next over-tolerance rebuild, but stay
+    # findable via the index recall path, so recall correctness holds.
+    cache_results_fresh = (
+        assignment is not None
+        and cached_centrality is not None
+        and len(cached_centrality) > 0
+        and _within_drift_tolerance(cached_payload_record_count, records_count)
+    )
+
+    # Fast path: the full node_payload is still present (small-corpus cache that
+    # was not shed) and within drift — reuse it verbatim, no re-streaming. When
+    # the payload was shed (large corpus) this is False and the graph is rebuilt
+    # by streaming below, but the cached centrality is still applied so the warm
+    # path stays betweenness-free.
+    use_cached_payload = (
+        cached_node_payload is not None
+        and len(cached_node_payload) > 0
+        and _within_drift_tolerance(len(cached_node_payload), records_count)
+    )
 
     if use_cached_payload:
         for nid, payload in cached_node_payload.items():
@@ -597,45 +747,61 @@ def _build_runtime_graph_impl(store: MemoryStore, cached):
             })
         node_payload_for_cache = cached_node_payload
     else:
-        df = records_tbl.to_pandas()
         node_payload_for_cache = {}
         decrypt_fail_events = 0
         decrypt_fail_unique: set[str] = set()
-        for _, row in df.iterrows():
+        # Stream the corpus column-by-column in bounded batches instead of
+        # materializing the whole records table into one DataFrame. Only the
+        # columns the graph needs are projected; the embedding blob is decoded
+        # to a float list by the streaming reader, matching the prior decode.
+        stream_cols = [
+            "id",
+            "embedding",
+            "community_id",
+            "embedding_pending",
+            "literal_surface",
+            "tier",
+            "centrality",
+            "pinned",
+            "tags_json",
+            "language",
+            # Projected so the streamed dict carries the tombstone marker for the
+            # in-loop defensive guard below (the primary filter is the SQL WHERE).
+            "tombstoned_at",
+        ]
+        # Exclude tombstoned (soft-deleted / deduped / erased) records from the
+        # runtime graph at the SQL layer: they must not pollute communities,
+        # centrality, rich_club or the sigma topology audit, and including them
+        # keeps the node count out of sync with active_records_count() (the
+        # cache-validity anchor), permanently invalidating the cache -> a full
+        # rebuild every wake. Matches active_records_count(): tombstoned_at IS NULL.
+        for row in store.iter_record_columns(
+            stream_cols, batch_size=1024, where="tombstoned_at IS NULL"
+        ):
             if int(row.get("embedding_pending") or 0) != 0:
                 continue
-            # Exclude tombstoned (soft-deleted / deduped / erased) records from the
-            # runtime graph: they must not pollute communities, centrality, rich_club
-            # or the sigma topology audit, and including them keeps the node count out
-            # of sync with store.active_records_count() (the cache-validity anchor at
-            # line ~552), permanently invalidating the cache -> a full rebuild every
-            # wake. Matches active_records_count(): tombstoned_at IS NULL.
-            #
-            # NULL is the LIVE case and pandas materialises it differently per
-            # dtype: None (object column), float('nan'), pd.NaT (a datetime64
-            # column -- the shape the reembed Arrow schema produces), or pd.NA
-            # (nullable extension dtypes). The old guard only caught float-NaN
-            # (`isinstance(float) and v != v`); a NaT/NA live value slipped past
-            # it, stringified to "NaT"/"<NA>", read truthy, and the LIVE record
-            # was wrongly dropped -- collapsing the whole graph to empty on a
-            # reembedded store. pd.isna() covers None/NaN/NaT/NA uniformly, so
-            # only a real timestamp string survives to mark a tombstone.
+            # Defensive in-loop guard mirroring the SQL filter: the batch reader
+            # yields a Python None for a NULL tombstoned_at, but a backend that
+            # surfaces the column via a datetime/NA representation could stringify
+            # a live value; only a real, non-empty timestamp string marks a
+            # tombstone. (pandas is imported lazily so the streaming path keeps no
+            # hard pandas dependency.)
             _tomb = row.get("tombstoned_at")
-            if _tomb is not None and not pd.isna(_tomb) and str(_tomb).strip():
-                continue
-            rid = UUID(row["id"])
-            _comm_raw = row["community_id"]
-            if _comm_raw is not None and not isinstance(_comm_raw, str):
+            if _tomb is not None:
                 try:
-                    import math as _math
-                    if _math.isnan(float(_comm_raw)):
-                        _comm_raw = None
-                except (TypeError, ValueError):
-                    _comm_raw = None
+                    import pandas as _pd
+                    _is_na = bool(_pd.isna(_tomb))
+                except Exception:  # noqa: BLE001 -- pandas absent / unhashable value
+                    _is_na = False
+                if not _is_na and str(_tomb).strip():
+                    continue
+            rid = UUID(row["id"])
+            _comm_raw = row.get("community_id")
             community_id = UUID(_comm_raw) if _comm_raw else None
+            _emb_raw = row.get("embedding")
             embedding = (
-                list(row["embedding"])
-                if row["embedding"] is not None
+                list(_emb_raw)
+                if _emb_raw is not None
                 else [0.0] * EMBED_DIM
             )
             literal_raw = row.get("literal_surface") or ""
@@ -706,9 +872,9 @@ def _build_runtime_graph_impl(store: MemoryStore, cached):
     edges_df = store.db.open_table("edges").to_pandas()
     for _, row in edges_df.iterrows():
         # Skip edges whose endpoints are not live nodes: graph.add_edge() does
-        # setdefault() on both endpoints, so an edge referencing a tombstoned record
-        # would re-create it as a payload-less node and undo the tombstone filter
-        # above (re-bloating the graph and the sigma audit).
+        # setdefault() on both endpoints, so an edge referencing a tombstoned
+        # record would re-create it as a payload-less node and undo the tombstone
+        # filter above (re-bloating the graph and the sigma audit).
         src_s, dst_s = row["src"], row["dst"]
         if not graph.has_node(src_s) or not graph.has_node(dst_s):
             continue
@@ -728,39 +894,143 @@ def _build_runtime_graph_impl(store: MemoryStore, cached):
         max_degree = cached_max_degree
     graph._max_degree = int(max_degree)
 
+    def _apply_centrality_map(centrality_map) -> None:
+        """Write a node->value centrality map into the graph and the cache
+        payload, identically to the in-parent path."""
+        for rid, cval in centrality_map.items():
+            nid_str = str(rid)
+            if nid_str in graph._node_payload:
+                graph.set_node_centrality(rid, float(cval))
+                if (
+                    node_payload_for_cache is not None
+                    and nid_str in node_payload_for_cache
+                ):
+                    node_payload_for_cache[nid_str]["centrality"] = float(cval)
+
+    # `child_centrality` carries the centrality map when the detection child
+    # computed it on the same graph build (cache-miss path) — avoiding both a
+    # second child spawn and the in-parent betweenness intermediate. The rich
+    # club is deferred until the centrality is resolved (child / cached / neutral)
+    # so it can rank from that map rather than triggering its own in-parent
+    # betweenness pass on the long-lived process.
+    child_centrality = None
+    recompute_rich_club = False
     if assignment is None:
-        assignment = detect_communities(graph, prior=None, prior_mode="seeded")
-        rich_club = rich_club_nodes(graph, percent=0.10)
-
-    needs_centrality = True
-    if use_cached_payload and cached_node_payload is not None:
-        any_nonzero = any(
-            float(p.get("centrality") or 0.0) != 0.0
-            for p in cached_node_payload.values()
+        assignment, child_centrality = _detect_communities_isolated(
+            store, graph, with_centrality=True
         )
-        needs_centrality = not any_nonzero
-    if needs_centrality:
-        try:
-            centrality_map = graph.centrality()
-            for rid, cval in centrality_map.items():
-                nid_str = str(rid)
-                if nid_str in graph._node_payload:
-                    graph.set_node_centrality(rid, float(cval))
-                    if (
-                        node_payload_for_cache is not None
-                        and nid_str in node_payload_for_cache
-                    ):
-                        node_payload_for_cache[nid_str]["centrality"] = (
-                            float(cval)
-                        )
-        except (OSError, ValueError, RuntimeError) as exc:
-            log.warning("centrality computation failed: %s", exc)
-            for nid in graph.iter_nodes():
-                key = str(nid)
-                if "centrality" not in graph._node_payload.get(key, {}):
-                    graph.set_node_centrality(nid, 0.0)
+        recompute_rich_club = True
 
-    if cached_node_payload is None or needs_centrality:
+    # Warm path: the expensive results (community partition + centrality) were
+    # already computed and survived the cache size cap. Apply the cached
+    # centrality to the freshly-streamed (or cache-reused) graph and skip the
+    # betweenness child entirely. Nodes absent from the cached map — the bounded
+    # drift delta — keep the centrality their row carried (or 0.0 by default),
+    # which is the same bounded staleness the community graph already tolerates.
+    # The centrality map this cycle resolved to (child / cached / neutral), in
+    # the same node->value shape `graph.centrality()` would return. The rich club
+    # ranks from it so the parent never runs a second exact betweenness pass.
+    resolved_centrality: dict = {}
+    if cache_results_fresh and cached_centrality is not None:
+        _apply_centrality_map(cached_centrality)
+        resolved_centrality = dict(cached_centrality)
+        needs_centrality = False
+    else:
+        needs_centrality = True
+        if use_cached_payload and cached_node_payload is not None:
+            any_nonzero = any(
+                float(p.get("centrality") or 0.0) != 0.0
+                for p in cached_node_payload.values()
+            )
+            needs_centrality = not any_nonzero
+            if not needs_centrality:
+                resolved_centrality = {
+                    UUID(nid): float(p.get("centrality") or 0.0)
+                    for nid, p in cached_node_payload.items()
+                }
+    # Set when the centrality for this cycle is a bounded degrade (last-good
+    # cached map, or a neutral all-zero map) rather than a freshly-computed
+    # result. A degraded result is never persisted under the current key — that
+    # would mask the retry and let a stale signal masquerade as fresh — so the
+    # prior good cache stays on disk and the next warm cycle recomputes.
+    centrality_degraded = False
+    if needs_centrality:
+        if child_centrality is not None:
+            # The detection child already produced centrality on this graph.
+            _apply_centrality_map(child_centrality)
+            resolved_centrality = dict(child_centrality)
+        else:
+            # Either the cache-hit path (no fresh detection) or the in-process
+            # detection fallback (child crashed). Compute centrality in a child
+            # so the betweenness intermediate stays out of the parent.
+            try:
+                centrality_map = runtime_graph_cache.compute_centrality_in_child(
+                    graph
+                )
+                _apply_centrality_map(centrality_map)
+                resolved_centrality = dict(centrality_map)
+            except (
+                runtime_graph_cache.WorkerCrashedError,
+                runtime_graph_cache.WorkerTimeoutError,
+                BrokenPipeError,
+                EOFError,
+                OSError,
+                RuntimeError,
+                ValueError,
+            ) as exc:
+                # Bounded degrade. The child centrality timed out or failed.
+                # Computing exact betweenness in this long-lived process is an
+                # unbounded O(V*E) compute that, at scale, spikes the resident
+                # set toward the watchdog cap, never completes, never caches, and
+                # is retried every cycle — the over-cap kill loop. So the warm
+                # path NEVER recomputes centrality in-parent here. It serves the
+                # last-good cached centrality when one survives on disk, else a
+                # neutral (zero) centrality for this cycle. Recall stays correct
+                # under either: seeds rank by 0.6*cos + 0.4*centrality, so a
+                # stale or neutral centrality term degrades to cosine-led seeds,
+                # never a crash or an empty recall.
+                last_good = runtime_graph_cache.load_last_good_centrality(store)
+                if last_good:
+                    log.warning(
+                        "centrality child failed; serving last-good cached "
+                        "centrality (%d nodes), will retry next cycle: %s",
+                        len(last_good),
+                        exc,
+                    )
+                    _apply_centrality_map(last_good)
+                    resolved_centrality = dict(last_good)
+                else:
+                    log.warning(
+                        "centrality child failed and no cached centrality is "
+                        "available; serving neutral centrality (cosine-led "
+                        "seeds), will retry next cycle: %s",
+                        exc,
+                    )
+                    resolved_centrality = {}
+                    for nid in graph.iter_nodes():
+                        graph.set_node_centrality(nid, 0.0)
+                        resolved_centrality[nid] = 0.0
+                        nid_str = str(nid)
+                        if (
+                            node_payload_for_cache is not None
+                            and nid_str in node_payload_for_cache
+                        ):
+                            node_payload_for_cache[nid_str]["centrality"] = 0.0
+                centrality_degraded = True
+
+    # Rich club from the resolved centrality, never a fresh in-parent betweenness
+    # pass. Only the cache-miss path (where detection ran in the child) needs it
+    # recomputed; the cache-hit path already carries the cached rich club.
+    if recompute_rich_club:
+        rich_club = rich_club_nodes(
+            graph, percent=0.10, centrality=resolved_centrality
+        )
+
+    # A bounded degrade is never persisted: leaving the prior good cache intact
+    # both preserves the last-good signal for the next cycle's degrade and forces
+    # the retry (the freshly-recomputed result will overwrite it once a child
+    # succeeds).
+    if not centrality_degraded and (cached_node_payload is None or needs_centrality):
         runtime_graph_cache.save(
             store, assignment, rich_club,
             node_payload=node_payload_for_cache,

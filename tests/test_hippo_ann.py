@@ -243,6 +243,9 @@ class _StubHnsw:
     def knn_query(self, *_args, **_kwargs):  # noqa: ANN002, ANN003
         return self._labels, self._distances
 
+    def get_current_count(self) -> int:
+        return int(self._labels.shape[1]) if self._labels.size else 0
+
 
 def test_knn_query_distance_clamped_on_negative(tmp_path: Path) -> None:
     rng = np.random.default_rng(99)
@@ -269,4 +272,90 @@ def test_knn_query_distance_clamped_on_negative(tmp_path: Path) -> None:
     assert df["_distance"].iloc[0] == 0.0, (
         "distance clamp must map negative BLAS-rounding values to 0.0; "
         f"got {df['_distance'].iloc[0]!r}"
+    )
+
+
+class _CountingHnsw:
+    """Stub that records knn_query call count so tests can prove the
+    short-circuit path skipped the underlying hnswlib call."""
+
+    def __init__(self, current_count: int) -> None:
+        self._count = current_count
+        self.knn_calls = 0
+
+    def get_current_count(self) -> int:
+        return self._count
+
+    def knn_query(self, *_args, **_kwargs):  # noqa: ANN002, ANN003
+        self.knn_calls += 1
+        raise AssertionError(
+            "knn_query must not be called when k_clamped == 0"
+        )
+
+
+class _RaisingHnsw:
+    """Stub that simulates the rare label-map/index skew where hnswlib
+    raises RuntimeError despite our k clamp."""
+
+    def __init__(self, current_count: int) -> None:
+        self._count = current_count
+
+    def get_current_count(self) -> int:
+        return self._count
+
+    def knn_query(self, *_args, **_kwargs):  # noqa: ANN002, ANN003
+        raise RuntimeError(
+            "Cannot return the results in a contiguous 2D array. "
+            "Probably ef or M is too small"
+        )
+
+
+def test_ann_to_pandas_short_circuits_when_k_clamped_zero(tmp_path: Path) -> None:
+    """When the live hnswlib count is zero (boot transient: label_map has
+    entries but the index does not yet), _ann_to_pandas must short-circuit
+    to an empty DataFrame WITHOUT calling knn_query."""
+    rng = np.random.default_rng(101)
+    vec = _rng_unit_vec(rng)
+    rid = str(uuid4())
+
+    with HippoDB(tmp_path) as db:
+        tbl = db.open_table("records")
+        tbl.add([_record_row(rid=rid, embedding=vec)])
+
+        original_hnsw = db._hnsw
+        stub = _CountingHnsw(current_count=0)
+        db._hnsw = stub
+        try:
+            df = tbl.search(vec).limit(1).to_pandas()
+        finally:
+            db._hnsw = original_hnsw
+
+    assert len(df) == 0, f"expected empty DataFrame, got {len(df)} rows"
+    assert stub.knn_calls == 0, (
+        f"knn_query was called {stub.knn_calls} times; "
+        "short-circuit on k_clamped == 0 must skip the underlying call"
+    )
+
+
+def test_ann_to_pandas_returns_empty_on_runtime_error(tmp_path: Path) -> None:
+    """When hnswlib raises RuntimeError (the boot-transient skew the PR
+    hardens against), _ann_to_pandas must return an empty DataFrame
+    instead of bubbling the exception up to the pattern-separation gate."""
+    rng = np.random.default_rng(102)
+    vec = _rng_unit_vec(rng)
+    rid = str(uuid4())
+
+    with HippoDB(tmp_path) as db:
+        tbl = db.open_table("records")
+        tbl.add([_record_row(rid=rid, embedding=vec)])
+
+        original_hnsw = db._hnsw
+        db._hnsw = _RaisingHnsw(current_count=1)
+        try:
+            df = tbl.search(vec).limit(1).to_pandas()
+        finally:
+            db._hnsw = original_hnsw
+
+    assert len(df) == 0, (
+        f"expected empty DataFrame on RuntimeError; got {len(df)} rows"
     )

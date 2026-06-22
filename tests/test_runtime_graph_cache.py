@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+import inspect
 import json
+import sys
 from pathlib import Path
 from unittest import mock
-from uuid import UUID, uuid4
+from uuid import uuid4
 
+import numpy as np
 import pytest
 
 from iai_mcp import retrieve, runtime_graph_cache
 from iai_mcp.community import CommunityAssignment
 from iai_mcp.store import MemoryStore
+from iai_mcp.types import EMBED_DIM
 
+sys.path.insert(0, str(Path(__file__).parent))
+from test_store import _make  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _isolated_keyring(monkeypatch: pytest.MonkeyPatch):
@@ -26,13 +32,11 @@ def _isolated_keyring(monkeypatch: pytest.MonkeyPatch):
     )
     yield fake
 
-
 @pytest.fixture
 def store(tmp_path: Path) -> MemoryStore:
-    s = MemoryStore(path=tmp_path / "hippo")
+    s = MemoryStore(path=tmp_path / "lancedb")
     s.root = tmp_path
     return s
-
 
 def _read_decrypted_cache(store: MemoryStore, path: Path) -> dict:
     raw_text = path.read_text(encoding="utf-8")
@@ -46,7 +50,6 @@ def _read_decrypted_cache(store: MemoryStore, path: Path) -> dict:
     )
     return json.loads(plaintext)
 
-
 def _write_encrypted_cache(store: MemoryStore, path: Path, data: dict) -> None:
     from iai_mcp.crypto import encrypt_field
     plaintext = json.dumps(data)
@@ -56,7 +59,6 @@ def _write_encrypted_cache(store: MemoryStore, path: Path, data: dict) -> None:
         runtime_graph_cache._CACHE_AAD,
     )
     path.write_text(ciphertext, encoding="ascii")
-
 
 def _make_assignment(n_communities: int = 2) -> CommunityAssignment:
     comms = [uuid4() for _ in range(n_communities)]
@@ -71,7 +73,6 @@ def _make_assignment(n_communities: int = 2) -> CommunityAssignment:
         top_communities=comms,
         mid_regions={c: nodes[i * 3:(i + 1) * 3] for i, c in enumerate(comms)},
     )
-
 
 def test_save_creates_json_file(store):
     assignment = _make_assignment()
@@ -90,7 +91,6 @@ def test_save_creates_json_file(store):
     assert "rich_club" in data
     assert "key" in data
 
-
 def test_try_load_round_trip_on_unchanged_store(store):
     assignment = _make_assignment()
     rich_club = [uuid4() for _ in range(3)]
@@ -104,7 +104,6 @@ def test_try_load_round_trip_on_unchanged_store(store):
     assert set(loaded_assignment.top_communities) == set(assignment.top_communities)
     assert set(loaded_rich_club) == set(rich_club)
 
-
 def test_key_mismatch_invalidates_cache(store):
     runtime_graph_cache.save(store, _make_assignment(), [uuid4()])
     path = runtime_graph_cache._cache_path(store)
@@ -116,7 +115,6 @@ def test_key_mismatch_invalidates_cache(store):
 
     assert runtime_graph_cache.try_load(store) is None
 
-
 def test_cache_version_mismatch_triggers_rebuild(store):
     runtime_graph_cache.save(store, _make_assignment(), [uuid4()])
     path = runtime_graph_cache._cache_path(store)
@@ -126,13 +124,11 @@ def test_cache_version_mismatch_triggers_rebuild(store):
 
     assert runtime_graph_cache.try_load(store) is None
 
-
 def test_corrupt_json_returns_none(store):
     path = runtime_graph_cache._cache_path(store)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("{not valid json at all")
     assert runtime_graph_cache.try_load(store) is None
-
 
 def test_aes_gcm_tag_failure_returns_none_not_raises(store):
     from cryptography.exceptions import InvalidTag
@@ -157,27 +153,25 @@ def test_aes_gcm_tag_failure_returns_none_not_raises(store):
     assert runtime_graph_cache._load_and_decrypt_cache(store) is None
     assert runtime_graph_cache.try_load(store) is None
 
-
 def test_absent_cache_returns_none(store):
     path = runtime_graph_cache._cache_path(store)
     assert not path.exists()
     assert runtime_graph_cache.try_load(store) is None
 
-
 def test_build_runtime_graph_uses_cache_on_second_call(store):
-    with mock.patch(
-        "iai_mcp.community.detect_communities",
-        wraps=__import__("iai_mcp.community", fromlist=["detect_communities"]).detect_communities,
+    with mock.patch.object(
+        runtime_graph_cache,
+        "compute_assignment_in_child",
+        wraps=runtime_graph_cache.compute_assignment_in_child,
     ) as detect_spy:
         retrieve.build_runtime_graph(store)
         assert detect_spy.call_count == 1
 
-    with mock.patch(
-        "iai_mcp.community.detect_communities",
+    with mock.patch.object(
+        runtime_graph_cache, "compute_assignment_in_child"
     ) as detect_spy:
         retrieve.build_runtime_graph(store)
         assert detect_spy.call_count == 0
-
 
 def test_build_runtime_graph_invalidates_on_record_added(store, tmp_path):
     from datetime import datetime, timezone
@@ -207,24 +201,27 @@ def test_build_runtime_graph_invalidates_on_record_added(store, tmp_path):
     assert runtime_graph_cache._cache_path(store).exists()
 
     store.insert(_make_rec(seed=base + 100))
-    with mock.patch("iai_mcp.community.detect_communities") as detect_spy:
+    with mock.patch.object(
+        runtime_graph_cache, "compute_assignment_in_child"
+    ) as detect_spy:
         retrieve.build_runtime_graph(store)
         assert detect_spy.call_count == 0, (
-            "detect_communities fired on a single-record insert within the "
+            "community detection fired on a single-record insert within the "
             "staleness window — the windowed key should absorb single writes."
         )
 
     for i in range(window):
         store.insert(_make_rec(seed=base + 200 + i))
-    with mock.patch(
-        "iai_mcp.community.detect_communities",
-        wraps=__import__("iai_mcp.community", fromlist=["detect_communities"]).detect_communities,
+    with mock.patch.object(
+        runtime_graph_cache,
+        "compute_assignment_in_child",
+        wraps=runtime_graph_cache.compute_assignment_in_child,
     ) as detect_spy:
         retrieve.build_runtime_graph(store)
         assert detect_spy.call_count == 1, (
-            "detect_communities should have fired after a window-crossing insert."
+            "community detection should have fired after a window-crossing "
+            "insert."
         )
-
 
 def test_save_is_atomic_leaves_old_file_on_error(store, monkeypatch):
     original_assignment = _make_assignment()
@@ -242,7 +239,6 @@ def test_save_is_atomic_leaves_old_file_on_error(store, monkeypatch):
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     assert not tmp_path.exists()
 
-
 def test_invalidate_removes_cache_file(store):
     runtime_graph_cache.save(store, _make_assignment(), [uuid4()])
     path = runtime_graph_cache._cache_path(store)
@@ -253,14 +249,12 @@ def test_invalidate_removes_cache_file(store):
 
     runtime_graph_cache.invalidate(store)
 
-
 def test_embed_dim_change_invalidates(store):
     runtime_graph_cache.save(store, _make_assignment(), [uuid4()])
     assert runtime_graph_cache.try_load(store) is not None
 
     store._embed_dim = 1024
     assert runtime_graph_cache.try_load(store) is None
-
 
 def test_save_drops_oversize_community_centroids(store):
     big_centroids = {uuid4(): [0.123456] * 1024 for _ in range(2000)}
@@ -310,7 +304,6 @@ def test_save_drops_oversize_community_centroids(store):
     assert len(data["assignment"]["top_communities"]) == 5
     assert len(data["rich_club"]) == len(rich_club)
 
-
 def test_save_small_payload_survives_unchanged(store):
     assignment = _make_assignment(n_communities=2)
     rich_club = [uuid4() for _ in range(3)]
@@ -342,7 +335,6 @@ def test_save_small_payload_survives_unchanged(store):
     assert data["assignment"]["mid_regions"] != {}
     assert len(data["assignment"]["mid_regions"]) == 2
 
-
 def test_save_writes_ciphertext_no_plaintext_surface(store):
     canary = "PLAINTEXT_CANARY_4d7f_07_9_W3"
     rid = uuid4()
@@ -370,7 +362,6 @@ def test_save_writes_ciphertext_no_plaintext_surface(store):
         f"expected v3 ciphertext envelope; got prefix {raw_bytes[:32]!r}"
     )
 
-
 def test_save_then_try_load_preserves_surface_byte_for_byte(store):
     rid = uuid4()
     surface = "user сказал важное — please remember this 重要"
@@ -397,7 +388,6 @@ def test_save_then_try_load_preserves_surface_byte_for_byte(store):
     assert payload[str(rid)]["tags"] == ["t1", "t2"]
     assert payload[str(rid)]["language"] == "ru"
     assert max_deg == 7
-
 
 def test_v2_plaintext_lazy_migrates_to_v3(store):
     path = runtime_graph_cache._cache_path(store)
@@ -439,4 +429,147 @@ def test_v2_plaintext_lazy_migrates_to_v3(store):
     )
     assert b"legacy_plain_canary" not in raw_after, (
         "post-migration on-disk bytes must not contain the legacy plaintext"
+    )
+
+
+# --- coldness-aware rebuild gate -----------------------------------------
+
+@pytest.fixture(autouse=True)
+def _hermetic_home(monkeypatch, tmp_path):
+    fake_home = tmp_path / "home"
+    fake_home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path / "store"))
+    monkeypatch.setenv("IAI_DAEMON_SOCKET_PATH", str(tmp_path / "daemon.sock"))
+    yield
+
+
+@pytest.fixture
+def _reset_rgc_state():
+    from iai_mcp import runtime_graph_cache as rgc
+
+    with rgc._GEN_LOCK:
+        rgc._current_generation = 0
+    rgc.reset_dirty_counter()
+    rgc._persistent_graph = None
+    yield
+
+
+def _norm_vec(seed: int) -> list[float]:
+    rng = np.random.default_rng(seed)
+    v = rng.random(EMBED_DIM).astype(np.float32)
+    return (v / np.linalg.norm(v)).tolist()
+
+
+def _thick_store(tmp_path: Path):
+    from iai_mcp.store import MemoryStore as _MS, flush_record_buffer
+
+    s = _MS(str(tmp_path / "thick_store"))
+    for i in range(15):
+        s.insert(_make(text=f"User record {i}", vec=_norm_vec(i + 100)))
+    flush_record_buffer(s)
+    return s
+
+
+def test_rebuild_warms_cold_cache_even_when_clean(tmp_path, _reset_rgc_state):
+    rgc = runtime_graph_cache
+    store = _thick_store(tmp_path)
+
+    rgc._rebuild_and_save_rgc(store, force=True)
+    rgc.invalidate(store)
+
+    assert rgc.load_recall_structural(store)[3] in ("cold_degrade", "last_good")
+    assert rgc.get_dirty_counter() == 0
+
+    result = rgc._rebuild_and_save_rgc(store)
+    assert result["rebuilt"] is True
+    assert rgc.load_recall_structural(store)[3] in ("overlay", "normal")
+
+
+def test_rebuild_skips_warm_and_below_dirty_threshold(tmp_path, _reset_rgc_state):
+    rgc = runtime_graph_cache
+    store = _thick_store(tmp_path)
+
+    rgc._rebuild_and_save_rgc(store)
+    assert rgc.load_recall_structural(store)[3] in ("overlay", "normal")
+
+    gen_before = rgc.get_current_generation()
+    dirty_before = rgc.get_dirty_counter()
+
+    result = rgc._rebuild_and_save_rgc(store)
+    assert result["rebuilt"] is False
+    assert result.get("skipped")
+    assert rgc.get_current_generation() == gen_before
+    assert rgc.get_dirty_counter() == dirty_before
+
+
+def test_rebuild_fires_above_dirty_threshold(tmp_path, _reset_rgc_state):
+    rgc = runtime_graph_cache
+    store = _thick_store(tmp_path)
+
+    rgc._rebuild_and_save_rgc(store)
+    assert rgc.load_recall_structural(store)[3] in ("overlay", "normal")
+
+    for _ in range(rgc._FUSE_DIRTY_THRESHOLD + 1):
+        rgc.increment_dirty_counter()
+    assert rgc.get_dirty_counter() > rgc._FUSE_DIRTY_THRESHOLD
+
+    result = rgc._rebuild_and_save_rgc(store)
+    assert result["rebuilt"] is True
+    assert rgc.get_dirty_counter() == 0
+
+
+def test_rebuild_force_overrides_warm_clean_gate(tmp_path, _reset_rgc_state):
+    rgc = runtime_graph_cache
+    store = _thick_store(tmp_path)
+
+    rgc._rebuild_and_save_rgc(store)
+    assert rgc.load_recall_structural(store)[3] in ("overlay", "normal")
+    assert rgc.get_dirty_counter() <= rgc._FUSE_DIRTY_THRESHOLD
+
+    result = rgc._rebuild_and_save_rgc(store, force=True)
+    assert result["rebuilt"] is True
+
+
+def _structural_snapshot(store) -> tuple:
+    rgc = runtime_graph_cache
+    assignment, rich_club, _max_degree, src = rgc.load_recall_structural(store)
+    ntc = getattr(assignment, "node_to_community", {})
+    # Community UUIDs are minted per detection; compare the partition (grouping)
+    # plus the rich-club node set — the observable recall surface.
+    groups: dict = {}
+    for nid, cid in ntc.items():
+        groups.setdefault(cid, set()).add(str(nid))
+    partition = frozenset(frozenset(m) for m in groups.values())
+    return partition, frozenset(str(x) for x in rich_club), src
+
+
+def test_reused_instance_recall_parity(tmp_path, _reset_rgc_state):
+    rgc = runtime_graph_cache
+    store = _thick_store(tmp_path)
+
+    # Reused-instance path: build through the persistent holder, snapshot recall.
+    rgc._rebuild_and_save_rgc(store, force=True)
+    reused_snapshot = _structural_snapshot(store)
+
+    # Fresh path: drop the persistent instance so the next rebuild allocates a
+    # new MemoryGraph, then snapshot recall over the same store + generation line.
+    rgc._persistent_graph = None
+    rgc._rebuild_and_save_rgc(store, force=True)
+    fresh_snapshot = _structural_snapshot(store)
+
+    assert reused_snapshot[0] == fresh_snapshot[0]  # partition identical
+    assert reused_snapshot[1] == fresh_snapshot[1]  # rich-club identical
+    assert reused_snapshot[2] in ("overlay", "normal")
+
+
+def test_hippea_cascade_not_on_fragmentation_path():
+    import iai_mcp.daemon._watchdog as _watchdog
+
+    source = inspect.getsource(_watchdog)
+    assert "_rebuild_and_save_rgc" not in source, (
+        "the hippea cascade must not route through the fragmenting refresh builder"
+    )
+    assert "build_runtime_graph" in source, (
+        "the hippea cascade must use the interval-gated recall builder"
     )

@@ -201,6 +201,10 @@ def test_failed_attempt_retry_policy_still_holds(iai_home, monkeypatch):
 
     import iai_mcp.capture as capture_mod
 
+    # The two-phase backlog drain inserts via `_drain_write_pending` (pending row
+    # first, embed later); the live path uses `capture_turn`. Force both to report
+    # an insert failure so the attempt/permanent-failure policy is exercised.
+    monkeypatch.setattr(capture_mod, "_drain_write_pending", _stub)
     monkeypatch.setattr(capture_mod, "capture_turn", _stub)
 
     store = _open_isolated_store()

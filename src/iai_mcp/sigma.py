@@ -250,7 +250,16 @@ def classify_regime(N: int, sigma: Optional[float]) -> str:
     return "healthy"
 
 
-def compute_topology_snapshot(graph) -> dict:
+def compute_topology_snapshot(graph, *, assignment=None) -> dict:
+    """Topology metrics for `graph`.
+
+    Computes community detection in-process by default. The request-synchronous
+    callers (the `topology` health surface, used by `iai status` and the
+    topology tool, plus operator analytics) rely on this near-instant path and
+    pass no `assignment`. Background callers that have already computed the
+    community assignment off the interactive path may pass it in to skip the
+    in-process recompute.
+    """
     from iai_mcp.graph import MemoryGraph
 
     if not isinstance(graph, MemoryGraph):
@@ -307,9 +316,10 @@ def compute_topology_snapshot(graph) -> dict:
         from iai_mcp.richclub import rich_club_nodes
 
         try:
-            assignment = detect_communities(
-                graph, prior=None, prior_mode="seeded"
-            )
+            if assignment is None:
+                assignment = detect_communities(
+                    graph, prior=None, prior_mode="seeded"
+                )
             community_count = int(len(assignment.community_centroids))
         except (RuntimeError, ValueError, TypeError):
             community_count = 0
@@ -354,12 +364,29 @@ def compute_and_emit(store: "MemoryStore") -> dict:
     from iai_mcp import retrieve
 
     graph_bundle = retrieve.build_runtime_graph(store)
+    assignment = None
     if isinstance(graph_bundle, tuple):
         graph = graph_bundle[0]
+        if len(graph_bundle) > 1:
+            assignment = graph_bundle[1]
     else:
         graph = graph_bundle
 
-    snap = compute_topology_snapshot(graph)
+    # This is the background topology pass (hourly audit + offline sleep step),
+    # off the interactive path. The graph build already detects communities in a
+    # short-lived child, so the daemon does not accumulate JIT compilation
+    # arenas; reuse that assignment. Only when the build did not surface one
+    # (degraded bundle) is detection run in a child here, with the same spawn
+    # failure degrading to the in-process recompute inside the snapshot.
+    if assignment is None:
+        try:
+            from iai_mcp.runtime_graph_cache import compute_assignment_in_child
+
+            assignment = compute_assignment_in_child(graph, prior_mode="seeded")
+        except (RuntimeError, ValueError, TypeError, OSError, AttributeError):
+            assignment = None
+
+    snap = compute_topology_snapshot(graph, assignment=assignment)
     regime = snap.get("regime", "insufficient_data")
 
     base_data = {

@@ -6,6 +6,7 @@ import faulthandler
 import json
 import logging
 import os
+import platform
 import signal
 import sys
 import time
@@ -63,16 +64,17 @@ WATCHDOG_PROBE_TIMEOUT_SEC: float = float(
 WATCHDOG_FAILURE_DEBOUNCE_N: int = int(
     os.environ.get("IAI_MCP_WATCHDOG_FAILURE_DEBOUNCE_N", "3"),
 )
-# Watchdog ceiling (2.5 GiB). Measured 2026-06-14: warm resident set ~1.72 GiB
-# (Rust embedder + corpus + caches), and the per-consolidation-cycle RSS slope is
-# now flat — the double-buffered ANN index and the spawn-context graph-rebuild
-# worker removed the per-cycle allocation creep, so the daemon plateaus at the
-# warm set instead of climbing. A heavy nightly consolidation adds a bounded
-# transient on top of the plateau; the cap clears that peak with margin while
-# still catching a runaway leak (the daemon no longer drifts toward the ceiling).
+# Watchdog ceiling (4.0 GiB). The cap sits above the warm steady-state footprint
+# — the episodic corpus, the SQLite + hnsw index, the warm-on-WAKE graph cache,
+# and the deferred-capture drain loop — with headroom for VACUUM page cache and
+# the parallel drain, so it does not fire on legitimate steady state. The hnswlib
+# index rebuild runs in a spawn-context child worker, keeping the OPTIMIZE_HIPPO
+# transient out of the daemon address space. The cap still catches a runaway
+# leak: 4 GiB is well above the warm-plus-transient peak and well below host
+# memory pressure.
 # Operator-overridable via the env var.
 WATCHDOG_RSS_HARD_CAP_BYTES: int = int(
-    os.environ.get("IAI_MCP_WATCHDOG_RSS_HARD_CAP_BYTES", "2684354560"),
+    os.environ.get("IAI_MCP_WATCHDOG_RSS_HARD_CAP_BYTES", "4294967296"),
 )
 WATCHDOG_RSS_CONTRIBUTOR_FLOOR_BYTES: int = int(
     os.environ.get("IAI_MCP_WATCHDOG_RSS_CONTRIBUTOR_FLOOR_BYTES", "1610612736"),
@@ -91,6 +93,16 @@ WATCHDOG_SLEEP_STALE_THRESHOLD_SEC: float = float(
 )
 WATCHDOG_CRISIS_MODE_EXPIRY_SEC: int = int(
     os.environ.get("IAI_MCP_CRISIS_MODE_EXPIRY_SEC", "259200"),
+)
+
+# Resident-set breadcrumb cadence: every tick during SLEEP (heavy consolidation),
+# every ~10th tick otherwise. A continuous, jq-able RSS + region-count sample so
+# plateau drift is visible long before a pressure kill.
+_RSS_BREADCRUMB_INTERVAL_NORMAL_SEC: float = float(
+    os.environ.get("IAI_MCP_RSS_BREADCRUMB_INTERVAL_NORMAL_SEC", "300.0"),
+)
+_RSS_BREADCRUMB_INTERVAL_SLEEP_SEC: float = float(
+    os.environ.get("IAI_MCP_RSS_BREADCRUMB_INTERVAL_SLEEP_SEC", "30.0"),
 )
 
 _WATCHDOG_LOG_FD: int | None = None
@@ -112,6 +124,8 @@ BOOT_LOCK_RETRY_BACKOFF_SEC: float = float(
 )
 
 _last_overload_event_at: float = 0.0
+
+_last_rss_breadcrumb_at: float = 0.0
 
 _last_sleep_stale_started_at: str = ""
 
@@ -333,7 +347,20 @@ def _evaluate_watchdog(
     big = rss is not None and rss > contributor_floor
     in_grace = uptime_sec < cold_start_grace_sec
 
-    mem_trigger = (not in_grace) and (leak or (pressure and big))
+    # Hard-cap fast path: a single sample over the resident-set hard cap is a
+    # runaway, not a transient. The cap sits well above the legitimate warm
+    # plateau and is the last line before the host reaches memory-pressure
+    # territory, so it must kill on the FIRST over-cap sample — bypassing the
+    # cold-start grace (a runaway during the post-boot drain is exactly the
+    # scenario the cap exists to catch), the failure debounce (there is no
+    # blip to ride out once resident memory is genuinely over the ceiling),
+    # and the recovery circuit breaker (a respawn loop is safer than jetsam).
+    # The grace + debounce + breaker still govern the transient paths below
+    # (a probe wedge, or system-wide pressure where another process owns RAM).
+    if leak:
+        return ("kill", "leak")
+
+    mem_trigger = (not in_grace) and (pressure and big)
     wedge_trigger = not probe_ok
 
     if not (mem_trigger or wedge_trigger):
@@ -347,8 +374,6 @@ def _evaluate_watchdog(
 
     if wedge_trigger:
         return ("kill", "wedge")
-    if leak:
-        return ("kill", "leak")
     return ("kill", "memory")
 
 
@@ -399,6 +424,90 @@ def _own_rss_bytes() -> int | None:
         return None
 
 
+# macOS proc_pid_rusage flavor for the rusage_info_v2 record. The struct grew
+# across OS versions (v0..v6); v2 is the lowest flavor that already exposes
+# ri_phys_footprint, the "charged" memory the kernel grades against jetsam.
+_RUSAGE_INFO_V2: int = 2
+
+
+def _phys_footprint_bytes() -> int | None:
+    """Return this process's macOS phys_footprint in bytes, or None.
+
+    phys_footprint is the kernel's "charged" memory — the same number the
+    memory-pressure / jetsam machinery grades a process against, and the value
+    Activity Monitor shows as "Memory". Unlike resident_size it EXCLUDES
+    reusable (MADV_FREE) pages an allocator has freed but not yet returned to
+    the kernel, so it does not over-report a heap that has shed work.
+
+    Read via libSystem's proc_pid_rusage(getpid(), RUSAGE_INFO_V2, &info).
+    macOS-only: on any other platform (no such syscall) it returns None so the
+    caller falls back to resident_size. Fail-soft — any ctypes/symbol/struct
+    error returns None and never raises, so the watchdog can never crash here.
+    """
+    if platform.system() != "Darwin":
+        return None
+    try:
+        import ctypes
+
+        class _RUsageInfoV2(ctypes.Structure):
+            # Field layout mirrors <sys/resource.h> struct rusage_info_v2 exactly;
+            # the kernel writes the whole record, so the buffer must be full size.
+            _fields_ = [
+                ("ri_uuid", ctypes.c_uint8 * 16),
+                ("ri_user_time", ctypes.c_uint64),
+                ("ri_system_time", ctypes.c_uint64),
+                ("ri_pkg_idle_wkups", ctypes.c_uint64),
+                ("ri_interrupt_wkups", ctypes.c_uint64),
+                ("ri_pageins", ctypes.c_uint64),
+                ("ri_wired_size", ctypes.c_uint64),
+                ("ri_resident_size", ctypes.c_uint64),
+                ("ri_phys_footprint", ctypes.c_uint64),
+                ("ri_proc_start_abstime", ctypes.c_uint64),
+                ("ri_proc_exit_abstime", ctypes.c_uint64),
+                ("ri_child_user_time", ctypes.c_uint64),
+                ("ri_child_system_time", ctypes.c_uint64),
+                ("ri_child_pkg_idle_wkups", ctypes.c_uint64),
+                ("ri_child_interrupt_wkups", ctypes.c_uint64),
+                ("ri_child_pageins", ctypes.c_uint64),
+                ("ri_child_elapsed_abstime", ctypes.c_uint64),
+                ("ri_diskio_bytesread", ctypes.c_uint64),
+                ("ri_diskio_byteswritten", ctypes.c_uint64),
+            ]
+
+        libsystem = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+        info = _RUsageInfoV2()
+        rc = libsystem.proc_pid_rusage(
+            os.getpid(),
+            _RUSAGE_INFO_V2,
+            ctypes.byref(info),
+        )
+        if rc != 0:
+            return None
+        footprint = int(info.ri_phys_footprint)
+        if footprint <= 0:
+            return None
+        return footprint
+    except Exception:  # noqa: BLE001 -- unreadable footprint must never crash/kill
+        return None
+
+
+def _own_charged_bytes() -> tuple[int | None, int | None, int | None]:
+    """Return (charged, rss, phys): decision number, resident set, footprint.
+
+    ``charged`` is what the watchdog grades against the hard cap. On macOS it is
+    phys_footprint (the jetsam metric) when readable, otherwise resident_size;
+    on every other platform it is resident_size. ``rss`` is always the resident
+    set (or None) and ``phys`` is the raw phys_footprint (or None when
+    unreadable / non-macOS) — both kept so the breadcrumb can log RSS and
+    phys_footprint side by side, exposing the phantom delta (rss - phys): the
+    reusable pages an allocator has freed but not returned to the kernel.
+    """
+    rss = _own_rss_bytes()
+    phys = _phys_footprint_bytes()
+    charged = phys if phys is not None else rss
+    return charged, rss, phys
+
+
 def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -408,6 +517,71 @@ def _write_breadcrumb(line: bytes) -> None:
     if fd is None:
         raise OSError("watchdog breadcrumb fd not open")
     os.write(fd, line)
+
+
+def _maybe_emit_rss_breadcrumb(
+    rss: int | None,
+    pressure_level: int | None,
+    fsm_state: str,
+    *,
+    now_mono: float,
+    phys_footprint: int | None = None,
+) -> None:
+    """Append a throttled resident-set breadcrumb to the watchdog log.
+
+    Cadence: every tick (30 s) during SLEEP, every ~10th tick (300 s) otherwise.
+    The breadcrumb is a JSON line carrying the RSS, the macOS phys_footprint (the
+    charged-memory / jetsam metric), the vmmap region count, the VM_ALLOCATE
+    virtual size, the FSM state and the current pressure level. Logging BOTH RSS
+    and phys_footprint makes the phantom delta (rss - phys_footprint) — the
+    reusable pages an allocator has freed but not returned to the kernel —
+    directly visible in the watchdog log. It coexists with the watchdog's
+    space-delimited kill-lines: a JSON line's second whitespace token is never a
+    kill kind, so recovery-timestamp parsing skips it. Never raises — a
+    breadcrumb failure must not crash the tick.
+    """
+    interval = (
+        _RSS_BREADCRUMB_INTERVAL_SLEEP_SEC
+        if fsm_state == LifecycleState.SLEEP.value
+        else _RSS_BREADCRUMB_INTERVAL_NORMAL_SEC
+    )
+    last = getattr(_pkg(), "_last_rss_breadcrumb_at", 0.0)
+    if (now_mono - last) < interval:
+        return
+
+    region_count: int | None = None
+    vm_allocate_kib: int | None = None
+    try:
+        from iai_mcp.lilli.cycle.sleep_pipeline._rss_probe import (
+            _vmmap_summary_counts,
+        )
+
+        region_count, vm_allocate_kib = _vmmap_summary_counts()
+    except Exception:  # noqa: BLE001 -- region sampling is best-effort
+        pass
+
+    line = (
+        json.dumps(
+            {
+                "kind": "rss_breadcrumb",
+                "ts": _iso_now(),
+                "fsm_state": fsm_state,
+                "rss_kib": (rss // 1024) if rss is not None else None,
+                "phys_footprint_kib": (
+                    (phys_footprint // 1024) if phys_footprint is not None else None
+                ),
+                "vmmap_region_count": region_count,
+                "vm_allocate_kib": vm_allocate_kib,
+                "pressure_level": pressure_level,
+            }
+        )
+        + "\n"
+    )
+    try:
+        _write_breadcrumb(line.encode("utf-8"))
+        setattr(_pkg(), "_last_rss_breadcrumb_at", now_mono)
+    except OSError:
+        pass
 
 
 def _self_kill(reason: str, kind: str) -> None:
@@ -661,6 +835,7 @@ def _watchdog_tick(
     probe_fn=None,
     pressure_fn=None,
     rss_fn=None,
+    phys_fn=None,
     blackbox_fn=None,
 ) -> tuple[float, int]:
     # late import so the package attribute is re-fetched and a monkeypatch stays visible
@@ -668,7 +843,6 @@ def _watchdog_tick(
 
     probe_fn = probe_fn or _probe_status_roundtrip
     pressure_fn = pressure_fn or _vm_pressure_level
-    rss_fn = rss_fn or _own_rss_bytes
 
     try:
         probe_ok = asyncio.run(
@@ -678,11 +852,41 @@ def _watchdog_tick(
         probe_ok = False
 
     pressure_level = pressure_fn()
-    rss = rss_fn()
 
-    leak = rss is not None and rss > WATCHDOG_RSS_HARD_CAP_BYTES
+    # The watchdog grades the hard cap against "charged" memory: macOS
+    # phys_footprint (the jetsam metric, excludes reusable MADV_FREE pages) when
+    # readable, otherwise resident_size. resident_size is logged ALONGSIDE so the
+    # phantom delta (rss - phys_footprint) stays visible. When a caller injects a
+    # resident-set source (the test/fallback seam) it acts as the resident set,
+    # and the charged number falls back to it unless a phys source is also
+    # injected — mirroring the non-macOS / unreadable-footprint path.
+    if rss_fn is not None:
+        rss = rss_fn()
+        phys = phys_fn() if phys_fn is not None else None
+        charged = phys if phys is not None else rss
+    elif phys_fn is not None:
+        rss = _own_rss_bytes()
+        phys = phys_fn()
+        charged = phys if phys is not None else rss
+    else:
+        charged, rss, phys = _own_charged_bytes()
+
+    # Continuous resident-set breadcrumb (informational, no kill). Reads the FSM
+    # state from the same source as the staleness check (lifecycle current_state).
+    try:
+        from iai_mcp.lifecycle_state import load_state as _load_lc
+
+        _lc = _load_lc()
+        _fsm = str(_lc.get("current_state", "?"))
+        _maybe_emit_rss_breadcrumb(
+            rss, pressure_level, _fsm, now_mono=time.monotonic(), phys_footprint=phys
+        )
+    except Exception:  # noqa: BLE001 -- the breadcrumb must never crash the watchdog
+        pass
+
+    leak = charged is not None and charged > WATCHDOG_RSS_HARD_CAP_BYTES
     pressure = pressure_level is not None and pressure_level >= 2
-    big = rss is not None and rss > WATCHDOG_RSS_CONTRIBUTOR_FLOOR_BYTES
+    big = charged is not None and charged > WATCHDOG_RSS_CONTRIBUTOR_FLOOR_BYTES
     _started = _pkg()._daemon_started_monotonic
     uptime_sec = (
         time.monotonic() - _started
@@ -690,7 +894,12 @@ def _watchdog_tick(
         else 1e9
     )
     in_grace = uptime_sec < WATCHDOG_COLD_START_GRACE_SEC
-    mem_trigger = (not in_grace) and (leak or (pressure and big))
+    # A hard-cap leak counts as failing regardless of grace — the kill decision
+    # in _evaluate_watchdog fast-paths it past grace + debounce, so the tick's
+    # own failing/consecutive accounting must agree (otherwise a leak during
+    # grace would look "healthy" to the breadcrumb/forensic bookkeeping while
+    # the daemon is being killed).
+    mem_trigger = leak or ((not in_grace) and pressure and big)
     tick_failing = (not probe_ok) or mem_trigger
     consecutive_failures = consecutive_failures + 1 if tick_failing else 0
 
@@ -722,7 +931,7 @@ def _watchdog_tick(
 
     action, reason = _evaluate_watchdog(
         probe_ok,
-        rss,
+        charged,
         pressure_level,
         uptime_sec,
         consecutive_failures,

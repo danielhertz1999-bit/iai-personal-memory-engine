@@ -4,7 +4,6 @@ import os
 import time
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -14,7 +13,7 @@ def iai_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("PYTHON_KEYRING_BACKEND", "keyring.backends.fail.Keyring")
     monkeypatch.setenv("IAI_MCP_CRYPTO_PASSPHRASE", "test-retry-passphrase")
-    monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path / ".iai-mcp" / "hippo"))
+    monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path / ".iai-mcp" / "lancedb"))
     import keyring.core
 
     keyring.core._keyring_backend = None
@@ -51,6 +50,11 @@ def _force_insert_failed(monkeypatch) -> None:
 
     import iai_mcp.capture as capture_mod
 
+    # The deferred-capture drain inserts via `_drain_write_pending` (two-phase:
+    # insert the pending row first, embed later); the live path still uses
+    # `capture_turn`. Force both to report an insert failure so the retry /
+    # permanent-failure attempt accounting is exercised regardless of path.
+    monkeypatch.setattr(capture_mod, "_drain_write_pending", _stub)
     monkeypatch.setattr(capture_mod, "capture_turn", _stub)
 
 

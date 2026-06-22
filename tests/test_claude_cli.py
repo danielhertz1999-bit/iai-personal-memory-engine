@@ -14,6 +14,10 @@ def isolated_state(tmp_path, monkeypatch):
     from iai_mcp import daemon_state
     state_path = tmp_path / ".daemon-state.json"
     monkeypatch.setattr(daemon_state, "STATE_PATH", state_path)
+    # Pin to the code default so the `--bare` assertions are deterministic
+    # regardless of the runner's shell (a developer may export
+    # IAI_MCP_CLAUDE_BARE=0 as a local Keychain workaround).
+    monkeypatch.delenv("IAI_MCP_CLAUDE_BARE", raising=False)
     return state_path
 
 

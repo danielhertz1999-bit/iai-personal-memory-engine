@@ -31,11 +31,25 @@ def step_crisis_recluster(
     from iai_mcp.store import RECORDS_TABLE
     tbl = self._store.db.open_table(RECORDS_TABLE)
 
+    # Size communities with a single grouped count instead of materializing the
+    # full record corpus. Only community_id is needed here, and the aggregate
+    # is O(#communities). Run under the table connection lock, matching the
+    # count-rows discipline (every execute/fetch pair guarded).
+    sizing_sql = (
+        "SELECT community_id, COUNT(*) AS n FROM records "
+        "WHERE community_id IS NOT NULL "
+        "GROUP BY community_id ORDER BY n ASC, community_id ASC"
+    )
     try:
-        df = tbl.search().to_pandas()
+        lock = tbl._db._conn_lock if tbl._db is not None else None
+        if lock is not None:
+            with lock:
+                size_rows = tbl._conn.execute(sizing_sql).fetchall()
+        else:
+            size_rows = tbl._conn.execute(sizing_sql).fetchall()
     except (OSError, ValueError, RuntimeError, StoreError) as exc:
-        logger.debug("crisis_recluster records query failed: %s", exc)
-        df = None
+        logger.debug("crisis_recluster sizing query failed: %s", exc)
+        size_rows = None
 
     communities_dropped = 0
     records_reassigned = 0
@@ -43,72 +57,124 @@ def step_crisis_recluster(
     modularity = 0.0
     backend = "flat"
 
-    if df is not None and not df.empty and "community_id" in df.columns:
-        non_null = df[df["community_id"].notna()]
-        if not non_null.empty:
-            sizes = (
-                non_null.groupby("community_id").size().sort_values()
-            )
-            total_communities = len(sizes)
-            n_to_drop = int(total_communities * drop_quartile)
-            drop_ids = list(sizes.index[:n_to_drop])
-            communities_dropped = n_to_drop
+    if size_rows:
+        total_communities = len(size_rows)
+        n_to_drop = int(total_communities * drop_quartile)
+        drop_ids = [row[0] for row in size_rows[:n_to_drop]]
+        communities_dropped = n_to_drop
 
-            if drop_ids and not dry_run:
-                for cid in drop_ids:
+        if drop_ids and not dry_run:
+            for cid in drop_ids:
+                try:
+                    tbl.update(
+                        where=f"community_id = '{str(cid)}'",
+                        values={"community_id": None},
+                    )
+                except (OSError, ValueError, RuntimeError, StoreError):
+                    pass
+
+        if not dry_run:
+            tbl = self._store.db.open_table(RECORDS_TABLE)
+
+            try:
+                from iai_mcp.runtime_graph_cache import (
+                    compute_assignment_in_child,
+                )
+                from iai_mcp.graph import MemoryGraph
+                from iai_mcp.store import EDGES_TABLE
+                import uuid as _uuid
+
+                # Recluster on the LIVE graph only: stream the corpus
+                # (RSS-bounded), exclude tombstoned and embedding-pending records
+                # at the SQL layer, and carry community_id. Reclustering over ALL
+                # records incl. tombstoned collapses the partition (it once
+                # reassigned ~9700 records into a single community on the real
+                # store), so the crisis hooks must compute on exactly recall's
+                # live node set -- matching active_records_count().
+                g = MemoryGraph()
+                live_node_ids: set[str] = set()
+                for row in self._store.iter_record_columns(
+                    ["id", "embedding", "community_id", "embedding_pending"],
+                    batch_size=1024,
+                    where="tombstoned_at IS NULL",
+                ):
+                    try:
+                        if int(row.get("embedding_pending") or 0) != 0:
+                            continue
+                        rid = _uuid.UUID(str(row["id"]))
+                        cid_raw = row.get("community_id")
+                        cid_uuid = None
+                        if cid_raw is not None and str(cid_raw).strip():
+                            try:
+                                cid_uuid = _uuid.UUID(str(cid_raw))
+                            except (ValueError, TypeError):
+                                cid_uuid = None
+                        emb = row.get("embedding")
+                        emb_list = list(emb) if emb is not None else []
+                        g.add_node(rid, cid_uuid, emb_list)
+                        live_node_ids.add(str(rid))
+                    except (ValueError, TypeError, AttributeError):
+                        continue
+
+                try:
+                    edges_q = (
+                        self._store.db.open_table(EDGES_TABLE)
+                        .search()
+                        .select(["src", "dst", "weight"])
+                    )
+                    for batch in edges_q.to_batches(batch_size=2048):
+                        for e in batch.to_pylist():
+                            try:
+                                src_s, dst_s = str(e["src"]), str(e["dst"])
+                                # Both endpoints must already be live nodes;
+                                # add_edge() setdefault would otherwise resurrect
+                                # a tombstoned endpoint as a phantom node and
+                                # re-bloat the partition.
+                                if (
+                                    src_s not in live_node_ids
+                                    or dst_s not in live_node_ids
+                                ):
+                                    continue
+                                g.add_edge(
+                                    _uuid.UUID(src_s), _uuid.UUID(dst_s),
+                                    weight=float(
+                                        e.get("weight", 1.0) or 1.0
+                                    ),
+                                )
+                            except (ValueError, TypeError, KeyError):
+                                continue
+                except (OSError, ValueError, RuntimeError, StoreError) as exc:
+                    logger.debug("crisis_recluster edges query failed: %s", exc)
+
+                _assignment = compute_assignment_in_child(
+                    g, prior_mode="cold"
+                )
+                modularity = float(_assignment.modularity)
+                backend = _assignment.backend
+                _uuid_to_int: dict[_uuid.UUID, int] = {}
+                _next_int = 0
+                partition: dict[_uuid.UUID, int] = {}
+                for _node_uuid, _comm_uuid in _assignment.node_to_community.items():
+                    if _comm_uuid not in _uuid_to_int:
+                        _uuid_to_int[_comm_uuid] = _next_int
+                        _next_int += 1
+                    partition[_node_uuid] = _uuid_to_int[_comm_uuid]
+                new_uuids: dict[int, str] = {}
+                for node, lbl in partition.items():
+                    if lbl not in new_uuids:
+                        new_uuids[lbl] = str(_uuid.uuid4())
+                    new_cid = new_uuids[lbl]
                     try:
                         tbl.update(
-                            where=f"community_id = '{str(cid)}'",
-                            values={"community_id": None},
+                            where=f"id = '{str(node)}'",
+                            values={"community_id": new_cid},
                         )
+                        records_reassigned += 1
                     except (OSError, ValueError, RuntimeError, StoreError):
-                        pass
-
-            if not dry_run:
-                tbl = self._store.db.open_table(RECORDS_TABLE)
-                try:
-                    from iai_mcp.community import detect_communities
-                    from iai_mcp.lilli.cycle.sleep_pipeline._live_graph import (
-                        build_live_graph,
-                    )
-                    import uuid as _uuid
-
-                    # Recluster on the LIVE graph only (tombstone-filtered,
-                    # live-only edges) -- mirrors retrieve.py 53f04f9. Previously
-                    # this rebuilt communities over ALL records incl. 3000+
-                    # tombstoned, collapsing the partition (it reassigned ~9700
-                    # records into a single community on the real store).
-                    g = build_live_graph(self._store)
-
-                    _assignment = detect_communities(
-                        g, prior=None, prior_mode="cold"
-                    )
-                    modularity = float(_assignment.modularity)
-                    backend = _assignment.backend
-                    _uuid_to_int: dict[_uuid.UUID, int] = {}
-                    _next_int = 0
-                    partition: dict[_uuid.UUID, int] = {}
-                    for _node_uuid, _comm_uuid in _assignment.node_to_community.items():
-                        if _comm_uuid not in _uuid_to_int:
-                            _uuid_to_int[_comm_uuid] = _next_int
-                            _next_int += 1
-                        partition[_node_uuid] = _uuid_to_int[_comm_uuid]
-                    new_uuids: dict[int, str] = {}
-                    for node, lbl in partition.items():
-                        if lbl not in new_uuids:
-                            new_uuids[lbl] = str(_uuid.uuid4())
-                        new_cid = new_uuids[lbl]
-                        try:
-                            tbl.update(
-                                where=f"id = '{str(node)}'",
-                                values={"community_id": new_cid},
-                            )
-                            records_reassigned += 1
-                        except (OSError, ValueError, RuntimeError, StoreError):
-                            continue
-                    new_community_count = len(new_uuids)
-                except Exception as exc:  # noqa: BLE001 -- Leiden/graph rebuild
-                    logger.warning("crisis_recluster Leiden rebuild failed: %s", exc, exc_info=True)
+                        continue
+                new_community_count = len(new_uuids)
+            except Exception as exc:  # noqa: BLE001 -- Leiden/graph rebuild
+                logger.warning("crisis_recluster Leiden rebuild failed: %s", exc, exc_info=True)
 
     if not dry_run:
         cleared = self._clear_crisis_mode_via_s2_or_fallback(

@@ -33,11 +33,11 @@ CACHE_VERSION: str = "62-02-v5"
 # edges//WINDOW; try_load requires an exact key match. With WINDOW=10 a normal
 # day of capture (+~150 records, +~1300 edges) crossed ~130 buckets, so the
 # on-disk graph cache MISSED on essentially every WAKE and the full community
-# detection (mosaic) was recomputed each time — the WAKE CPU storm. Edges churn
+# detection (mosaic) was recomputed each time -- the WAKE CPU storm. Edges churn
 # fastest, so they are the binding term. WINDOW=250 keeps the cache valid across
 # a normal day so most WAKEs are cheap cache HITs; the independent age/dirty fuse
 # in consult_overlay (25h / dirty>50) remains the real freshness backstop, and
-# build_runtime_graph's single-flight gate makes the rare genuine miss harmless.
+# the cache-miss single-flight rebuild gate keeps the rare genuine miss bounded.
 _STALENESS_WINDOW: int = 250
 LEGACY_CACHE_VERSION_PLAINTEXT: str = "06-02-v1"
 
@@ -114,6 +114,9 @@ _WORKER_TIMEOUT_MAX_S: float = 3600.0
 _first_spawn_seen: bool = False
 
 
+_STREAM_CHUNK: int = 2000
+
+
 class WorkerCrashedError(RuntimeError):
     """Child worker exited with a non-zero exit code."""
 
@@ -132,6 +135,16 @@ def _worker_entry_indirection(conn) -> None:
     _worker_entry(conn)
 
 
+def _community_only_worker_indirection(conn) -> None:
+    """Picklable spawn target for the community-only worker.
+
+    Imports the worker module only inside the child after spawn, so the parent
+    never loads it (and never loads numba via that path).
+    """
+    from iai_mcp.runtime_graph_cache_worker import _community_only_worker_entry
+    _community_only_worker_entry(conn)
+
+
 def _resolve_timeout(active_records_count: int = 0) -> float:
     """Size-scaled watchdog timeout.
 
@@ -142,6 +155,23 @@ def _resolve_timeout(active_records_count: int = 0) -> float:
     base = _WORKER_TIMEOUT_FIRST_BASE_S if not _first_spawn_seen else _WORKER_TIMEOUT_BASE_S
     ramp = _WORKER_TIMEOUT_PER_1K_NODES_S * (max(0, active_records_count) / 1000.0)
     return min(base + ramp, _WORKER_TIMEOUT_MAX_S)
+
+
+def _graph_node_count(graph) -> int:
+    """Node count for any graph object, independent of its concrete type.
+
+    The runtime graph exposes `node_count()`; other graph objects that may reach
+    the timeout sizing (degraded bundles built outside the runtime path) expose
+    `number_of_nodes()` or only a length-able node view. Probe in that order so
+    the timeout sizing never hard-depends on a single graph implementation.
+    """
+    node_count = getattr(graph, "node_count", None)
+    if callable(node_count):
+        return int(node_count())
+    number_of_nodes = getattr(graph, "number_of_nodes", None)
+    if callable(number_of_nodes):
+        return int(number_of_nodes())
+    return int(len(graph.nodes()))
 
 
 def _terminate_worker(process) -> None:
@@ -238,6 +268,270 @@ def _drain_worker_result(parent_conn, timeout: float) -> dict:
         "rich_club": rich_club,
         "max_degree": max_degree,
     }
+
+
+def _drain_community_only_result(parent_conn, timeout: float) -> dict:
+    """Drain the community-only result envelope into a parent-side dict.
+
+    A trimmed `_drain_worker_result`: it handles the community/assign/backend/
+    top/mid envelopes and drops the `rich_club` / `max_degree` branches, which
+    the community-only worker never sends. It also accepts the optional
+    `("centrality", ...)` chunks the worker streams when centrality was
+    requested, reassembling them into a `node_uuid -> float` map. Raises
+    WorkerTimeoutError on a hung worker; any `error` envelope becomes a
+    RuntimeError.
+    """
+    import time
+    from uuid import UUID
+
+    import numpy as np
+
+    deadline = time.perf_counter() + timeout
+    community_table_uuids: list = []
+    community_centroids: dict = {}
+    assignments: dict = {}
+    backend: str | None = None
+    top_communities: list = []
+    mid_regions: dict = {}
+    centrality: dict = {}
+    done = False
+
+    while not done:
+        remaining = deadline - time.perf_counter()
+        if remaining <= 0:
+            raise WorkerTimeoutError(
+                f"worker did not complete within {timeout:.1f}s"
+            )
+        if not parent_conn.poll(min(remaining, 1.0)):
+            continue
+        envelope = parent_conn.recv()
+        kind, payload = envelope
+        if kind == "community_table":
+            for comm_bytes, centroid_bytes in payload:
+                cu = UUID(bytes=comm_bytes)
+                community_table_uuids.append(cu)
+                if centroid_bytes is None:
+                    community_centroids[cu] = []
+                else:
+                    community_centroids[cu] = np.frombuffer(
+                        centroid_bytes, dtype=np.float32
+                    ).tolist()
+        elif kind == "assign":
+            for node_bytes, comm_idx in payload:
+                assignments[UUID(bytes=node_bytes)] = int(comm_idx)
+        elif kind == "assign_end":
+            continue
+        elif kind == "backend":
+            backend = str(payload)
+        elif kind == "top_communities":
+            top_communities = [UUID(bytes=b) for b in payload]
+        elif kind == "mid_regions":
+            for comm_bytes, member_bytes_list in payload:
+                mid_regions[UUID(bytes=comm_bytes)] = [
+                    UUID(bytes=mb) for mb in member_bytes_list
+                ]
+        elif kind == "centrality":
+            for node_bytes, value in payload:
+                centrality[UUID(bytes=node_bytes)] = float(value)
+        elif kind == "done":
+            done = True
+        elif kind == "error":
+            raise RuntimeError(f"worker reported error: {payload!r}")
+        else:
+            raise RuntimeError(f"worker emitted unknown envelope kind: {kind!r}")
+
+    node_to_community: dict = {}
+    for node_uuid, idx in assignments.items():
+        node_to_community[node_uuid] = community_table_uuids[idx]
+
+    return {
+        "node_to_community": node_to_community,
+        "community_centroids": community_centroids,
+        "backend": backend if backend is not None else "flat",
+        "top_communities": top_communities,
+        "mid_regions": mid_regions,
+        "centrality": centrality,
+    }
+
+
+def _stream_graph_to_child(parent_conn, graph) -> None:
+    """Ship the in-parent graph (nodes + edges) to the child over `parent_conn`.
+
+    Only plaintext `(uuid, embedding_blob)` node tuples and `(src, dst, weight)`
+    edge tuples cross the Pipe — no storage handle and no encryption key. The
+    sort is defensive normalization for a reproducible envelope; both the
+    community kernel and the CSR build re-canonicalize order internally.
+    """
+    import numpy as np
+
+    node_chunk: list = []
+    for uid in sorted(graph.iter_nodes(), key=lambda u: u.bytes):
+        emb = graph.get_embedding(uid) or []
+        node_chunk.append(
+            (str(uid), np.asarray(emb, dtype=np.float32).tobytes())
+        )
+        if len(node_chunk) >= _STREAM_CHUNK:
+            parent_conn.send(("nodes", node_chunk))
+            node_chunk = []
+    if node_chunk:
+        parent_conn.send(("nodes", node_chunk))
+    parent_conn.send(("nodes_end", None))
+
+    edge_chunk: list = []
+    for src, dst, weight in sorted(
+        graph.iter_edges_with_weight(),
+        key=lambda e: (e[0].bytes, e[1].bytes),
+    ):
+        edge_chunk.append((str(src), str(dst), float(weight)))
+        if len(edge_chunk) >= _STREAM_CHUNK:
+            parent_conn.send(("edges", edge_chunk))
+            edge_chunk = []
+    if edge_chunk:
+        parent_conn.send(("edges", edge_chunk))
+    parent_conn.send(("edges_end", None))
+
+
+def compute_assignment_in_child(
+    graph,
+    *,
+    prior_mode: str = "seeded",
+    timeout_s: float | None = None,
+    with_centrality: bool = False,
+):
+    """Run community detection on `graph` in a spawn-context child process.
+
+    The parent serializes the exact in-parent graph it already holds (node and
+    edge tuples) and ships it to the child; the child rebuilds the graph and
+    runs `detect_communities`. The returned partition (which nodes share a
+    community) is identical to the in-process call; community UUIDs may differ
+    (the flat fallback mints fresh ones), which is why callers compare
+    partitions, not raw UUIDs.
+
+    When `with_centrality` is True the same child also computes the full
+    betweenness centrality on the graph it just built and returns it alongside
+    the assignment as `(assignment, centrality_map)` — folding both heavy
+    computations into ONE child graph-build so the parent retains neither the
+    detection arenas nor the betweenness intermediate. When False the function
+    returns just the assignment (the historical contract).
+
+    The child reclaims its numba JIT arenas on exit, so the long-lived parent
+    never accumulates them. Only plaintext `(uuid, embedding_blob)` node tuples
+    and `(src, dst, weight)` edge tuples cross the Pipe — no storage handle and
+    no encryption key.
+    """
+    import multiprocessing
+
+    from iai_mcp.community import CommunityAssignment
+
+    global _first_spawn_seen  # noqa: PLW0603
+
+    if timeout_s is not None:
+        timeout = timeout_s
+    else:
+        timeout = _resolve_timeout(_graph_node_count(graph))
+
+    ctx = multiprocessing.get_context("spawn")
+    parent_conn, child_conn = ctx.Pipe(duplex=True)
+    process = ctx.Process(
+        target=_community_only_worker_indirection,
+        args=(child_conn,),
+        daemon=True,
+    )
+    process.start()
+    child_conn.close()
+
+    try:
+        parent_conn.send((
+            "config",
+            {"prior_mode": prior_mode, "with_centrality": bool(with_centrality)},
+        ))
+        _stream_graph_to_child(parent_conn, graph)
+
+        result = _drain_community_only_result(parent_conn, timeout=timeout)
+
+        process.join(timeout=5.0)
+        if process.exitcode != 0:
+            raise WorkerCrashedError(
+                f"worker exited with code {process.exitcode}"
+            )
+
+        _first_spawn_seen = True
+
+        assignment = CommunityAssignment(
+            node_to_community=result["node_to_community"],
+            community_centroids=result["community_centroids"],
+            modularity=0.0,
+            backend=result["backend"],
+            top_communities=result["top_communities"],
+            mid_regions=result["mid_regions"],
+            lineage_report=None,
+        )
+        if with_centrality:
+            return assignment, result.get("centrality", {})
+        return assignment
+    finally:
+        try:
+            parent_conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+        _terminate_worker(process)
+
+
+def compute_centrality_in_child(
+    graph,
+    *,
+    timeout_s: float | None = None,
+) -> dict:
+    """Compute full betweenness centrality on `graph` in a spawn-context child.
+
+    Used by the cache-hit path that already holds a community assignment but
+    still needs the centrality recomputed — running it in the child keeps the
+    betweenness intermediate out of the long-lived parent. The child skips
+    community detection entirely (`centrality_only`) and streams back only the
+    `node_uuid -> float` centrality map.
+
+    Same AES fence as `compute_assignment_in_child`: only `(uuid, embedding)`
+    node tuples and `(src, dst, weight)` edges cross the Pipe.
+    """
+    import multiprocessing
+
+    global _first_spawn_seen  # noqa: PLW0603
+
+    if timeout_s is not None:
+        timeout = timeout_s
+    else:
+        timeout = _resolve_timeout(_graph_node_count(graph))
+
+    ctx = multiprocessing.get_context("spawn")
+    parent_conn, child_conn = ctx.Pipe(duplex=True)
+    process = ctx.Process(
+        target=_community_only_worker_indirection,
+        args=(child_conn,),
+        daemon=True,
+    )
+    process.start()
+    child_conn.close()
+
+    try:
+        parent_conn.send(("config", {"centrality_only": True}))
+        _stream_graph_to_child(parent_conn, graph)
+
+        result = _drain_community_only_result(parent_conn, timeout=timeout)
+
+        process.join(timeout=5.0)
+        if process.exitcode != 0:
+            raise WorkerCrashedError(
+                f"worker exited with code {process.exitcode}"
+            )
+
+        _first_spawn_seen = True
+        return result.get("centrality", {})
+    finally:
+        try:
+            parent_conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+        _terminate_worker(process)
 
 
 MAX_CACHE_BYTES: int = 10 * 1024 * 1024
@@ -509,6 +803,9 @@ _MID_REGION_BYTES_PER_RECORD: int = 1280
 
 _RICH_CLUB_BYTES_PER_ENTRY: int = 38
 
+# 36-char UUID key + JSON float value + ", " separators and quotes — overshoot.
+_CENTRALITY_BYTES_PER_ENTRY: int = 70
+
 _BASE_SCAFFOLD_BYTES: int = 4096
 
 
@@ -520,6 +817,14 @@ def _estimate_serialised_bytes(data: dict) -> int:
         total += len(np_block) * (
             _NODE_PAYLOAD_BYTES_PER_RECORD + _JSON_DICT_ENTRY_OVERHEAD + 38
         )
+
+    # Compact centrality map: a 36-char UUID key + a JSON float value (~24 chars
+    # worst case) + structural punctuation. Overshoot at ~70 bytes/entry so the
+    # cap accounting stays honest now that this map survives the node_payload
+    # shedding.
+    centrality_block = data.get("centrality") or {}
+    if isinstance(centrality_block, dict):
+        total += len(centrality_block) * (_CENTRALITY_BYTES_PER_ENTRY)
 
     assignment_block = data.get("assignment") or {}
     if isinstance(assignment_block, dict):
@@ -681,6 +986,52 @@ def _load_and_decrypt_cache(store: Any) -> "dict | None":
     return data
 
 
+def try_load_cache_results(store: Any) -> "tuple[dict[UUID, float], int] | None":
+    """Load the compact, expensive-to-recompute cache results.
+
+    Returns `(centrality_map, payload_record_count)` where `centrality_map` is a
+    `{node_id: centrality}` dict keyed by UUID and `payload_record_count` is the
+    corpus size the cache was built at. These two compact fields survive the
+    size-cap shedding that drops the large `node_payload`, so the warm read path
+    can reuse the cached betweenness centrality (skipping the O(V*E) recompute)
+    even when the full payload was shed.
+
+    Returns None when the cache is absent, fails the same key/version gate as
+    `try_load`, or predates this format (an old cache without the compact fields
+    — one rebuild then writes the new format). The returned centrality map may
+    be empty when the cache was built from an empty node_payload; callers treat
+    an empty map as "no cached centrality" and rebuild.
+    """
+    data = _load_and_decrypt_cache(store)
+    if data is None:
+        return None
+    if data.get("cache_version") != CACHE_VERSION:
+        return None
+    saved_key = tuple(data.get("key", []))
+    current_key = _cache_key(store)
+    if saved_key != current_key:
+        return None
+
+    centrality_raw = data.get("centrality")
+    if not isinstance(centrality_raw, dict):
+        # Predates the compact-results format — force one rebuild that writes it.
+        return None
+    payload_record_count_raw = data.get("payload_record_count")
+    if not isinstance(payload_record_count_raw, int):
+        return None
+
+    try:
+        centrality_map: dict[UUID, float] = {
+            UUID(str(node_id)): float(value)
+            for node_id, value in centrality_raw.items()
+        }
+    except (TypeError, ValueError) as exc:
+        logger.debug("runtime_graph_cache centrality decode failed: %s", exc)
+        return None
+
+    return centrality_map, int(payload_record_count_raw)
+
+
 def load_last_good_structural(store: Any) -> "tuple | None":
     data = _load_and_decrypt_cache(store)
     if data is None:
@@ -704,6 +1055,54 @@ def load_last_good_structural(store: Any) -> "tuple | None":
         logger.debug("runtime_graph_cache last_good decode failed: %s", exc)
         return None
     return assignment, rich_club
+
+
+def load_last_good_centrality(store: Any) -> "dict[UUID, float] | None":
+    """Load the last-good centrality map gated on parity alone, not the full key.
+
+    `try_load_cache_results` gates on the full `_cache_key`, which folds in a
+    windowed record/edge count — so a corpus that has drifted past the staleness
+    window returns None even when a perfectly usable centrality map is on disk.
+    The bounded warm-path degrade needs the most recent centrality regardless of
+    that count drift: a stale-but-real centrality signal is safer than a fresh
+    one that never completes. This loader gates only on the schema/embed_dim/
+    cache_version parity (the same fence `load_last_good_structural` uses), so a
+    child centrality timeout can reuse the prior cycle's result instead of
+    recomputing exact betweenness in the long-lived parent.
+
+    Returns the `{node_id: centrality}` map, or None when the cache is absent,
+    fails the parity gate, predates the compact-centrality format, or carries an
+    empty map.
+    """
+    data = _load_and_decrypt_cache(store)
+    if data is None:
+        return None
+    if data.get("cache_version") != CACHE_VERSION:
+        return None
+    saved_key = tuple(data.get("key", []))
+    if len(saved_key) < 5:
+        return None
+    current_parity = _parity_components(store)
+    if saved_key[2] != current_parity[0]:
+        return None
+    if saved_key[3] != current_parity[1]:
+        return None
+    if saved_key[4] != current_parity[2]:
+        return None
+    centrality_raw = data.get("centrality")
+    if not isinstance(centrality_raw, dict) or not centrality_raw:
+        return None
+    try:
+        centrality_map: dict[UUID, float] = {
+            UUID(str(node_id)): float(value)
+            for node_id, value in centrality_raw.items()
+        }
+    except (TypeError, ValueError) as exc:
+        logger.debug(
+            "runtime_graph_cache last_good centrality decode failed: %s", exc
+        )
+        return None
+    return centrality_map
 
 
 def load_recall_structural(store: Any) -> "tuple":
@@ -800,6 +1199,15 @@ def save(
     path = _cache_path(store)
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     encoded_node_payload: dict[str, dict] | None = None
+    # The betweenness centrality is expensive to recompute (O(V*E) Brandes on
+    # the whole corpus) but tiny to store: one float per node. The node_payload
+    # that carries it is large (a 384-dim embedding + decrypted surface per node)
+    # and is cheap to rebuild by streaming the store, so it is the first thing
+    # shed when the cache exceeds its size cap. To keep the expensive centrality
+    # from being lost together with the large rebuildable payload, it is lifted
+    # into a compact top-level map that survives the shedding.
+    centrality_map: dict[str, float] = {}
+    payload_record_count = 0
     if node_payload:
         encoded_node_payload = {}
         for k, v in node_payload.items():
@@ -807,15 +1215,18 @@ def save(
                 continue
             raw_emb = v.get("embedding") or []
             raw_tags = v.get("tags") or []
+            node_centrality = float(v.get("centrality") or 0.0)
             encoded_node_payload[str(k)] = {
                 "embedding": [float(x) for x in raw_emb],
                 "surface": str(v.get("surface", "")),
-                "centrality": float(v.get("centrality") or 0.0),
+                "centrality": node_centrality,
                 "tier": str(v.get("tier", "episodic")),
                 "pinned": bool(v.get("pinned", False)),
                 "tags": [str(t) for t in raw_tags if t is not None],
                 "language": str(v.get("language", "en") or "en"),
             }
+            centrality_map[str(k)] = node_centrality
+        payload_record_count = len(encoded_node_payload)
 
     data = {
         "cache_version": CACHE_VERSION,
@@ -823,6 +1234,12 @@ def save(
         "assignment": _encode_assignment(assignment),
         "rich_club": _encode_rich_club(rich_club),
         "node_payload": encoded_node_payload or {},
+        # Compact, expensive-to-recompute results that must outlive the size-cap
+        # shedding of node_payload. The map is a flat {node_id: centrality}; the
+        # count records the corpus size the cache was built at so drift can be
+        # measured even after node_payload is dropped.
+        "centrality": centrality_map,
+        "payload_record_count": int(payload_record_count),
         "max_degree": int(max_degree or 0),
         "saved_at": datetime.now(timezone.utc).isoformat(),
         "generation": int(get_current_generation()),
@@ -831,6 +1248,10 @@ def save(
 
     estimated_bytes = _estimate_serialised_bytes(data)
     _maybe_emit_snapshot_near_limit(store, estimated_bytes)
+    # Shedding order: drop the large rebuildable payload first, then the
+    # assignment's centroids/mid_regions if still over cap. The compact
+    # `centrality` map and `payload_record_count` are NEVER shed — they are the
+    # results the warm read path reuses to skip the betweenness recompute.
     if estimated_bytes > MAX_CACHE_BYTES:
         data["node_payload"] = {}
     if _estimate_serialised_bytes(data) > MAX_CACHE_BYTES:
@@ -894,13 +1315,26 @@ def save_with_generation(
     return result
 
 
-def invalidate(store: Any) -> None:
-    path = _cache_path(store)
+def invalidate_at_root(root: Any) -> None:
+    """Delete the warm-graph snapshot under ``root`` so the next build re-streams
+    the full corpus.
+
+    Takes a store root path directly (not a store handle) so the storage layer
+    can invalidate the snapshot at the moment a row's embedding lands without
+    holding a store reference. Unlinking is key-free — the AES fence is untouched.
+    """
+    if root is None:
+        return
+    path = Path(root) / CACHE_FILENAME
     try:
         if path.exists():
             path.unlink()
     except OSError as exc:
         logger.debug("runtime_graph_cache invalidate failed: %s", exc)
+
+
+def invalidate(store: Any) -> None:
+    invalidate_at_root(getattr(store, "root", None) or Path.cwd())
 
 
 def _rebuild_and_save_rgc(store: Any, *, force: bool = False) -> dict:

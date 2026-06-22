@@ -355,9 +355,18 @@ def _persist_tier1_schemas(
 
 
 def _process_cluster_summaries(store: MemoryStore) -> int:
+    from itertools import islice
+
+    from iai_mcp.lilli.cycle.sleep_pipeline import MAX_PAIRS_PER_CLUSTER
+
     clusters = _build_hebbian_clusters(store)
     records_by_id = {r.id: r for r in store.all_records()}
     summaries_created = 0
+    # Accumulate every cluster's intra-cluster pairs and potentiate them in ONE
+    # boost_edges call after the loop. Issuing a separate boost_edges per cluster
+    # re-materializes and re-scans the entire edges table once per cluster, which
+    # grinds for minutes at scale; a single batched write does it once.
+    all_pairs: list[tuple[UUID, UUID]] = []
     for cluster_ids in clusters:
         cluster_recs = [records_by_id[i] for i in cluster_ids if i in records_by_id]
         if len(cluster_recs) < CLUSTER_MIN_SIZE:
@@ -371,13 +380,21 @@ def _process_cluster_summaries(store: MemoryStore) -> int:
         _create_semantic_summary(store, cluster_recs, summary_text, dom_lang)
         summaries_created += 1
 
-        pairs_to_boost = list(combinations(cluster_ids, 2))
-        if pairs_to_boost:
-            store.boost_edges(
-                pairs_to_boost,
-                delta=HEAVY_LTP_DELTA,
-                edge_type="hebbian",
-            )
+        # Cap the per-cluster pairing. combinations over the nodes of a connected
+        # component is O(k^2); a single large community would otherwise expand
+        # into millions of pairs and exhaust memory. The cap bounds the work per
+        # cluster while still potentiating a representative sample of its edges.
+        cluster_pairs = list(
+            islice(combinations(cluster_ids, 2), MAX_PAIRS_PER_CLUSTER)
+        )
+        all_pairs.extend(cluster_pairs)
+
+    if all_pairs:
+        store.boost_edges(
+            all_pairs,
+            delta=HEAVY_LTP_DELTA,
+            edge_type="hebbian",
+        )
     return summaries_created
 
 

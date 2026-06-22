@@ -61,7 +61,14 @@ def test_concurrent_build_runtime_graph_runs_detect_once(tmp_path, monkeypatch):
     calls_lock = threading.Lock()
     start = threading.Barrier(n_threads)
 
-    orig_detect = community.detect_communities
+    # The expensive community detection runs in a short-lived spawn-context child
+    # (_detect_communities_isolated) to keep the JIT allocator arenas out of the
+    # long-lived process. The single-flight gate the WAKE CPU-storm fix added
+    # collapses a concurrent cache-miss burst to ONE detection regardless of
+    # where it runs, so the single-flight intent is asserted at that one
+    # isolated-detection unit (a module-attribute patch on the parent's
+    # detect_communities would never see the child's fresh re-import).
+    orig_detect = retrieve._detect_communities_isolated
 
     def slow_detect(*args, **kwargs):
         with calls_lock:
@@ -70,9 +77,7 @@ def test_concurrent_build_runtime_graph_runs_detect_once(tmp_path, monkeypatch):
         time.sleep(0.6)
         return orig_detect(*args, **kwargs)
 
-    # build_runtime_graph_impl does `from iai_mcp.community import detect_communities`
-    # at call time, so patching the module attribute is seen.
-    monkeypatch.setattr(community, "detect_communities", slow_detect)
+    monkeypatch.setattr(retrieve, "_detect_communities_isolated", slow_detect)
 
     results: list[tuple] = []
     results_lock = threading.Lock()
@@ -81,7 +86,10 @@ def test_concurrent_build_runtime_graph_runs_detect_once(tmp_path, monkeypatch):
         start.wait()
         graph, assignment, _rc = retrieve.build_runtime_graph(store)
         with results_lock:
-            results.append((assignment, id(graph)))
+            # Hold the graph object itself, not id(graph): a graph that fell out
+            # of scope could be GC'd and its address reused by the next caller's
+            # graph, making id() collide between genuinely-distinct objects.
+            results.append((assignment, graph))
 
     threads = [threading.Thread(target=worker) for _ in range(n_threads)]
     for t in threads:
@@ -93,14 +101,15 @@ def test_concurrent_build_runtime_graph_runs_detect_once(tmp_path, monkeypatch):
     # Single-flight: the expensive community detection ran exactly once even
     # though all four callers raced into a cache miss simultaneously.
     assert len(calls) == 1, (
-        f"expected detect_communities to run once (single-flight); "
+        f"expected community detection to run once (single-flight); "
         f"ran {len(calls)} times"
     )
     # Every caller got a valid assignment...
     assert all(a is not None for a, _ in results)
     # ...and its OWN MemoryGraph object — the mutable graph (which receives the
-    # store sync hook) must never be shared between concurrent callers.
-    graph_ids = {gid for _, gid in results}
+    # store sync hook) must never be shared between concurrent callers. Compare
+    # object identity directly (the graphs are kept alive in `results`).
+    graph_ids = {id(g) for _, g in results}
     assert len(graph_ids) == n_threads, (
         f"callers shared a MemoryGraph object ({len(graph_ids)} distinct of "
         f"{n_threads}); the single-flight must memoise only immutable products"

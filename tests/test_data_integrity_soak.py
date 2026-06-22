@@ -5,8 +5,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timezone
-from pathlib import Path
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 
@@ -79,7 +78,7 @@ def test_w5_provenance_overflow_sustained_load(tmp_path, monkeypatch):
 
     cues = [p[1]["cue"] for p in flushed]
     assert sorted(cues) == [f"sustained-{i}" for i in range(10)], (
-        f"MEM-05 violated: expected all 10 cues exactly once; got {sorted(cues)}"
+        f"consolidation invariant: expected all 10 cues exactly once; got {sorted(cues)}"
     )
     overflow_dir = tmp_path / ".iai-mcp" / ".provenance-overflow"
     assert list(overflow_dir.glob("*.jsonl")) == []
@@ -90,7 +89,7 @@ def test_w5_capture_drain_partial_failure_preserves_evidence(tmp_path, monkeypat
     from iai_mcp.store import MemoryStore
 
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path / ".iai-mcp" / "hippo"))
+    monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path / ".iai-mcp" / "lance"))
 
     deferred = tmp_path / ".iai-mcp" / ".deferred-captures"
     deferred.mkdir(parents=True)
@@ -116,14 +115,19 @@ def test_w5_capture_drain_partial_failure_preserves_evidence(tmp_path, monkeypat
         }) + "\n"
     )
 
-    real_insert = MemoryStore.insert
+    import iai_mcp.capture as _capture_mod
+    real_dwp = _capture_mod._drain_write_pending
 
-    def insert_or_fail(self, rec):
-        if "INSERT_FAIL_SENTINEL_W5_SOAK" in rec.literal_surface:
-            raise RuntimeError("simulated lance failure at soak")
-        return real_insert(self, rec)
+    def dwp_or_fail(store, *, text, **kw):
+        # The two-phase backlog drain writes via `_drain_write_pending` (pending
+        # row first, embed later), not MemoryStore.insert. Simulate a storage
+        # failure on the sentinel turn so the drain records an insert failure
+        # and quarantines the file to `.failed-*`.
+        if "INSERT_FAIL_SENTINEL_W5_SOAK" in text:
+            return {"status": "skipped", "reason": "insert-failed:soak"}
+        return real_dwp(store, text=text, **kw)
 
-    monkeypatch.setattr(MemoryStore, "insert", insert_or_fail)
+    monkeypatch.setattr(_capture_mod, "_drain_write_pending", dwp_or_fail)
 
     store = MemoryStore()
     counts = drain_deferred_captures(store)
@@ -145,7 +149,7 @@ def test_w5_graph_cache_encryption_no_plaintext_canary(tmp_path):
     from iai_mcp.community import CommunityAssignment
     from iai_mcp.store import MemoryStore
 
-    store = MemoryStore(path=tmp_path / "hippo")
+    store = MemoryStore(path=tmp_path / "lancedb")
     store.root = tmp_path
 
     rid = uuid4()
@@ -196,7 +200,7 @@ def test_w5_recall_survives_malformed_anti_edge(tmp_path):
     from iai_mcp.store import MemoryStore
     from iai_mcp.types import EMBED_DIM, MemoryHit, MemoryRecord
 
-    store = MemoryStore(path=tmp_path / "hippo")
+    store = MemoryStore(path=tmp_path / "lancedb")
 
     rid_hit = uuid4()
     rid_anti = uuid4()

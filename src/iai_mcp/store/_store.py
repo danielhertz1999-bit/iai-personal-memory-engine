@@ -56,6 +56,27 @@ def _uuid_literal(value):
     return _impl(value)
 
 
+def _normalize_ts_for_compare(value) -> str:
+    """Return a canonical UTC ISO string for SQL TEXT comparison."""
+    if isinstance(value, datetime):
+        dt = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).isoformat()
+    if hasattr(value, "to_pydatetime"):
+        dt = value.to_pydatetime()
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).isoformat()
+    try:
+        dt = datetime.fromisoformat(
+            str(value).replace("Z", "+00:00").replace(" ", "T")
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"must be ISO-8601, got {value!r}") from exc
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
+
+
 class MemoryStore:
 
     def __init__(

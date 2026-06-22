@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import networkx as nx
-import pytest
 
 from iai_mcp.events import query_events
 from iai_mcp.store import MemoryStore
@@ -9,7 +8,7 @@ from iai_mcp.store import MemoryStore
 def _seed_synthetic_graph(monkeypatch, *, n_nodes: int, sigma_val: float) -> None:
     from iai_mcp import sigma as sigma_mod
 
-    def _fake_snapshot(graph):  # noqa: ARG001
+    def _fake_snapshot(graph, *, assignment=None):  # noqa: ARG001
         return {
             "C": 0.5,
             "L": 2.0,

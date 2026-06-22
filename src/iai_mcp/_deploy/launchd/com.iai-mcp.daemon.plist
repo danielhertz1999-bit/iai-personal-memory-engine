@@ -113,7 +113,7 @@
         <key>IAI_MCP_WATCHDOG_FAILURE_DEBOUNCE_N</key>
         <string>3</string>
         <key>IAI_MCP_WATCHDOG_RSS_HARD_CAP_BYTES</key>
-        <string>2684354560</string>
+        <string>4294967296</string>
         <key>IAI_MCP_WATCHDOG_RSS_CONTRIBUTOR_FLOOR_BYTES</key>
         <string>1610612736</string>
         <key>IAI_MCP_WATCHDOG_MAX_RECOVERIES</key>

@@ -20,27 +20,56 @@ from iai_mcp.exceptions import NativeError
 
 MAX_DRAIN_EVENTS_PER_RUN = 5000
 
-_LIVE_ACTIVE_RE = re.compile(r"\.live\.jsonl$")
+# Soft resident-memory ceiling for an in-daemon drain run. Sampled before each
+# file is claimed; if the resident set already exceeds this, the run stops
+# cleanly (leaving the remaining files on disk for the next cycle, exactly like
+# the per-run event cap) and emits a telemetry event. Default 2.5 GiB sits well
+# under the watchdog hard cap (4 GiB) so the drain yields BEFORE the watchdog
+# would kill the process — self-limit instead of getting killed. Operator-
+# overridable; ``0`` or a non-positive / malformed value disables the soft cap.
+DRAIN_RSS_SOFT_CAP_DEFAULT_BYTES = 2_684_354_560
 
-from iai_mcp.store import MemoryStore
-from iai_mcp.types import (
-    SCHEMA_VERSION_CURRENT,
-    TIER_ENUM,
-    MemoryRecord,
-)
 
-log = logging.getLogger(__name__)
+def _drain_rss_soft_cap_bytes() -> int:
+    raw = os.environ.get("IAI_MCP_DRAIN_RSS_SOFT_CAP_BYTES")
+    if raw is None:
+        return DRAIN_RSS_SOFT_CAP_DEFAULT_BYTES
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return DRAIN_RSS_SOFT_CAP_DEFAULT_BYTES
+    return val if val > 0 else 0
 
-DEDUP_COS_THRESHOLD = 0.95
-MIN_CAPTURE_LEN = 12
-MAX_CAPTURE_LEN = 8000
 
-# Daemon RPC dispatch runs each request on its own thread (asyncio.to_thread),
-# so concurrent capture_turn() calls (e.g. several sessions/forks draining
-# deferred captures at once) can race the dedup check-then-insert sequence.
-# This serializes that sequence so a tag can never be checked-as-absent by
-# two threads before either has inserted it.
-_CAPTURE_DEDUP_LOCK = threading.Lock()
+def _indaemon_drain_disabled() -> bool:
+    raw = os.environ.get("IAI_MCP_DISABLE_INDAEMON_DRAIN", "")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _drain_rss_bytes() -> int:
+    """Sample the current process resident set, fail-soft to 0.
+
+    A 0 reading is treated as "unknown" by the soft-cap check (never trips the
+    cap on a flaky psutil), so the drain still runs when RSS cannot be read.
+    """
+    try:
+        import psutil
+
+        return int(psutil.Process().memory_info().rss)
+    except Exception:  # noqa: BLE001 -- psutil flakiness must not stop the drain
+        return 0
+
+
+# Serializes the in-daemon backlog drain so the startup drain and the drowsy-edge
+# drain (both call ``drain_deferred_captures`` on their own thread via
+# ``asyncio.to_thread``) can never run concurrently on the same store. Two
+# overlapping drains would each hold up to ``MAX_DRAIN_EVENTS_PER_RUN`` events in
+# memory at once (double resident cost). A second caller that cannot take the
+# lock returns immediately with a ``skipped_single_flight`` marker rather than
+# stacking. The per-file ``.processing-{pid}`` claim still guards double-
+# processing; this guards double resident cost.
+_DRAIN_SINGLE_FLIGHT_LOCK = threading.Lock()
+
 
 # Drain-in-progress accounting for the daemon's lifecycle idle countdown.
 #
@@ -81,6 +110,28 @@ def is_drain_in_progress() -> bool:
     with _DRAIN_IN_PROGRESS_LOCK:
         return _drain_in_progress_depth > 0
 
+
+_LIVE_ACTIVE_RE = re.compile(r"\.live\.jsonl$")
+
+from iai_mcp.store import MemoryStore
+from iai_mcp.types import (
+    SCHEMA_VERSION_CURRENT,
+    TIER_ENUM,
+    MemoryRecord,
+)
+
+log = logging.getLogger(__name__)
+
+DEDUP_COS_THRESHOLD = 0.95
+MIN_CAPTURE_LEN = 12
+MAX_CAPTURE_LEN = 8000
+
+# Daemon RPC dispatch runs each request on its own thread (asyncio.to_thread),
+# so concurrent capture_turn() calls (e.g. several sessions/forks draining
+# deferred captures at once) can race the dedup check-then-insert sequence.
+# This serializes that sequence so a tag can never be checked-as-absent by
+# two threads before either has inserted it.
+_CAPTURE_DEDUP_LOCK = threading.Lock()
 
 FAILED_MAX_ATTEMPTS: int = 3
 FAILED_BACKOFF_BASE_SEC: float = 60.0
@@ -298,6 +349,7 @@ def capture_turn(
     role: str = "user",
     ts: str | None = None,
     source_uuid: str | None = None,
+    provenance_extra: dict | None = None,
 ) -> dict[str, Any]:
     if tier not in TIER_ENUM:
         return {"status": "skipped", "record_id": None, "reason": f"invalid tier {tier!r}"}
@@ -418,6 +470,13 @@ def capture_turn(
             ts_iso = now.isoformat()
             tags.append(_idem_tag(session_id, role, ts_iso, text, source_uuid=source_uuid))
 
+        provenance_list: list[dict] = [
+            {"ts": now.isoformat(), "cue": cue or "(auto-capture)",
+             "session_id": session_id, "role": role}
+        ]
+        if provenance_extra:
+            provenance_list.append(dict(provenance_extra))
+
         rec = MemoryRecord(
             id=uuid4(),
             tier=tier,
@@ -433,8 +492,7 @@ def capture_turn(
             last_reviewed=None,
             never_decay=False,
             never_merge=False,
-            provenance=[{"ts": now.isoformat(), "cue": cue or "(auto-capture)",
-                         "session_id": session_id, "role": role}],
+            provenance=provenance_list,
             created_at=now,
             updated_at=now,
             tags=tags,
@@ -465,6 +523,119 @@ def capture_turn(
         )
 
     return {"status": "inserted", "record_id": str(rec.id), "reason": f"tier={tier}"}
+
+
+def _drain_write_pending(
+    store: MemoryStore,
+    *,
+    cue: str,
+    text: str,
+    tier: str = "episodic",
+    session_id: str = "-",
+    role: str = "user",
+    ts: str | None = None,
+    source_uuid: str | None = None,
+) -> dict[str, Any]:
+    """Write a captured turn as a pending (un-embedded) row.
+
+    The backlog drain routes every genuinely-new event through this path instead
+    of the synchronous embed. The row lands with ``embedding_pending=1`` and a
+    zero-vector placeholder; a later deferred-embed pass fills the real vector.
+    This keeps the drain a sequence of cheap SQLite writes whose resident-memory
+    cost does not grow with the backlog size — a long backlog no longer holds the
+    embedder, JIT, and columnar pages resident through one synchronous run.
+
+    The same validation, idempotency tag, tags, and provenance shape as the
+    synchronous capture path are applied, so the row is dedup-findable by tag and
+    verbatim-recallable the instant it is written (recall surfaces pending rows
+    through its recency union, independent of the embedding). Pinned-record and
+    cosine-dedup semantics that need an embedding are deferred with the vector —
+    the drain handles only conversational episodic turns, whose dedup is the
+    exact-key idem tag, never a cosine neighbour.
+    """
+    if tier not in TIER_ENUM:
+        return {"status": "skipped", "record_id": None, "reason": f"invalid tier {tier!r}"}
+
+    text = (text or "").strip()
+    if len(text) < MIN_CAPTURE_LEN:
+        return {"status": "skipped", "record_id": None, "reason": "too short"}
+    if len(text) > MAX_CAPTURE_LEN:
+        text = text[:MAX_CAPTURE_LEN]
+
+    verdict, shield_tags = _run_shield(text)
+    if verdict == "HARD_BLOCK":
+        return {"status": "skipped", "record_id": None, "reason": "shield HARD_BLOCK"}
+
+    now = _resolve_ts(ts)
+
+    with _CAPTURE_DEDUP_LOCK:
+        if _is_episodic_conversational(tier, role):
+            ts_iso = now.isoformat()
+            idem_t = _idem_tag(session_id, role, ts_iso, text, source_uuid=source_uuid)
+            existing_id = store.find_record_by_tag(idem_t)
+            if existing_id is not None:
+                try:
+                    store.reinforce_record(existing_id)
+                except (ValueError, IOError) as exc:
+                    log.warning(
+                        "capture_dedup_reinforce_failed",
+                        extra={
+                            "err_type": type(exc).__name__,
+                            "record_id": str(existing_id),
+                        },
+                    )
+                return {
+                    "status": "reinforced",
+                    "record_id": str(existing_id),
+                    "reason": "exact-key re-drain",
+                }
+
+        tags = ["capture", f"role:{role}"]
+        if verdict == "FLAG_FOR_REVIEW":
+            tags.append("shield:flagged")
+            tags.extend(f"shield:{t}" for t in shield_tags[:3])
+        if _is_episodic_conversational(tier, role):
+            ts_iso = now.isoformat()
+            tags.append(
+                _idem_tag(session_id, role, ts_iso, text, source_uuid=source_uuid)
+            )
+
+        provenance_list: list[dict] = [
+            {"ts": now.isoformat(), "cue": cue or "(auto-capture)",
+             "session_id": session_id, "role": role}
+        ]
+
+        record_id = str(uuid4())
+        try:
+            store.db.insert_pending_row(
+                record_id=record_id,
+                tier=tier,
+                literal_surface=text,
+                tags_json=json.dumps(tags),
+                provenance_json=json.dumps(provenance_list),
+                created_at=now.isoformat(),
+                updated_at=now.isoformat(),
+            )
+        except Exception as e:  # noqa: BLE001 -- per-event isolation, report to caller
+            log.exception("drain pending-row insert failed")
+            return {
+                "status": "skipped",
+                "record_id": None,
+                "reason": f"insert-failed: {type(e).__name__}",
+            }
+
+    try:
+        from iai_mcp.peri_event_buffer import get_buffer
+        buf = get_buffer()
+        if buf is not None:
+            buf.add(UUID(record_id), now, tier)
+    except Exception as exc:  # noqa: BLE001 -- capture fail-safe
+        log.warning(
+            "drain_pending_peri_event_buffer_add_failed",
+            extra={"record_id": record_id, "err_type": type(exc).__name__},
+        )
+
+    return {"status": "inserted", "record_id": record_id, "reason": f"tier={tier}"}
 
 
 def capture_transcript(
@@ -773,23 +944,6 @@ def write_deferred_captures(
 
 
 def drain_deferred_captures(store: MemoryStore) -> dict[str, int]:
-    """Drain crashed/orphaned deferred-capture files into the store.
-
-    Marks itself in-progress for the daemon idle countdown so the FSM does not
-    advance toward SLEEP (EXCLUSIVE store lock) mid-drain. See
-    `is_drain_in_progress`.
-    """
-    with _drain_in_progress_guard():
-        return _drain_deferred_captures_impl(store)
-
-
-def _drain_deferred_captures_impl(store: MemoryStore) -> dict[str, int]:
-    deferred_dir = Path.home() / ".iai-mcp" / ".deferred-captures"
-    log_dir = Path.home() / ".iai-mcp" / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = (
-        log_dir / f"deferred-drain-{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.log"
-    )
     counts = {
         "files_drained": 0,
         "files_failed": 0,
@@ -797,11 +951,63 @@ def _drain_deferred_captures_impl(store: MemoryStore) -> dict[str, int]:
         "events_reinforced": 0,
         "events_skipped_intentional": 0,
         "events_skipped_insert_failed": 0,
+        "events_skipped_existing": 0,
     }
+
+    # Rail: operator kill-switch. When set, the in-daemon drain is a no-op — no
+    # files are claimed, no embed runs — deferring the whole backlog to the
+    # offline ``iai-mcp deferred-drain`` tool. An escape hatch if the in-daemon
+    # drain ever misbehaves; capture liveness is preserved because the deferred
+    # files stay untouched on disk.
+    if _indaemon_drain_disabled():
+        counts["disabled"] = 1
+        return counts
+
+    # Rail: single-flight. A second concurrent drain on the same store would
+    # double the in-memory event footprint; skip rather than stack.
+    if not _DRAIN_SINGLE_FLIGHT_LOCK.acquire(blocking=False):
+        counts["skipped_single_flight"] = 1
+        return counts
+    try:
+        # Mark in-progress for the daemon idle countdown so the FSM does not
+        # advance toward SLEEP (EXCLUSIVE store lock) mid-drain. See
+        # `is_drain_in_progress`.
+        with _drain_in_progress_guard():
+            return _drain_deferred_captures_locked(store, counts)
+    finally:
+        _DRAIN_SINGLE_FLIGHT_LOCK.release()
+
+
+def _drain_deferred_captures_locked(
+    store: MemoryStore, counts: dict[str, int]
+) -> dict[str, int]:
+    deferred_dir = Path.home() / ".iai-mcp" / ".deferred-captures"
+    log_dir = Path.home() / ".iai-mcp" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = (
+        log_dir / f"deferred-drain-{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.log"
+    )
     if not deferred_dir.exists():
         return counts
     total_events_processed = 0
     cap_hit = False
+    # Rail: soft resident-memory ceiling. Sampled before each claimed file; if the
+    # resident set already exceeds the soft cap, the drain stops cleanly (the
+    # remaining files stay on disk for the next cycle, like the event cap) so the
+    # process yields BEFORE the watchdog hard cap would kill it.
+    rss_soft_cap = _drain_rss_soft_cap_bytes()
+    rss_soft_cap_hit = False
+    # Cheap pre-embed idem skip, scoped to this whole drain call. A crash-rotated
+    # backlog is dominated by duplicates of already-stored records; embedding each
+    # one through capture_turn only to discard it burns the Rust BERT step. The
+    # pre-check skips that embed for a known duplicate but still reinforces the
+    # pre-existing record once (a re-seen turn strengthens the memory) — and the
+    # seen_this_run set collapses all repeats of the same tag in one backlog to a
+    # single reinforcement, so a giant repeat-backlog cannot inflate the signal.
+    # The tag is reproduced exactly as capture_turn computes it, so the pre-check
+    # matches capture_turn's own idem-check, which remains the correctness backstop
+    # — the pre-check can only save the embed, never drop a genuinely-new record.
+    seen_this_run: set[str] = set()
 
     for fpath in sorted(deferred_dir.iterdir()):
         if not fpath.is_file():
@@ -863,6 +1069,24 @@ def _drain_deferred_captures_impl(store: MemoryStore) -> dict[str, int]:
     for fpath in candidates:
         if cap_hit:
             break
+        # Rail: soft resident-memory ceiling — check before claiming the next file
+        # so the run yields with the remaining backlog still on disk (deferred, not
+        # lost). A 0 reading (psutil unavailable) is treated as unknown and never
+        # trips the cap.
+        if rss_soft_cap > 0:
+            rss_now = _drain_rss_bytes()
+            if rss_now > rss_soft_cap:
+                rss_soft_cap_hit = True
+                cap_hit = True
+                try:
+                    with log_path.open("a") as logf:
+                        logf.write(
+                            f"{datetime.now(timezone.utc).isoformat()} "
+                            f"rss-soft-cap stop: rss={rss_now} > cap={rss_soft_cap}\n"
+                        )
+                except (OSError, ValueError) as exc:
+                    log.debug("rss_soft_cap_log_write_failed: %s", exc)
+                break
         claim_path = fpath.with_name(
             fpath.stem + f".processing-{os.getpid()}.jsonl"
         )
@@ -925,13 +1149,76 @@ def _drain_deferred_captures_impl(store: MemoryStore) -> dict[str, int]:
                     cap_hit = True
                     break
                 ev = json.loads(ln)
-                result = capture_turn(
+                tier = ev.get("tier", "episodic")
+                role = ev.get("role", "user")
+
+                # Pre-embed idem skip for conversational episodic events. The tag
+                # is reproduced exactly as capture_turn computes it (stripped,
+                # length-bounded text + resolved timestamp). A too-short event
+                # would never become a record (capture_turn skips it before
+                # embedding), so it can never match a stored tag — leave those to
+                # fall through to capture_turn's own "too short" skip.
+                if _is_episodic_conversational(tier, role):
+                    norm_text = (ev.get("text", "") or "").strip()
+                    if MIN_CAPTURE_LEN <= len(norm_text):
+                        if len(norm_text) > MAX_CAPTURE_LEN:
+                            norm_text = norm_text[:MAX_CAPTURE_LEN]
+                        ts_iso = _resolve_ts(ev.get("ts")).isoformat()
+                        tag = _idem_tag(
+                            session_id,
+                            role,
+                            ts_iso,
+                            norm_text,
+                            source_uuid=ev.get("source_uuid"),
+                        )
+                        if tag in seen_this_run:
+                            # Already inserted-or-reinforced this exact tag earlier
+                            # in this drain. A crash-rotated backlog can repeat the
+                            # same turn tens of thousands of times; collapse those
+                            # to a single reinforcement so the Hebbian signal is not
+                            # inflated by the size of the backlog.
+                            counts["events_skipped_existing"] += 1
+                            total_events_processed += 1
+                            processed_in_file += 1
+                            continue
+                        existing_id = store.find_record_by_tag(tag)
+                        if existing_id is not None:
+                            # The record already exists in the store. Skip the
+                            # expensive embed, but still reinforce it once — re-seeing
+                            # a turn is a memory-strengthening signal, exactly what
+                            # capture_turn's own duplicate branch does. reinforce_record
+                            # is a cheap edge boost (no embed), so the drain stays fast.
+                            try:
+                                store.reinforce_record(existing_id)
+                                counts["events_reinforced"] += 1
+                            except (ValueError, IOError) as exc:
+                                log.warning(
+                                    "drain_dedup_reinforce_failed",
+                                    extra={
+                                        "err_type": type(exc).__name__,
+                                        "record_id": str(existing_id),
+                                    },
+                                )
+                            seen_this_run.add(tag)
+                            total_events_processed += 1
+                            processed_in_file += 1
+                            continue
+                        seen_this_run.add(tag)
+
+                # Phase-1 of the two-phase drain: write the genuinely-new event as
+                # a pending (un-embedded) row. No embedder, JIT, or columnar pages
+                # are held resident during the drain, so a large backlog no longer
+                # climbs the resident set through one long synchronous embed run.
+                # The deferred-embed pass (driven by the wake sequence after the
+                # drain) fills the real vector in bounded batches. The pending row
+                # is dedup-findable by tag and verbatim-recallable immediately.
+                result = _drain_write_pending(
                     store,
                     cue=ev.get("cue", ""),
                     text=ev.get("text", ""),
-                    tier=ev.get("tier", "episodic"),
+                    tier=tier,
                     session_id=session_id,
-                    role=ev.get("role", "user"),
+                    role=role,
                     ts=ev.get("ts"),
                     source_uuid=ev.get("source_uuid"),
                 )
@@ -939,6 +1226,11 @@ def _drain_deferred_captures_impl(store: MemoryStore) -> dict[str, int]:
                 reason = result.get("reason", "")
                 if status == "inserted":
                     counts["events_inserted"] += 1
+                    # Mirror the new turn into the recent bank so the daemon-down
+                    # degraded-recall path (bank-recall) still surfaces it. The
+                    # recent-bank recall is verbatim substring matching — it never
+                    # reads the stored vector — so the pending row's placeholder
+                    # vector is irrelevant here; the verbatim text is what matters.
                     try:
                         from iai_mcp.memory_bank import append_recent_record
 
@@ -1034,6 +1326,40 @@ def _drain_deferred_captures_impl(store: MemoryStore) -> dict[str, int]:
         prune_recent_windows()
     except Exception:  # noqa: BLE001 -- best-effort fail-safe boundary
         log.warning("bank-recent prune failed", exc_info=True)
+
+    if rss_soft_cap_hit:
+        counts["rss_soft_cap_hit"] = 1
+        try:
+            from iai_mcp.events import TELEMETRY_DRAIN_RSS_SOFT_CAP, write_event
+
+            write_event(
+                store,
+                TELEMETRY_DRAIN_RSS_SOFT_CAP,
+                {
+                    "rss_soft_cap_bytes": rss_soft_cap,
+                    "events_processed": total_events_processed,
+                    "files_drained": counts["files_drained"],
+                },
+                severity="warning",
+                domain="ops",
+            )
+        except Exception as exc:  # noqa: BLE001 -- telemetry must not break the drain
+            log.debug("drain_rss_soft_cap_event_failed: %s", exc)
+
+    # Rail: post-drain memory relief. After a run that did real work, hand idle
+    # allocator pages back to the OS (arrow pool release + gc + macOS pressure
+    # relief) so the per-run transient does not accumulate into the warm plateau.
+    # Reuses the existing relief helper; adds no consolidation-pipeline step.
+    if counts["files_drained"] or counts["events_inserted"] or counts["events_reinforced"]:
+        try:
+            from iai_mcp.lilli.cycle.sleep_pipeline._memory_relief import (
+                _step_memory_relief,
+            )
+
+            _step_memory_relief(label="deferred_drain")
+        except Exception as exc:  # noqa: BLE001 -- relief is advisory, never fatal
+            log.debug("drain_post_relief_failed: %s", exc)
+
     return counts
 
 
@@ -1328,5 +1654,18 @@ def _drain_active_live_captures_impl(
 
         if file_had_insert:
             counts["files_drained"] += 1
+
+    # Rail: post-drain memory relief on the wake-edge live-drain path too — hand
+    # idle allocator pages back to the OS after real work. Reuses the existing
+    # relief helper; adds no consolidation-pipeline step.
+    if counts["events_inserted"] or counts["events_reinforced"]:
+        try:
+            from iai_mcp.lilli.cycle.sleep_pipeline._memory_relief import (
+                _step_memory_relief,
+            )
+
+            _step_memory_relief(label="active_live_drain")
+        except Exception as exc:  # noqa: BLE001 -- relief is advisory, never fatal
+            log.debug("active_live_drain_post_relief_failed: %s", exc)
 
     return counts

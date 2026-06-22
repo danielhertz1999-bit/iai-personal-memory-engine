@@ -26,7 +26,7 @@ def iai_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("PYTHON_KEYRING_BACKEND", "keyring.backends.fail.Keyring")
     monkeypatch.setenv("IAI_MCP_CRYPTO_PASSPHRASE", "test-drain-passphrase")
-    monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path / ".iai-mcp" / "hippo"))
+    monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path / ".iai-mcp" / "lancedb"))
 
     import keyring.core
 
@@ -78,7 +78,7 @@ def test_drain_consumes_jsonl_and_deletes_file(iai_home):
 
     deferred_dir = iai_home / ".iai-mcp" / ".deferred-captures"
     events = [
-        _make_event("Alice said: drain test event one — must be at least 12 chars"),
+        _make_event("Areg said: drain test event one — must be at least 12 chars"),
         _make_event("assistant reply with sufficient length to pass MIN_CAPTURE", role="assistant"),
         _make_event("third event for the round-trip drain count assertion"),
     ]
@@ -225,7 +225,7 @@ def test_drain_multiple_files_processed_in_order(iai_home):
 
 def test_drain_partial_insert_failure_preserves_file(iai_home, monkeypatch):
     from iai_mcp.capture import drain_deferred_captures
-    from iai_mcp.store import MemoryStore
+    from iai_mcp.hippo import HippoDB
 
     deferred_dir = iai_home / ".iai-mcp" / ".deferred-captures"
 
@@ -241,14 +241,18 @@ def test_drain_partial_insert_failure_preserves_file(iai_home, monkeypatch):
     )
     assert fpath.exists()
 
-    real_insert = MemoryStore.insert
+    # The two-phase drain writes each genuinely-new turn as a pending row via
+    # HippoDB.insert_pending_row (no synchronous embed). Fail that write for the
+    # sentinel event and assert the whole file is preserved as .failed-* — the
+    # per-file insert-failure contract is identical, just at the new write site.
+    real_insert_pending = HippoDB.insert_pending_row
 
-    def insert_or_fail(self, rec):
-        if "INSERT_FAIL_SENTINEL_07_9" in rec.literal_surface:
-            raise RuntimeError("simulated lance write failure")
-        return real_insert(self, rec)
+    def insert_pending_or_fail(self, *, literal_surface, **kwargs):
+        if "INSERT_FAIL_SENTINEL_07_9" in literal_surface:
+            raise RuntimeError("simulated pending-row write failure")
+        return real_insert_pending(self, literal_surface=literal_surface, **kwargs)
 
-    monkeypatch.setattr(MemoryStore, "insert", insert_or_fail)
+    monkeypatch.setattr(HippoDB, "insert_pending_row", insert_pending_or_fail)
 
     store = _open_isolated_store()
     counts = drain_deferred_captures(store)
@@ -360,7 +364,7 @@ def test_daemon_main_drain_does_not_crash_on_bad_file(tmp_path, monkeypatch):
 
     iai_dir = tmp_path / ".iai-mcp"
     iai_dir.mkdir(parents=True, exist_ok=True)
-    store_dir = iai_dir / "hippo"
+    store_dir = iai_dir / "lancedb"
     store_dir.mkdir(parents=True, exist_ok=True)
     deferred_dir = iai_dir / ".deferred-captures"
     deferred_dir.mkdir(parents=True, exist_ok=True)

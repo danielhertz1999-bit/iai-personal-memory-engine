@@ -124,7 +124,7 @@ def test_drain_deferred_marks_in_progress_and_holds_off_sleep(monkeypatch):
 
     seen: dict[str, object] = {}
 
-    def spy_impl(store):
+    def spy_impl(store, counts):
         # Mid-drain the flag must be set, and the idle countdown -- fed the flag
         # -- must refuse to advance toward SLEEP on otherwise-sleepy inputs.
         seen["in_progress"] = capture.is_drain_in_progress()
@@ -133,7 +133,7 @@ def test_drain_deferred_marks_in_progress_and_holds_off_sleep(monkeypatch):
         )
         return {"files_drained": 0, "files_failed": 0}
 
-    monkeypatch.setattr(capture, "_drain_deferred_captures_impl", spy_impl)
+    monkeypatch.setattr(capture, "_drain_deferred_captures_locked", spy_impl)
 
     assert capture.is_drain_in_progress() is False
     capture.drain_deferred_captures(store=None)
@@ -167,10 +167,10 @@ def test_drain_active_live_marks_in_progress(monkeypatch):
 def test_guard_releases_on_exception(monkeypatch):
     from iai_mcp import capture
 
-    def boom(store):
+    def boom(store, counts):
         raise RuntimeError("drain blew up")
 
-    monkeypatch.setattr(capture, "_drain_deferred_captures_impl", boom)
+    monkeypatch.setattr(capture, "_drain_deferred_captures_locked", boom)
 
     assert capture.is_drain_in_progress() is False
     with pytest.raises(RuntimeError):
@@ -200,12 +200,12 @@ def test_is_drain_in_progress_true_while_other_thread_drains(monkeypatch):
     entered = threading.Event()
     release = threading.Event()
 
-    def slow_impl(store):
+    def slow_impl(store, counts):
         entered.set()
         release.wait(timeout=5.0)
         return {"files_drained": 0, "files_failed": 0}
 
-    monkeypatch.setattr(capture, "_drain_deferred_captures_impl", slow_impl)
+    monkeypatch.setattr(capture, "_drain_deferred_captures_locked", slow_impl)
 
     worker = threading.Thread(
         target=lambda: capture.drain_deferred_captures(store=None),

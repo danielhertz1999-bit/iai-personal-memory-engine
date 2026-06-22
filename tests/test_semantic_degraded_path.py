@@ -5,12 +5,9 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pytest
-
 
 def _zero_vector_blob(embed_dim: int) -> bytes:
     return struct.pack(f"<{embed_dim}f", *([0.0] * embed_dim))
-
 
 def _make_normal_record(text: str, seed: int = 42):
     import numpy as np
@@ -39,7 +36,6 @@ def _make_normal_record(text: str, seed: int = 42):
         tags=["role:user"],
         language="en",
     )
-
 
 def test_semantic_warm_embedder_returns_store_hits(
     hermetic_store: Path, monkeypatch
@@ -85,7 +81,6 @@ def test_semantic_warm_embedder_returns_store_hits(
         "distinctive seeded turn not in warm semantic hits"
     )
 
-
 def test_semantic_no_embedder_degrades_not_empty(hermetic_store: Path) -> None:
     from iai_mcp.store import MemoryStore, flush_record_buffer
 
@@ -115,7 +110,6 @@ def test_semantic_no_embedder_degrades_not_empty(hermetic_store: Path) -> None:
         "degraded result must be STORE-backed "
         "(bank cannot produce this turn — it was seeded only in the tmp store)"
     )
-
 
 def test_pending_row_excluded_from_warm_semantic_until_reembed(
     hermetic_store: Path,
@@ -213,6 +207,15 @@ def test_pending_row_excluded_from_warm_semantic_until_reembed(
     finally:
         conn3.close()
 
+    # Production re-embed (reembed_pending_rows / `migrate --reembed-from-text`)
+    # invalidates the runtime-graph cache on the pending->ready transition so the
+    # repaired row rejoins the warm graph. This test flips the row via direct SQL,
+    # bypassing that path, so it must trigger the same invalidation explicitly;
+    # otherwise the drift-tolerant cache absorbs the +1 growth and serves the
+    # stale graph that still excludes the row.
+    from iai_mcp import runtime_graph_cache as _rgc_inval
+    _rgc_inval.invalidate_at_root(hermetic_store)
+
     store3 = MemoryStore(hermetic_store)
     try:
         from iai_mcp.retrieve import build_runtime_graph as _brg
@@ -226,15 +229,13 @@ def test_pending_row_excluded_from_warm_semantic_until_reembed(
     finally:
         store3.close()
 
-
 def test_embed_cue_in_control_msg_types() -> None:
     from iai_mcp.socket_server import SocketServer
 
     assert "embed_cue" in SocketServer.CONTROL_MSG_TYPES, (
         "embed_cue must be in SocketServer.CONTROL_MSG_TYPES for the socket "
-        "layer to forward it to _dispatch_socket_request"
+        "layer to forward it to _dispatch_socket_request (MED routing fix)"
     )
-
 
 def test_embed_cue_dispatch_warm_stub(hermetic_store: Path) -> None:
     import asyncio

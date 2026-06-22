@@ -25,6 +25,8 @@ TELEMETRY_EMBED_NATIVE_FAILURE: str = "embed_native_failure"
 TELEMETRY_FRESHNESS_FUSE_TRIPPED: str = "freshness_fuse_tripped"
 TELEMETRY_RECALL_SOURCE: str = "recall_source"
 TELEMETRY_EMBED_CONSTRUCT: str = "embed_construct"
+TELEMETRY_MEMORY_RELIEF: str = "memory_relief"
+TELEMETRY_DRAIN_RSS_SOFT_CAP: str = "drain_rss_soft_cap"
 
 DAEMON_WEDGE_KILL: str = "daemon_wedge_kill"
 DAEMON_MEMORY_PRESSURE_KILL: str = "daemon_memory_pressure_kill"
@@ -160,26 +162,44 @@ def query_events(
     since: datetime | None = None,
     severity: str | None = None,
     limit: int = 100,
+    *,
+    since_exclusive: bool = False,
 ) -> list[dict]:
-    tbl = store.db.open_table(EVENTS_TABLE)
-    df = tbl.to_pandas()
-    if df.empty:
-        return []
-    if "ts" in df.columns:
-        df = df.copy()
-        df["ts"] = pd.to_datetime(df["ts"], utc=True, errors="coerce")
+    # Lazy import — avoids a circular at module load between events <-> store/_store.
+    from iai_mcp.store._store import _normalize_ts_for_compare
+
+    sql_parts: list[str] = [
+        "SELECT id, kind, severity, domain, ts, data_json, session_id, source_ids_json"
+        " FROM events"
+    ]
+    where_parts: list[str] = []
+    params: list[Any] = []
     if kind is not None:
-        df = df[df["kind"] == kind]
+        where_parts.append("kind = ?")
+        params.append(kind)
     if severity is not None:
-        df = df[df["severity"] == severity]
+        where_parts.append("severity = ?")
+        params.append(severity)
     if since is not None:
-        since_cmp = since if since.tzinfo is not None else since.replace(tzinfo=timezone.utc)
-        df = df[df["ts"] >= since_cmp]
-    if df.empty:
-        return []
-    df = df.sort_values("ts", ascending=False).head(limit)
+        # events.ts is always written by write_event via the raw-datetime
+        # default adapter (space-form, full-microsecond TEXT). Normalize the
+        # boundary to T-form then swap separator to match the stored shape,
+        # so lexicographic TEXT compare is correct AND microsecond-precise
+        # (SQLite's datetime() func truncates to second resolution).
+        op = ">" if since_exclusive else ">="
+        where_parts.append(f"ts {op} ?")
+        params.append(_normalize_ts_for_compare(since).replace("T", " "))
+    if where_parts:
+        sql_parts.append("WHERE " + " AND ".join(where_parts))
+    sql_parts.append("ORDER BY ts DESC LIMIT ?")
+    params.append(int(limit))
+    sql = " ".join(sql_parts)
+
+    with store.db._conn_lock:
+        rows = store.db._conn.execute(sql, params).fetchall()
+
     out: list[dict] = []
-    for _, row in df.iterrows():
+    for row in rows:
         raw_data = row["data_json"] or "{}"
         if is_encrypted(raw_data):
             ad = str(row["id"]).encode("ascii")
@@ -196,9 +216,18 @@ def query_events(
             source_ids = json.loads(row["source_ids_json"] or "[]")
         except (TypeError, json.JSONDecodeError):
             source_ids = []
-        ts_value = row["ts"]
-        if hasattr(ts_value, "to_pydatetime"):
-            ts_value = ts_value.to_pydatetime()
+        ts_raw = row["ts"]
+        if isinstance(ts_raw, datetime):
+            ts_value = ts_raw if ts_raw.tzinfo is not None else ts_raw.replace(tzinfo=timezone.utc)
+        else:
+            try:
+                ts_value = datetime.fromisoformat(
+                    str(ts_raw).replace("Z", "+00:00").replace(" ", "T")
+                )
+                if ts_value.tzinfo is None:
+                    ts_value = ts_value.replace(tzinfo=timezone.utc)
+            except (TypeError, ValueError):
+                ts_value = datetime.now(timezone.utc)
         out.append(
             {
                 "id": row["id"],

@@ -90,10 +90,17 @@ def test_leak_kills_even_at_normal_pressure():
     )
 
 
-def test_leak_single_tick_does_not_kill():
+def test_leak_single_tick_kills_immediately_no_debounce():
+    # A resident-set reading over the hard cap is a runaway, not a transient.
+    # The hard cap must kill on the FIRST over-cap sample — it does not wait
+    # for the failure debounce that exists to ride out transient probe blips.
+    assert _evaluate(rss=RSS_LEAK, pressure=NORMAL, consecutive=0) == (
+        "kill",
+        "leak",
+    )
     assert _evaluate(rss=RSS_LEAK, pressure=NORMAL, consecutive=1) == (
-        "none",
-        "debounce",
+        "kill",
+        "leak",
     )
 
 
@@ -138,10 +145,14 @@ def test_cold_start_grace_suppresses_memory_trigger():
     ) == ("none", "healthy")
 
 
-def test_cold_start_grace_suppresses_leak_trigger():
+def test_cold_start_grace_does_not_suppress_hard_cap_leak():
+    # The cold-start grace suppresses the pressure/contributor path (a booting
+    # daemon's warm-up spike is legitimate), but it must NOT blind the hard cap:
+    # a runaway during the post-boot drain is exactly what the cap exists to
+    # catch. An over-hard-cap reading kills even within the grace window.
     assert _evaluate(
-        rss=RSS_LEAK, pressure=NORMAL, uptime=10.0, consecutive=DEBOUNCE_N
-    ) == ("none", "healthy")
+        rss=RSS_LEAK, pressure=NORMAL, uptime=10.0, consecutive=0
+    ) == ("kill", "leak")
 
 
 def test_circuit_breaker_trips_to_needs_operator_not_kill():

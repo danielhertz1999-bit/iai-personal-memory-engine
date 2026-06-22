@@ -137,6 +137,7 @@ _DDL_RECORDS_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_records_community ON records(community_id)",
     "CREATE INDEX IF NOT EXISTS idx_records_tomb      ON records(tombstoned_at) WHERE tombstoned_at IS NOT NULL",
     "CREATE INDEX IF NOT EXISTS idx_records_pending   ON records(embedding_pending) WHERE embedding_pending=1",
+    "CREATE INDEX IF NOT EXISTS idx_records_created_at ON records(created_at)",
 ]
 
 _DDL_EDGES = """\
@@ -717,8 +718,29 @@ class HippoQuery:
             active_count = len(db._label_map)
             if active_count == 0:
                 return pd.DataFrame()
-            k_clamped = min(k, active_count)
-            labels, distances = db._hnsw.knn_query(self._ann_vector, k=k_clamped)
+            # Clamp k to the live hnswlib index count, not just the label_map
+            # count. The two can diverge briefly during boot/rebuild, and
+            # hnswlib raises "Probably ef or M is too small" when asked for
+            # more neighbors than the index actually contains.
+            hnsw_count = db._hnsw.get_current_count()
+            k_clamped = min(k, active_count, hnsw_count)
+            if k_clamped == 0:
+                return pd.DataFrame()
+            try:
+                labels, distances = db._hnsw.knn_query(
+                    self._ann_vector, k=k_clamped
+                )
+            except RuntimeError as exc:
+                # Defensive: hnswlib still raises this on rare label-map/index
+                # skew. Treat as "no neighbors found" so the insert path's
+                # pattern-separation gate can proceed instead of failing the
+                # whole capture.
+                _log.warning(
+                    "hnswlib knn_query failed (k=%d, hnsw_count=%d, "
+                    "active_count=%d); returning empty result: %s",
+                    k_clamped, hnsw_count, active_count, exc,
+                )
+                return pd.DataFrame()
 
         flat_labels: list[int] = labels[0].tolist()
         # Clamp cosine distance to its mathematical range — the BLAS backend
@@ -775,15 +797,13 @@ class HippoQuery:
         _lock = self._db._conn_lock if self._db is not None else None
         if _lock is not None:
             with _lock:
-                batches = self._drain_to_batches(sql, batch_size)
+                yield from self._drain_to_batches(sql, batch_size)
         else:
-            batches = self._drain_to_batches(sql, batch_size)
-        yield from batches
+            yield from self._drain_to_batches(sql, batch_size)
 
     def _drain_to_batches(
         self, sql: str, batch_size: int
-    ) -> list[pa.RecordBatch]:
-        batches: list[pa.RecordBatch] = []
+    ) -> Iterator[pa.RecordBatch]:
         cursor = self._conn.execute(sql)
         try:
             column_names = [desc[0] for desc in cursor.description]
@@ -802,10 +822,9 @@ class HippoQuery:
                         else b
                         for b in data["embedding"]
                     ]
-                batches.append(pa.record_batch(data))
+                yield pa.record_batch(data)
         finally:
             cursor.close()
-        return batches
 
 
 class HippoMergeInsert:
