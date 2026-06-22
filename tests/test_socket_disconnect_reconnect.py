@@ -11,6 +11,19 @@ from pathlib import Path
 
 import pytest
 
+from iai_mcp._ipc import IS_WINDOWS
+
+# Heavy end-to-end integration test: builds the Node mcp-wrapper via npm and
+# drives it against an embedded AF_UNIX fake daemon, exercising the full
+# stdio<->unix-socket bridge and reconnect path. Both the npm subprocess
+# invocation and the AF_UNIX bridge are POSIX-stack-specific; a Windows port
+# needs the Node wrapper to speak TCP loopback (separate effort). The Windows
+# socket dispatch/reconnect behavior is covered by the ported _ipc unit tests.
+pytestmark = pytest.mark.skipif(
+    IS_WINDOWS,
+    reason="AF_UNIX + npm + Node-wrapper bridge integration; Windows path covered by _ipc unit tests",
+)
+
 REPO = Path(__file__).resolve().parent.parent
 WRAPPER = REPO / "mcp-wrapper"
 

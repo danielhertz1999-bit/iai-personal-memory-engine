@@ -42,3 +42,26 @@ def bind_fake_daemon_socket(sock_path) -> socket.socket:
         srv.bind(str(sock_path))
     srv.listen(5)
     return srv
+
+
+def daemon_endpoint_ready_path(sock_path) -> Path:
+    """Path that exists once a daemon bound at ``sock_path`` is reachable: the
+    unix socket file on POSIX, the ``<sock_path>.port`` file on Windows."""
+    return Path(f"{sock_path}.port") if IS_WINDOWS else Path(sock_path)
+
+
+def daemon_endpoint(sock_path):
+    """Connect target for a daemon bound at ``sock_path``: the unix socket path
+    (POSIX) or ``("127.0.0.1", port)`` read from ``<sock_path>.port`` (Windows).
+    Raises ``FileNotFoundError`` if the Windows port file is absent."""
+    if IS_WINDOWS:
+        port = int(Path(f"{sock_path}.port").read_text(encoding="utf-8").strip())
+        return ("127.0.0.1", port)
+    return str(sock_path)
+
+
+def new_daemon_client_socket() -> socket.socket:
+    """A raw client socket of the right family for the current platform
+    (``AF_INET`` on Windows, ``AF_UNIX`` on POSIX)."""
+    family = socket.AF_INET if IS_WINDOWS else socket.AF_UNIX
+    return socket.socket(family, socket.SOCK_STREAM)
