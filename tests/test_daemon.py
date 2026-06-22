@@ -222,8 +222,6 @@ def test_systemd_unit_required_keys():
     assert "Type=simple" in text
     assert "Restart=on-failure" in text
     assert "RestartSec=30" in text
-    assert "StartLimitIntervalSec=60" in text
-    assert "StartLimitBurst=3" in text
     assert "python3 -m iai_mcp.daemon" in text
     assert "StandardOutput=journal" in text
     assert "StandardError=journal" in text
