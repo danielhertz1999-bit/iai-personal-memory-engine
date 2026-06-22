@@ -67,48 +67,18 @@ def step_crisis_recluster(
             if not dry_run:
                 tbl = self._store.db.open_table(RECORDS_TABLE)
                 try:
-                    df2 = tbl.search().to_pandas()
-                except (OSError, ValueError, RuntimeError, StoreError):
-                    df2 = df
-
-                try:
                     from iai_mcp.community import detect_communities
-                    from iai_mcp.graph import MemoryGraph
-                    from iai_mcp.store import EDGES_TABLE
+                    from iai_mcp.lilli.cycle.sleep_pipeline._live_graph import (
+                        build_live_graph,
+                    )
                     import uuid as _uuid
 
-                    g = MemoryGraph()
-                    for _, row in df2.iterrows():
-                        try:
-                            rid = _uuid.UUID(str(row["id"]))
-                            emb = row.get("embedding")
-                            emb_list = (
-                                list(emb) if emb is not None else []
-                            )
-                            g.add_node(rid, None, emb_list)
-                        except (ValueError, TypeError, AttributeError):
-                            continue
-
-                    try:
-                        edges_df = (
-                            self._store.db.open_table(EDGES_TABLE)
-                            .search()
-                            .to_pandas()
-                        )
-                        for _, e in edges_df.iterrows():
-                            try:
-                                src_u = _uuid.UUID(str(e["src"]))
-                                dst_u = _uuid.UUID(str(e["dst"]))
-                                g.add_edge(
-                                    src_u, dst_u,
-                                    weight=float(
-                                        e.get("weight", 1.0) or 1.0
-                                    ),
-                                )
-                            except (ValueError, TypeError, KeyError):
-                                continue
-                    except (OSError, ValueError, RuntimeError, StoreError) as exc:
-                        logger.debug("crisis_recluster edges query failed: %s", exc)
+                    # Recluster on the LIVE graph only (tombstone-filtered,
+                    # live-only edges) -- mirrors retrieve.py 53f04f9. Previously
+                    # this rebuilt communities over ALL records incl. 3000+
+                    # tombstoned, collapsing the partition (it reassigned ~9700
+                    # records into a single community on the real store).
+                    g = build_live_graph(self._store)
 
                     _assignment = detect_communities(
                         g, prior=None, prior_mode="cold"

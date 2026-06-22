@@ -27,7 +27,7 @@ Validated in a single harness — both systems run on the identical dataset, met
 
 | Benchmark | Result | Notes |
 |---|---|---|
-| **Rescue@10** (post-contradiction current fact) | **1.000** | After a fact is updated/contradicted, the *current* winning fact still ranks top-10 — where flat-vector stores collapse because the stale fact is often the more similar one. Honest-scale: 3 seeds × 1000 sessions × 2 slices. |
+| **Rescue@10** (post-contradiction current fact) | **1.000** (flat cosine baseline: ~0.70) | After a fact is updated/contradicted, the *current* winning fact still ranks top-10 — where flat-vector stores collapse because the stale fact is often the more similar one. Honest-scale: 3 seeds × 1000 sessions × 2 slices. See the three-gate note below. |
 | **Personal-fact drift** (recall@10) | **0.9933** | retention_loss@10 = 0.0067. Honest-scale: 3 seeds × (50 facts, 50 sessions, 30 intervening). |
 | **Sleep-consolidation** (recall@10 preserved) | **1.000 → 1.000** (Δ=0) | Recall survives a full consolidation cycle. 3 seeds × 160-record corpus (20 targets + 40 confusors + 100 noise). |
 | **Session-start token cost** | **1,629** (minimal) / **2,993** (standard) | Both under the ≤3,000-token session budget. tiktoken-cl100k proxy. |
@@ -54,6 +54,7 @@ python -m bench.memory_footprint --n 10000                                      
 
 - **Recall p95 at 10k = 368 ms** — above the internal <100 ms target. The rank/centrality stage dominates (betweenness recompute is ~1.7 s@10k, mitigated by a centrality cache that stays on by default). A latency-optimization candidate.
 - **Historical-verbatim retrieval regressed 0.90 → 0.71 in this release** — the ability to retrieve the *superseded/archived* wording of an updated fact verbatim dropped. This is **separate from Rescue@10** (current-fact retrieval, unchanged at 1.000). Likely cause (per an external code review): the centrality-engine swap dropped Hebbian edge-weights (unweighted Brandes), shifting the seed-score landscape toward older densely-connected facts. A tracked fix for the next release.
+- **The contradiction bench reports three gates, and one fails by design.** Gate A (Rescue@10 — current fact in top-10) and Gate B-contract (the system actively signals the contradiction via its dual-route / anti-hits path, which a flat cosine cannot) both pass, and the overall verdict is built from those two. Gate B-classical (rank the current fact *above* a flat cosine baseline by MRR) shows ΔMRR ≈ −0.05 and is reported as FAIL — this is expected and labeled in the bench output: the system signals contradictions rather than re-ranking, so it makes no promise to beat raw cosine on MRR. Run `python -m bench.contradiction_longitudinal --scale honest --seeds 13 42 137` and you will see all three.
 
 ---
 

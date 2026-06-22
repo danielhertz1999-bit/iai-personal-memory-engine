@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -40,6 +41,46 @@ MAX_CAPTURE_LEN = 8000
 # This serializes that sequence so a tag can never be checked-as-absent by
 # two threads before either has inserted it.
 _CAPTURE_DEDUP_LOCK = threading.Lock()
+
+# Drain-in-progress accounting for the daemon's lifecycle idle countdown.
+#
+# The wrapper heartbeat file is only ONE signal that the daemon is busy. A
+# deferred-capture drain (triggered by real RPC traffic, kicked off at the
+# drowsy edge, or run on startup) can keep writing to the store long after the
+# heartbeat file has gone stale. If the idle countdown only watched the
+# heartbeat, it would force the FSM toward SLEEP -- which escalates to an
+# EXCLUSIVE store lock -- while these drain threads are still hammering the
+# store, causing lock contention. The daemon consults `is_drain_in_progress`
+# so an in-flight drain holds the idle countdown open. A depth counter (rather
+# than a boolean) keeps this correct under concurrent/overlapping drains across
+# the several threads that asyncio.to_thread dispatch spins up.
+_DRAIN_IN_PROGRESS_LOCK = threading.Lock()
+_drain_in_progress_depth = 0
+
+
+@contextlib.contextmanager
+def _drain_in_progress_guard():
+    """Mark a deferred-capture drain as in flight for its whole duration."""
+    global _drain_in_progress_depth
+    with _DRAIN_IN_PROGRESS_LOCK:
+        _drain_in_progress_depth += 1
+    try:
+        yield
+    finally:
+        with _DRAIN_IN_PROGRESS_LOCK:
+            _drain_in_progress_depth -= 1
+
+
+def is_drain_in_progress() -> bool:
+    """True while at least one deferred-capture drain is running.
+
+    The daemon's lifecycle idle countdown reads this so it does NOT advance the
+    FSM toward SLEEP (and the EXCLUSIVE store lock it takes) while drain threads
+    are still writing to the store.
+    """
+    with _DRAIN_IN_PROGRESS_LOCK:
+        return _drain_in_progress_depth > 0
+
 
 FAILED_MAX_ATTEMPTS: int = 3
 FAILED_BACKOFF_BASE_SEC: float = 60.0
@@ -278,26 +319,53 @@ def capture_turn(
     from iai_mcp.embed import embedder_for_store
     from iai_mcp.events import TELEMETRY_EMBED_NATIVE_FAILURE, write_event
 
-    try:
-        emb = embedder_for_store(store).embed(cue or text)
-    except Exception as exc:
-        write_event(
-            store,
-            TELEMETRY_EMBED_NATIVE_FAILURE,
-            {
-                "op_type": "capture",
-                "backend": "rust",
-                "error_type": type(exc).__name__,
-                "error": str(exc),
-            },
-        )
-        raise NativeError(f"capture encode failed: {exc}") from exc
-    embedding = list(emb)
+    # Embedding is the expensive native (Rust) matmul; the exact-key idem dedup
+    # below is a cheap SQLite lookup. Active sessions re-drain the *whole*
+    # transcript every turn (write_deferred_captures / capture_transcript walk
+    # from line 0 on each call), so embedding eagerly here re-embedded every
+    # already-stored turn only to throw the vector away as a "reinforced"
+    # exact-key re-drain -> chronic daemon CPU. Defer the embed so it runs at
+    # most once and only when actually needed: an already-seen episodic turn
+    # short-circuits on its idem tag and never embeds. Embed the message
+    # content, never the cue (the cue is a positional provenance label;
+    # embedding it collapsed the vector space and broke semantic recall). text
+    # is validated non-empty above (the MIN_CAPTURE_LEN guard).
+    _embed_cache: dict[str, list[float]] = {}
+
+    def _compute_embedding() -> list[float]:
+        if "v" in _embed_cache:
+            return _embed_cache["v"]
+        try:
+            emb = embedder_for_store(store).embed(text)
+        except Exception as exc:
+            write_event(
+                store,
+                TELEMETRY_EMBED_NATIVE_FAILURE,
+                {
+                    "op_type": "capture",
+                    "backend": "rust",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
+            )
+            raise NativeError(f"capture encode failed: {exc}") from exc
+        vec = list(emb)
+        _embed_cache["v"] = vec
+        return vec
 
     with _CAPTURE_DEDUP_LOCK:
         if _is_episodic_conversational(tier, role):
             ts_iso = now.isoformat()
             idem_t = _idem_tag(session_id, role, ts_iso, text, source_uuid=source_uuid)
+            # find_record_by_tag reads SQLite, but a just-inserted record may
+            # still sit in the in-process _record_buffer (not yet flushed to the
+            # records table). Under _CAPTURE_DEDUP_LOCK the insert path is
+            # serialized with this find, so flushing the buffer here makes every
+            # prior committed insert visible to the SQLite-backed find and closes
+            # the check-then-insert race that produced live idem-tag duplicates.
+            from iai_mcp.store import flush_record_buffer
+
+            flush_record_buffer(store)
             existing_id = store.find_record_by_tag(idem_t)
             if existing_id is not None:
                 try:
@@ -317,7 +385,7 @@ def capture_turn(
                 }
         else:
             try:
-                neighbours = store.query_similar(embedding, k=3, tier=tier)
+                neighbours = store.query_similar(_compute_embedding(), k=3, tier=tier)
             except (ValueError, IOError) as exc:
                 log.warning(
                     "capture_dedup_query_failed",
@@ -357,7 +425,7 @@ def capture_turn(
             tier=tier,
             literal_surface=text,
             aaak_index="",
-            embedding=embedding,
+            embedding=_compute_embedding(),
             community_id=None,
             centrality=0.0,
             detail_level=2,
@@ -642,8 +710,15 @@ def write_deferred_captures(
 ) -> Path:
     deferred_dir = Path.home() / ".iai-mcp" / ".deferred-captures"
     deferred_dir.mkdir(parents=True, exist_ok=True)
-    out_path = deferred_dir / f"{session_id}-{int(time.time())}.jsonl"
-    with out_path.open("w", encoding="utf-8") as fh:
+    # Include pid for collision safety: two parallel bulk-import workers in
+    # the same wall-clock second would otherwise race for the same final
+    # path. Stream to a sibling .jsonl.tmp file and atomic-rename only after
+    # flush+fsync — drain filters by ``suffix != ".jsonl"`` so the in-progress
+    # .tmp is never claimed mid-write.
+    final_name = f"{session_id}-{int(time.time())}-{os.getpid()}.jsonl"
+    out_path = deferred_dir / final_name
+    tmp_path = deferred_dir / f"{final_name}.tmp"
+    with tmp_path.open("w", encoding="utf-8") as fh:
         header = {
             "version": 1,
             "deferred_at": datetime.now(timezone.utc).isoformat(),
@@ -652,49 +727,65 @@ def write_deferred_captures(
         }
         fh.write(json.dumps(header, ensure_ascii=False) + "\n")
         path = Path(transcript_path).expanduser()
-        if not path.exists():
-            return out_path
-        seen = 0
-        with path.open(encoding="utf-8") as src:
-            for line in src:
-                if seen >= max_turns:
-                    break
-                seen += 1
-                try:
-                    obj = json.loads(line)
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                msg = obj.get("message") if isinstance(obj.get("message"), dict) else obj
-                role = obj.get("type") or msg.get("role", "")
-                if role not in {"user", "assistant"}:
-                    continue
-                content = msg.get("content", "")
-                if isinstance(content, list):
-                    text_parts = [
-                        b.get("text", "")
-                        for b in content
-                        if isinstance(b, dict) and b.get("type") == "text"
-                    ]
-                    text = "\n".join(text_parts).strip()
-                else:
-                    text = str(content).strip()
-                if not text:
-                    continue
-                event = {
-                    "text": text,
-                    "cue": f"session {session_id} turn {seen}",
-                    "tier": "episodic",
-                    "role": role,
-                    "ts": obj.get("timestamp") or datetime.now(timezone.utc).isoformat(),
-                }
-                src_uuid = obj.get("uuid")
-                if src_uuid:
-                    event["source_uuid"] = src_uuid
-                fh.write(json.dumps(event, ensure_ascii=False) + "\n")
+        if path.exists():
+            seen = 0
+            with path.open(encoding="utf-8") as src:
+                for line in src:
+                    if seen >= max_turns:
+                        break
+                    seen += 1
+                    try:
+                        obj = json.loads(line)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    msg = obj.get("message") if isinstance(obj.get("message"), dict) else obj
+                    role = obj.get("type") or msg.get("role", "")
+                    if role not in {"user", "assistant"}:
+                        continue
+                    content = msg.get("content", "")
+                    if isinstance(content, list):
+                        text_parts = [
+                            b.get("text", "")
+                            for b in content
+                            if isinstance(b, dict) and b.get("type") == "text"
+                        ]
+                        text = "\n".join(text_parts).strip()
+                    else:
+                        text = str(content).strip()
+                    if not text:
+                        continue
+                    event = {
+                        "text": text,
+                        "cue": f"session {session_id} turn {seen}",
+                        "tier": "episodic",
+                        "role": role,
+                        "ts": obj.get("timestamp") or datetime.now(timezone.utc).isoformat(),
+                    }
+                    src_uuid = obj.get("uuid")
+                    if src_uuid:
+                        event["source_uuid"] = src_uuid
+                    fh.write(json.dumps(event, ensure_ascii=False) + "\n")
+        fh.flush()
+        try:
+            os.fsync(fh.fileno())
+        except OSError as exc:  # noqa: BLE001 -- fsync is best-effort
+            log.debug("write_deferred_captures fsync failed: %s", exc)
+    os.replace(tmp_path, out_path)
     return out_path
 
 
 def drain_deferred_captures(store: MemoryStore) -> dict[str, int]:
+    """Drain crashed/orphaned deferred-capture files into the store.
+
+    Marks itself in-progress for the daemon idle countdown so the FSM does not
+    advance toward SLEEP (EXCLUSIVE store lock) mid-drain. See
+    `is_drain_in_progress`.
+    """
+    with _drain_in_progress_guard():
+        return _drain_deferred_captures_impl(store)
+
+
+def _drain_deferred_captures_impl(store: MemoryStore) -> dict[str, int]:
     deferred_dir = Path.home() / ".iai-mcp" / ".deferred-captures"
     log_dir = Path.home() / ".iai-mcp" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -1120,6 +1211,23 @@ def drain_permanent_failed_files(
 
 
 def drain_active_live_captures(
+    store: MemoryStore,
+    *,
+    exclude_session_id: str,
+) -> dict[str, int]:
+    """Drain live-session capture files into the store.
+
+    Marked in-progress for the daemon idle countdown, like
+    `drain_deferred_captures` -- both write to the store and must hold the FSM
+    out of SLEEP while running. See `is_drain_in_progress`.
+    """
+    with _drain_in_progress_guard():
+        return _drain_active_live_captures_impl(
+            store, exclude_session_id=exclude_session_id,
+        )
+
+
+def _drain_active_live_captures_impl(
     store: MemoryStore,
     *,
     exclude_session_id: str,

@@ -29,6 +29,22 @@ def _stop_escalation_bound() -> float:
     return STOP_TERM_TIMEOUT_S
 
 
+def _signal_daemon_wake() -> None:
+    """Create the wake signal before a kickstart so the booting daemon WAKEs.
+
+    Without it the daemon boots, re-reads its persisted HIBERNATION state and
+    hibernate-exits within a tick, closing the socket before it ever serves
+    recall. Best-effort: a failure here just falls back to the old behaviour.
+    """
+    try:
+        from iai_mcp.wake_handler import WakeHandler
+
+        root = os.environ.get("IAI_MCP_STORE") or os.path.expanduser("~/.iai-mcp")
+        WakeHandler(Path(root) / "wake.signal").signal_wake()
+    except Exception:  # noqa: BLE001 -- never let the wake signal break daemon start
+        pass
+
+
 def _stop_poll_interval() -> float:
     raw = os.environ.get("IAI_DAEMON_STOP_POLL_S")
     if raw:
@@ -257,6 +273,7 @@ def cmd_daemon_install(args: argparse.Namespace) -> int:
                 f"{result.stderr.strip()}",
                 file=sys.stderr,
             )
+        _signal_daemon_wake()
         _cli.subprocess.run(
             ["launchctl", "kickstart", f"gui/{uid}/{_cli.DAEMON_LABEL}"],
             check=False, capture_output=True,
@@ -364,6 +381,7 @@ def cmd_daemon_start(args: argparse.Namespace) -> int:
             ["launchctl", "bootstrap", f"gui/{uid}", str(target)],
             check=False, capture_output=True,
         )
+        _signal_daemon_wake()
         _cli.subprocess.run(
             ["launchctl", "kickstart", f"gui/{uid}/{_cli.DAEMON_LABEL}"],
             check=False, capture_output=True,

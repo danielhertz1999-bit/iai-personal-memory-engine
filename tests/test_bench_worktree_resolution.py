@@ -13,9 +13,10 @@ BENCH_DIR = WORKTREE_ROOT / "bench"
 
 BENCH_SCRIPTS_NEEDING_SHIM = [
     "_night_runner.py",
+    "capture_dedup_lock.py",
     "community_pipeline_perf.py",
     "consolidation_rss_peak.py",
-    "contradiction_longitudinal_claude.py",
+    "contradiction_longitudinal.py",
     "embedder_baseline.py",
     "embedder_latency.py",
     "longmemeval_blind.py",
@@ -36,7 +37,6 @@ BENCH_SCRIPTS_NO_SHIM = [
     "analyze_arousal_ab.py",
     "analyze_efe_ab.py",
     "arousal_budget_ab.py",
-    "contradiction_longitudinal.py",
     "embed_warm_cost.py",
     "embedder_recall_compare.py",
     "make_parity_summary.py",

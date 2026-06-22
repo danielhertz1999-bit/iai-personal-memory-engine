@@ -273,7 +273,7 @@ Most memory projects are a thin layer over an off-the-shelf vector store and som
 | Piece | What it is |
 |---|---|
 | **Hippo** | The storage engine — encrypted records, the vector index, and the graph in one local store. |
-| **MOSAIC** | My community-detection algorithm. It clusters the memory graph so recall spreads through the right neighbourhood and sleep can replay coherent episodes — tuned for a small, heterogeneously-weighted graph that changes every cycle, with stable community identity across splits and merges. |
+| **MOSAIC** | My community-detection algorithm — a Leiden-family method (CPM objective), rewritten in pure MIT-licensed Python to replace the GPL-licensed `leidenalg`/`igraph` dependency. It clusters the memory graph so recall spreads through the right neighbourhood and sleep can replay coherent episodes — tuned for a small, heterogeneously-weighted graph that changes every cycle, with stable community identity across splits and merges. |
 | **Lilli HD** | The hyperdimensional memory substrate — distinct representations for episodic / semantic / procedural memory, with structural recall (retrieve by the *shape* of a memory, not just its embedding). |
 | **Native engine** | A Rust core — the embedder and the graph kernels. This is where the latency comes from. |
 

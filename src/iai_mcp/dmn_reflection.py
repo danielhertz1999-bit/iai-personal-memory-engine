@@ -94,8 +94,22 @@ class ReflectionAgent:
             "ts": now.isoformat(),
         }
 
+        # Embed the reflection's literal_surface so the record is retrievable by
+        # vector/cosine recall. Hardcoding a zero vector (the old behaviour) made
+        # every daily-reflection semantic record permanently invisible to recall
+        # and fed zero-norm vectors into the scoring matmul (divide-by-zero
+        # warnings). If the native embed fails, fall back to a zero vector flagged
+        # embedding_pending=1 so the daemon's reembed-pending path fills it later
+        # (never silently leave an unretrievable zero record).
         embed_dim = int(store.embed_dim)
-        embedding = [0.0] * embed_dim
+        embedding_pending = 0
+        try:
+            from iai_mcp.embed import embedder_for_store
+
+            embedding = list(embedder_for_store(store).embed(literal_surface))
+        except Exception:  # noqa: BLE001 -- degrade to deferred reembed, never zero-and-forget
+            embedding = [0.0] * embed_dim
+            embedding_pending = 1
 
         return MemoryRecord(
             id=uuid4(),
@@ -103,6 +117,7 @@ class ReflectionAgent:
             literal_surface=literal_surface,
             aaak_index="",
             embedding=embedding,
+            embedding_pending=embedding_pending,
             community_id=None,
             centrality=0.5,
             detail_level=1,
