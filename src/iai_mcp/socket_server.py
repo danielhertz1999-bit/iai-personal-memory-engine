@@ -89,7 +89,14 @@ class SocketServer:
                 line = await reader.readline()
                 if not line:
                     break
-                self.last_activity_ts = time.monotonic()
+                # NB: last_activity_ts is intentionally NOT updated for every
+                # inbound line. It must track REAL memory traffic (recall/capture)
+                # only — never control-plane messages, in particular the watchdog's
+                # periodic {"type":"status"} liveness probe (every 7-30s). Counting
+                # those probes as activity kept _interrupt_check (daemon) perpetually
+                # True, so the sleep cycle never completed and never hibernated ->
+                # the 221% CPU churn. It is set below, only for dispatched JSON-RPC
+                # method calls.
                 req_id: Any = None
                 try:
                     req = json.loads(line)
@@ -144,6 +151,11 @@ class SocketServer:
                     continue
                 method = req["method"]
                 params = req.get("params") or {}
+                # Real memory traffic: mark activity only for dispatched JSON-RPC
+                # method calls so background consolidation defers while the user is
+                # actively recalling/capturing. Control/status probes never reach
+                # here, so they no longer keep the daemon awake.
+                self.last_activity_ts = time.monotonic()
                 try:
                     from iai_mcp.core import dispatch
                     result = await asyncio.to_thread(

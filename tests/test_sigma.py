@@ -101,3 +101,36 @@ def test_sigma_module_does_not_call_nx_sigma():
         assert needle not in text, (
             f"sigma.py must NOT call {needle} -- use fast_sigma"
         )
+
+
+def test_sigma_ceiling_constant_above_floor():
+    # Defensive cap added in the 2026-06-21 remediation: bound the unbounded
+    # small-worldness compute on a pathologically large graph.
+    from iai_mcp import sigma
+
+    assert isinstance(sigma.SIGMA_N_CEIL, int)
+    assert sigma.SIGMA_N_CEIL > sigma.SIGMA_N_FLOOR
+
+
+def test_compute_sigma_returns_none_above_ceiling(monkeypatch):
+    # Above SIGMA_N_CEIL, compute_sigma skips the compute and returns None
+    # (regime -> insufficient_data). WITHOUT the cap this 300-node small-world
+    # graph yields a finite float, so the test fails -> the guard is load-bearing.
+    from iai_mcp import sigma
+    from iai_mcp.sigma import classify_regime, compute_sigma
+
+    monkeypatch.setattr(sigma, "SIGMA_N_CEIL", 100)
+    g = nx.connected_watts_strogatz_graph(300, 6, 0.1, seed=42)
+    mg = _nx_graph_to_memory_graph(g)
+    assert mg.node_count() == 300 > sigma.SIGMA_N_CEIL
+    assert compute_sigma(mg) is None
+    assert classify_regime(mg.node_count(), compute_sigma(mg)) == "insufficient_data"
+
+
+def test_compute_sigma_ceiling_env_override(monkeypatch):
+    from iai_mcp.sigma import compute_sigma
+
+    monkeypatch.setenv("IAI_MCP_SIGMA_N_CEIL", "100")
+    g = nx.connected_watts_strogatz_graph(300, 6, 0.1, seed=42)
+    mg = _nx_graph_to_memory_graph(g)
+    assert compute_sigma(mg) is None

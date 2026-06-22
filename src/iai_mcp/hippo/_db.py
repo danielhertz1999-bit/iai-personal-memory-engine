@@ -574,6 +574,13 @@ class HippoDB:
     ) -> None:
         import struct as _struct
         zero_blob = _struct.pack(f"<{self._embed_dim}f", *([0.0] * self._embed_dim))
+        # Encrypt the confidential columns at rest with the same key provider and
+        # uuid-derived associated data the normal insert path uses, so a row in
+        # the deferred-embed window is indistinguishable from a fully-embedded
+        # row on disk. When no key provider is configured these are no-ops and
+        # the values are stored as plaintext, unchanged.
+        literal_surface = self._encrypt_for_uuid(record_id, literal_surface)
+        provenance_json = self._encrypt_for_uuid(record_id, provenance_json)
         with self._conn_lock:
             self._conn.execute(
                 "INSERT INTO records"
@@ -616,6 +623,15 @@ class HippoDB:
         for row in rows:
             rid = row["id"]
             surface = row["literal_surface"] or ""
+            # On an encrypted store literal_surface is iai:enc:v1: ciphertext; embedding
+            # the ciphertext would produce a garbage vector. Decrypt first (no-op on a
+            # plaintext store or a value that isn't encrypted). A decrypt failure leaves
+            # the row embedding_pending=1 so it is retried rather than poisoned.
+            try:
+                surface = self._decrypt_record_field(rid, "literal_surface", surface)
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("reembed_pending_rows: decrypt failed for id=%s: %s", rid, exc)
+                continue
             try:
                 vec = list(embedder.embed(surface))
             except Exception as exc:  # noqa: BLE001

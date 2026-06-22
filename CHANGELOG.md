@@ -5,6 +5,76 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.5] — 2026-06-21
+
+### Security
+
+- **Deferred-embed pending rows are now encrypted at rest.** On an encrypted
+  store, a record awaiting background embedding briefly held its text
+  (`literal_surface`) and provenance in plaintext during the embed window.
+  Pending rows are now encrypted on write and decrypted just before embedding,
+  matching the rest of the at-rest encryption. Unencrypted stores are
+  unaffected.
+
+### Fixed
+
+- **Sleep daemon WAKE/idle CPU storm.** The consolidation cycle could spin the
+  CPU and never settle; the daemon now serves recall on wake instead of leaving
+  it unserved. Thanks to @Marsu6996.
+- **Consolidation and recall correctness.** Tombstoned records are excluded from
+  the runtime graph, crisis-mode topology is built on the live graph, recall
+  scores are clamped to a valid range, and reflection embedding plus crash
+  recovery are hardened — closing the remaining root causes behind the
+  crisis-mode loop. Thanks to @Marsu6996.
+
+## [1.1.4] — 2026-06-21
+
+### Fixed
+
+- **`migrate --reembed-from-text` repaired nothing on bulk-loaded stores.** The
+  version added in v1.1.3 fetched each record through a path that returned
+  nothing on stores populated in bulk, so it re-embedded zero records and exited
+  reporting success — a silent no-op. It now reads records directly, actually
+  re-embeds from the stored text, and is resumable with bounded memory use.
+  **If you ran the migration on v1.1.3, run it again on v1.1.4** — your vectors
+  were not repaired. Throughput is embedder-bound (no batch speedup yet), so a
+  large store takes a while; the run is resumable and reports progress.
+
+## [1.1.3] — 2026-06-21
+
+### Fixed
+
+- **Ambient capture embedded the cue label instead of the message.** The
+  session-capture path embedded a positional provenance label
+  (`"session <id> turn <n>"`) rather than the message content, so stored
+  vectors collapsed and semantic recall degraded on any store built through the
+  session hook. Capture now embeds the message content; the stored text
+  (`literal_surface`) was never affected. Run
+  `iai-mcp migrate --reembed-from-text` once after upgrading to repair vectors
+  written before this fix. Thanks to @Marsu6996 for the report and fix.
+- **Data loss under parallel transcript imports.** `write_deferred_captures`
+  wrote in place to the final filename, so a concurrent drain could read a
+  half-written file and quarantine it as permanently failed. Writes are now
+  atomic (temp file + `os.replace`). Thanks to @gardinermichael for the report.
+- **Sleep daemon could stall in crisis mode.** Interrupted consolidation steps
+  now record the underlying error instead of a bare deferred marker; recall
+  degrades honestly instead of serving stale schema-dominated results while a
+  cycle is stuck; and crisis mode auto-clears after 72 hours. A watchdog now
+  emits an alert when the sleep cycle stops completing.
+
+### Added
+
+- `iai-mcp migrate --reembed-from-text` — re-embeds existing episodic records
+  from their stored text to repair vectors written before the capture fix above.
+  Idempotent; supports `--dry-run`, `--resume`, `--rollback`, and
+  `--reembed-batch-size`.
+- `iai-mcp migrate --salvage-torn-permanent-failed` — recovers complete records
+  from torn `.permanent-failed-*.jsonl` capture files and quarantines the
+  originals.
+- `iai-mcp deferred-unlock-dead-pids` — releases deferred-capture files left
+  locked by a process that is no longer running. Run while the daemon is
+  stopped.
+
 ## [1.1.2] — 2026-06-17
 
 ### Fixed

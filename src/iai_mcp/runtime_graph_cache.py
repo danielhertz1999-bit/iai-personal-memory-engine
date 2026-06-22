@@ -29,7 +29,16 @@ rebuild_ready: threading.Event = threading.Event()
 
 CACHE_VERSION: str = "62-02-v5"
 
-_STALENESS_WINDOW: int = 10
+# Cache-key staleness bucket. The key buckets on records//WINDOW and
+# edges//WINDOW; try_load requires an exact key match. With WINDOW=10 a normal
+# day of capture (+~150 records, +~1300 edges) crossed ~130 buckets, so the
+# on-disk graph cache MISSED on essentially every WAKE and the full community
+# detection (mosaic) was recomputed each time — the WAKE CPU storm. Edges churn
+# fastest, so they are the binding term. WINDOW=250 keeps the cache valid across
+# a normal day so most WAKEs are cheap cache HITs; the independent age/dirty fuse
+# in consult_overlay (25h / dirty>50) remains the real freshness backstop, and
+# build_runtime_graph's single-flight gate makes the rare genuine miss harmless.
+_STALENESS_WINDOW: int = 250
 LEGACY_CACHE_VERSION_PLAINTEXT: str = "06-02-v1"
 
 _CACHE_AAD: bytes = b"runtime-graph-cache:v3"

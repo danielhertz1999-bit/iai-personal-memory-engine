@@ -23,9 +23,12 @@ from iai_mcp.concurrency import serve_control_socket  # noqa: F401 -- re-exporte
 from iai_mcp.daemon_state import load_state, save_state
 from iai_mcp.dream import run_rem_cycle
 from iai_mcp.events import (
+    CRISIS_MODE_AUTO_EXPIRED,
     DAEMON_MEMORY_PRESSURE_KILL,
+    DAEMON_SLEEP_CYCLE_STALE,
     DAEMON_WATCHDOG_NEEDS_OPERATOR,
     DAEMON_WEDGE_KILL,
+    emit_best_effort,
     write_event,
 )
 from iai_mcp.identity_audit import continuous_audit
@@ -147,6 +150,52 @@ def _should_drain_on_drowsy_edge(prev, current) -> bool:
     return prev is _L.WAKE and current is _L.DROWSY
 
 
+# Idle-countdown decisions. The lifecycle tick translates these into FSM events.
+IDLE_DECISION_ACTIVE: str = "active"   # real work in flight -> reset the countdown
+IDLE_DECISION_SLEEP: str = "sleep"     # idle past the sleep threshold -> IDLE_30MIN
+IDLE_DECISION_DROWSY: str = "drowsy"   # idle past the drowsy threshold -> IDLE_5MIN
+IDLE_DECISION_HOLD: str = "hold"       # within the drowsy window -> no transition
+
+
+def _idle_countdown_decision(
+    *,
+    scanner_active: bool,
+    drain_in_progress: bool,
+    seconds_since_rpc: float,
+    idle_elapsed: float,
+    sleep_eligible: bool,
+    recent_rpc_window_sec: float,
+    drowsy_after_sec: float,
+    sleep_heartbeat_idle_sec: float,
+) -> str:
+    """Decide what the lifecycle idle countdown should do this tick.
+
+    The wrapper heartbeat (``scanner_active``) is only ONE signal that the
+    daemon is busy. Two others MUST also hold the daemon awake:
+
+    * ``drain_in_progress`` -- a deferred-capture drain is writing to the store
+      right now. The wrappers dir can be empty (heartbeat stale) while a drain
+      kicked off by earlier RPC traffic is still hammering the store.
+    * ``seconds_since_rpc`` -- real JSON-RPC traffic arrived recently. A drain
+      runs inside its triggering request, so by the time a long drain finishes
+      ``last_activity_ts`` (set at request start) may already look stale; the
+      ``drain_in_progress`` signal covers that tail.
+
+    When any of these holds we return ``ACTIVE`` so the caller resets the idle
+    countdown. Otherwise the daemon really is idle and we advance toward SLEEP
+    (which escalates to an EXCLUSIVE store lock) / DROWSY exactly as the
+    heartbeat-only logic used to, so a genuinely quiet daemon still settles and
+    crisis re-arming in SLEEP keeps running.
+    """
+    if scanner_active or drain_in_progress or seconds_since_rpc < recent_rpc_window_sec:
+        return IDLE_DECISION_ACTIVE
+    if idle_elapsed >= sleep_heartbeat_idle_sec and sleep_eligible:
+        return IDLE_DECISION_SLEEP
+    if idle_elapsed >= drowsy_after_sec:
+        return IDLE_DECISION_DROWSY
+    return IDLE_DECISION_HOLD
+
+
 def _run_drowsy_drain(store, *, drain_fn, write_event_fn) -> None:
     try:
         result = drain_fn(store)
@@ -230,8 +279,53 @@ def _store_is_empty(store: MemoryStore) -> bool:
     try:
         return store.db.open_table("records").count_rows() == 0
     except (OSError, ValueError, KeyError, RuntimeError) as exc:
-        log.debug("store empty check failed, assuming empty: %s", exc)
-        return True
+        # Unknown != empty. A transient count failure (e.g. the shared sqlite
+        # connection left in an error state by a concurrent heavy reader, raising
+        # HippoIntegrityError/lock errors which subclass RuntimeError) must NOT be
+        # treated as an empty store: doing so parks the whole lifecycle tick
+        # (no idle-check, no drain) on a store that actually has records. Treat
+        # the unknown case as NOT empty so the tick proceeds; a truly empty store
+        # just does a little harmless no-op work.
+        log.debug("store empty check failed, assuming NOT empty: %s", exc)
+        # e8f3deb fixed the *behavior* (don't park the tick) but left the
+        # condition invisible. A recurring count failure (sqlite left in an error
+        # state by a heavy reader) should surface to the operator, not just
+        # log.debug. emit_best_effort is buffered and never raises, so it is safe
+        # even when the store connection is the thing failing.
+        try:
+            emit_best_effort(
+                store,
+                "store_empty_check_failed",
+                {"error": str(exc), "error_type": type(exc).__name__},
+                severity="warning",
+            )
+        except Exception:  # noqa: BLE001 -- telemetry must never break the tick
+            pass
+        return False
+
+
+def _normalize_boot_lifecycle_state(raw: dict) -> tuple[dict, bool]:
+    """Repair a crash-left incoherent lifecycle state at boot.
+
+    A daemon killed mid-SLEEP can leave lifecycle_state.json at
+    current_state=SLEEP with sleep_cycle_progress=None -- incoherent, because a
+    real in-flight sleep cycle always carries a progress dict. Resuming it wedges
+    the daemon (it never advances the pipeline, never reaches the recluster that
+    clears crisis, and recall stays degraded). Reset that one case to a clean
+    WAKE and drop the stale crisis flag. A genuine degeneration re-arms crisis on
+    the next complete sleep cycle. Returns (state, changed).
+    """
+    if (
+        isinstance(raw, dict)
+        and raw.get("current_state") == "SLEEP"
+        and raw.get("sleep_cycle_progress") is None
+    ):
+        out = dict(raw)
+        out["current_state"] = "WAKE"
+        out["crisis_mode"] = False
+        out["crisis_mode_since_ts"] = None
+        return out, True
+    return raw, False
 
 
 def _is_inside_window(
@@ -492,6 +586,10 @@ async def _tick_body(
 
 
     state["last_tick_at"] = datetime.now(timezone.utc).isoformat()
+    # Clear the skip reason: reaching here means the tick was NOT skipped. Leaving a
+    # stale "empty_store"/"paused" value here makes a healthy daemon look parked in
+    # observability (last_tick_skipped_reason is only ever set, never reset).
+    state["last_tick_skipped_reason"] = None
     try:
         await asyncio.to_thread(save_state, state)
     except (OSError, ValueError) as exc:
@@ -964,11 +1062,13 @@ async def main() -> int:
             async def _boot_preload() -> None:
                 try:
                     from iai_mcp import retrieve as _retrieve_preload
-                    _g, _a, _rc = await asyncio.to_thread(
-                        _retrieve_preload.build_runtime_graph, store,
-                    )
+                    # build_runtime_graph already persists the cache internally
+                    # (with the full node_payload) on a miss. The previous extra
+                    # save(..., node_payload=None, ...) here overwrote that good
+                    # cache with a payload-less one (forcing a pandas re-read on
+                    # the next hit) — so we just warm the cache and drop it.
                     await asyncio.to_thread(
-                        _rgc_mod.save, store, _a, _rc, None, 0,
+                        _retrieve_preload.build_runtime_graph, store,
                     )
                 except Exception as _exc:  # noqa: BLE001 -- preload MUST NOT crash daemon
                     log.debug("boot_preload failed: %s", _exc, exc_info=True)
@@ -1048,6 +1148,38 @@ async def main() -> int:
         _sleep_pipeline = _SleepPipeline(store=store)
 
         from pathlib import Path as _PathS2
+        # Boot normalization for a crash mid-SLEEP: lifecycle_state.json can be
+        # left at current_state=SLEEP with sleep_cycle_progress=None -- an
+        # incoherent state (a real in-flight cycle always carries a progress
+        # dict). Resuming it wedges the daemon: it never advances the sleep
+        # pipeline, never reaches the recluster that clears crisis, and recall
+        # stays degraded (SLEEP + crisis both degrade recall). Reset that one
+        # case to a clean WAKE (and drop the stale crisis flag set before the
+        # crash) so the daemon serves immediately; a genuine degeneration will
+        # simply re-arm crisis on the next complete sleep cycle.
+        try:
+            import json as _json_lc
+            _lc_path = _PathS2.home() / ".iai-mcp" / "lifecycle_state.json"
+            _lc_raw = _json_lc.loads(_lc_path.read_text())
+            _lc_norm, _lc_changed = _normalize_boot_lifecycle_state(_lc_raw)
+            if _lc_changed:
+                _lc_path.write_text(_json_lc.dumps(_lc_norm, indent=2))
+                log.warning(
+                    "lifecycle_boot_normalized: stale SLEEP without "
+                    "sleep_cycle_progress -> WAKE (crisis cleared)"
+                )
+                try:
+                    emit_best_effort(
+                        store,
+                        "lifecycle_boot_normalized",
+                        {"from_state": "SLEEP", "to_state": "WAKE",
+                         "reason": "sleep_without_progress"},
+                        severity="warning",
+                    )
+                except Exception:  # noqa: BLE001 -- telemetry must not block boot
+                    pass
+        except (OSError, ValueError) as _lc_exc:
+            log.debug("lifecycle boot normalization skipped: %s", _lc_exc)
         _s2_config = _load_s2_config()
         _s2_coord = S2Coordinator(
             store=store,
@@ -1133,6 +1265,41 @@ async def main() -> int:
                     pass
 
                 try:
+                    from iai_mcp.lifecycle_state import (
+                        load_state as _load_lc,
+                        save_state as _save_lc,
+                    )
+                    _lc_state = await asyncio.to_thread(_load_lc)
+                    _now_utc = datetime.now(timezone.utc)
+                    _expired, _ctx = _check_crisis_mode_expiry(_lc_state, _now_utc)
+                    if _expired:
+                        _lc_state["crisis_mode"] = False
+                        _lc_state["crisis_mode_since_ts"] = None
+                        await asyncio.to_thread(_save_lc, _lc_state)
+                        try:
+                            def _emit_expiry() -> None:
+                                write_event(
+                                    store,
+                                    CRISIS_MODE_AUTO_EXPIRED,
+                                    _ctx,
+                                    severity="warning",
+                                )
+                            await asyncio.to_thread(_emit_expiry)
+                        except Exception:  # noqa: BLE001 -- ledger emit failure non-fatal
+                            log.debug(
+                                "crisis_mode_auto_expired emit failed",
+                                exc_info=True,
+                            )
+                    elif _ctx.get("backfilled_since_ts"):
+                        _lc_state["crisis_mode_since_ts"] = _ctx["backfilled_since_ts"]
+                        await asyncio.to_thread(_save_lc, _lc_state)
+                except Exception:  # noqa: BLE001 -- expiry check MUST NOT crash lifecycle_tick
+                    log.debug(
+                        "lifecycle_tick crisis_mode expiry check failed",
+                        exc_info=True,
+                    )
+
+                try:
                     scanner_active = await asyncio.to_thread(
                         _heartbeat_scanner.is_active,
                     )
@@ -1145,6 +1312,34 @@ async def main() -> int:
 
                     now_mono = time.monotonic()
                     idle_elapsed = now_mono - _last_active_monotonic[0]
+
+                    # Beyond the wrapper heartbeat, real RPC traffic and an
+                    # in-flight deferred-capture drain are activity too. Folding
+                    # them into the idle countdown stops the FSM forcing SLEEP
+                    # (-> EXCLUSIVE store lock) while drain threads are still
+                    # hammering the store. See _idle_countdown_decision.
+                    try:
+                        from iai_mcp.capture import is_drain_in_progress as _drain_q
+                        _drain_active = bool(await asyncio.to_thread(_drain_q))
+                    except Exception:  # noqa: BLE001 -- idle accounting MUST NOT crash the tick
+                        _drain_active = False
+                    _seconds_since_rpc = (
+                        (now_mono - mcp_socket.last_activity_ts)
+                        if mcp_socket is not None
+                        else float("inf")
+                    )
+                    _idle_decision = _idle_countdown_decision(
+                        scanner_active=scanner_active,
+                        drain_in_progress=_drain_active,
+                        seconds_since_rpc=_seconds_since_rpc,
+                        idle_elapsed=idle_elapsed,
+                        sleep_eligible=sleep_eligible,
+                        recent_rpc_window_sec=INTERRUPT_RECENT_ACTIVITY_WINDOW_SEC,
+                        drowsy_after_sec=DROWSY_AFTER_SEC,
+                        sleep_heartbeat_idle_sec=SLEEP_HEARTBEAT_IDLE_SEC,
+                    )
+                    if _idle_decision == IDLE_DECISION_ACTIVE:
+                        _last_active_monotonic[0] = now_mono
 
                     try:
                         from iai_mcp.daemon_state import load_state as _load_ds
@@ -1194,7 +1389,10 @@ async def main() -> int:
                         pass
 
                     if scanner_active:
-                        _last_active_monotonic[0] = now_mono
+                        # _last_active_monotonic was already refreshed above
+                        # (scanner_active -> IDLE_DECISION_ACTIVE); a fresh
+                        # wrapper heartbeat additionally pulls the FSM back to
+                        # WAKE, which RPC/drain activity alone does not.
                         try:
                             await _state_machine.dispatch(
                                 _LifecycleEvent.HEARTBEAT_REFRESH,
@@ -1202,7 +1400,7 @@ async def main() -> int:
                             )
                         except (S2OscillationConflict, S2OscillationBlocked):
                             pass
-                    elif idle_elapsed >= SLEEP_HEARTBEAT_IDLE_SEC and sleep_eligible:
+                    elif _idle_decision == IDLE_DECISION_SLEEP:
                         try:
                             await _state_machine.dispatch(
                                 _LifecycleEvent.IDLE_30MIN,
@@ -1211,7 +1409,7 @@ async def main() -> int:
                             )
                         except (S2OscillationConflict, S2OscillationBlocked):
                             pass
-                    elif idle_elapsed >= DROWSY_AFTER_SEC:
+                    elif _idle_decision == IDLE_DECISION_DROWSY:
                         try:
                             await _state_machine.dispatch(
                                 _LifecycleEvent.IDLE_5MIN,
@@ -1279,8 +1477,13 @@ async def main() -> int:
                     _prev_lifecycle_state[0] = current
                     if current is _LifecycleState.SLEEP:
                         def _interrupt_check() -> bool:
-                            if mcp_socket.active_connections > 0:
-                                return True
+                            # Defer the sleep pipeline only on RECENT ACTIVITY, not on
+                            # open connections: long-lived Claude sessions keep sockets
+                            # open permanently, so `active_connections > 0` was True at
+                            # nearly every tick -> the cycle never completed -> no
+                            # HIBERNATION -> the wake-hook re-ran every 30s (the 221% CPU
+                            # churn). last_activity_ts is refreshed on each request, so a
+                            # busy burst still defers; a 30s lull lets the cycle finish.
                             elapsed = (
                                 time.monotonic() - mcp_socket.last_activity_ts
                             )
@@ -1473,6 +1676,8 @@ from iai_mcp.daemon._watchdog import (  # noqa: E402 -- re-exported after main()
     WATCHDOG_MAX_RECOVERIES,
     WATCHDOG_RECOVERY_WINDOW_SEC,
     WATCHDOG_COLD_START_GRACE_SEC,
+    WATCHDOG_SLEEP_STALE_THRESHOLD_SEC,
+    WATCHDOG_CRISIS_MODE_EXPIRY_SEC,
     _WATCHDOG_LOG_FD,
     _WATCHDOG_BLACKBOX_FD,
     _WATCHDOG_BLACKBOX_EPISODE_FIRED,
@@ -1480,12 +1685,15 @@ from iai_mcp.daemon._watchdog import (  # noqa: E402 -- re-exported after main()
     BOOT_LOCK_RETRY_ATTEMPTS,
     BOOT_LOCK_RETRY_BACKOFF_SEC,
     _last_overload_event_at,
+    _last_sleep_stale_started_at,
     _daemon_started_monotonic,
     _hippea_cascade_loop,
     _watchdog_active_task_names,
     _cpu_watchdog_loop,
     _next_poll_interval,
     _evaluate_watchdog,
+    _check_sleep_cycle_staleness,
+    _check_crisis_mode_expiry,
     _watchdog_state_dir,
     _watchdog_log_path,
     _watchdog_socket_path,
@@ -1512,6 +1720,11 @@ __all__ = [
     "_raise_fd_limit",
     "_run_drowsy_drain",
     "_should_drain_on_drowsy_edge",
+    "_idle_countdown_decision",
+    "IDLE_DECISION_ACTIVE",
+    "IDLE_DECISION_SLEEP",
+    "IDLE_DECISION_DROWSY",
+    "IDLE_DECISION_HOLD",
     "_kick_drowsy_rgc_rebuild",
     "_wake_hook_rebuild_if_cold",
     "_store_is_empty",
@@ -1579,6 +1792,8 @@ __all__ = [
     "WATCHDOG_MAX_RECOVERIES",
     "WATCHDOG_RECOVERY_WINDOW_SEC",
     "WATCHDOG_COLD_START_GRACE_SEC",
+    "WATCHDOG_SLEEP_STALE_THRESHOLD_SEC",
+    "WATCHDOG_CRISIS_MODE_EXPIRY_SEC",
     "_WATCHDOG_LOG_FD",
     "_WATCHDOG_BLACKBOX_FD",
     "_WATCHDOG_BLACKBOX_EPISODE_FIRED",
@@ -1586,12 +1801,15 @@ __all__ = [
     "BOOT_LOCK_RETRY_ATTEMPTS",
     "BOOT_LOCK_RETRY_BACKOFF_SEC",
     "_last_overload_event_at",
+    "_last_sleep_stale_started_at",
     "_daemon_started_monotonic",
     "_hippea_cascade_loop",
     "_watchdog_active_task_names",
     "_cpu_watchdog_loop",
     "_next_poll_interval",
     "_evaluate_watchdog",
+    "_check_sleep_cycle_staleness",
+    "_check_crisis_mode_expiry",
     "_watchdog_state_dir",
     "_watchdog_log_path",
     "_watchdog_socket_path",
@@ -1607,6 +1825,8 @@ __all__ = [
     "_watchdog_tick",
     "_liveness_watchdog",
     "DAEMON_MEMORY_PRESSURE_KILL",
+    "DAEMON_SLEEP_CYCLE_STALE",
     "DAEMON_WATCHDOG_NEEDS_OPERATOR",
     "DAEMON_WEDGE_KILL",
+    "CRISIS_MODE_AUTO_EXPIRED",
 ]
