@@ -20,18 +20,29 @@ from pathlib import Path
 
 import pytest
 
+from iai_mcp._ipc import IS_WINDOWS, open_ipc_connection
+
+
+def _endpoint_ready_path(sock_path: Path) -> Path:
+    """Path that exists once SocketServer has bound: the unix socket on POSIX,
+    the TCP port file (``<sock_path>.port``) on Windows."""
+    return Path(f"{sock_path}.port") if IS_WINDOWS else sock_path
+
 
 @pytest.fixture
 def short_socket_paths(tmp_path, monkeypatch):
     from iai_mcp import concurrency, daemon_state
 
-    sock_dir = Path(f"/tmp/iai-srvact-{os.getpid()}-{id(tmp_path)}")
+    sock_dir = tmp_path / "sock"
     sock_dir.mkdir(parents=True, exist_ok=True)
     sock_path = sock_dir / "d.sock"
     state_path = tmp_path / ".daemon-state.json"
 
     monkeypatch.setattr(concurrency, "SOCKET_PATH", sock_path)
     monkeypatch.setattr(daemon_state, "STATE_PATH", state_path)
+    # Per-test endpoint isolation (unix socket on POSIX; TCP port file on
+    # Windows) via the env var both serve() and open_ipc_connection() honor.
+    monkeypatch.setenv("IAI_DAEMON_SOCKET_PATH", str(sock_path))
     store_root = tmp_path / "store_root"
     store_root.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("IAI_MCP_STORE", str(store_root))
@@ -51,9 +62,7 @@ def short_socket_paths(tmp_path, monkeypatch):
 
 
 async def _send_line(sock_path: Path, payload: dict, *, timeout: float = 10.0) -> dict:
-    reader, writer = await asyncio.wait_for(
-        asyncio.open_unix_connection(path=str(sock_path)), timeout=timeout,
-    )
+    reader, writer = await open_ipc_connection(timeout=timeout)
     try:
         writer.write((json.dumps(payload) + "\n").encode("utf-8"))
         await writer.drain()
@@ -73,12 +82,13 @@ async def _serve(sock_path: Path, store, coro_fn):
     from iai_mcp.socket_server import SocketServer
 
     srv = SocketServer(store, idle_secs=99999)
-    server_task = asyncio.create_task(srv.serve(socket_path=sock_path))
+    server_task = asyncio.create_task(srv.serve())
+    ready_path = _endpoint_ready_path(sock_path)
     for _ in range(250):
-        if sock_path.exists():
+        if ready_path.exists():
             break
         await asyncio.sleep(0.01)
-    if not sock_path.exists():
+    if not ready_path.exists():
         srv.shutdown_event.set()
         raise AssertionError("socket never bound")
     try:
