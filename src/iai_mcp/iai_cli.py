@@ -6,7 +6,7 @@ import subprocess
 import sys
 from typing import Any
 
-__version__ = "1.1.4"
+__version__ = "1.1.5"
 
 
 _CYAN = "\x1b[96m"

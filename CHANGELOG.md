@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.5] — 2026-06-21
+
+### Security
+
+- **Deferred-embed pending rows are now encrypted at rest.** On an encrypted
+  store, a record awaiting background embedding briefly held its text
+  (`literal_surface`) and provenance in plaintext during the embed window.
+  Pending rows are now encrypted on write and decrypted just before embedding,
+  matching the rest of the at-rest encryption. Unencrypted stores are
+  unaffected.
+
+### Fixed
+
+- **Sleep daemon WAKE/idle CPU storm.** The consolidation cycle could spin the
+  CPU and never settle; the daemon now serves recall on wake instead of leaving
+  it unserved. Thanks to @Marsu6996.
+- **Consolidation and recall correctness.** Tombstoned records are excluded from
+  the runtime graph, crisis-mode topology is built on the live graph, recall
+  scores are clamped to a valid range, and reflection embedding plus crash
+  recovery are hardened — closing the remaining root causes behind the
+  crisis-mode loop. Thanks to @Marsu6996.
+
 ## [1.1.4] — 2026-06-21
 
 ### Fixed
