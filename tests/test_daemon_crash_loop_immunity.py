@@ -12,10 +12,17 @@ from typing import Any
 
 import pytest
 
+from _socket_test_helpers import (
+    daemon_endpoint,
+    daemon_endpoint_ready_path,
+    new_daemon_client_socket,
+)
+
 
 @pytest.fixture
 def iai_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Path.home() reads USERPROFILE on Windows
     monkeypatch.setenv("PYTHON_KEYRING_BACKEND", "keyring.backends.fail.Keyring")
     monkeypatch.setenv("IAI_MCP_CRYPTO_PASSPHRASE", "test-crash-loop-passphrase")
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path / ".iai-mcp" / "hippo"))
@@ -217,6 +224,7 @@ def test_failed_attempt_retry_policy_still_holds(iai_home, monkeypatch):
 
 def test_socket_binds_before_drain_completes(tmp_path, monkeypatch, request):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Path.home() reads USERPROFILE on Windows
     monkeypatch.setenv("PYTHON_KEYRING_BACKEND", "keyring.backends.fail.Keyring")
     monkeypatch.setenv("IAI_MCP_CRYPTO_PASSPHRASE", "test-bind-first-passphrase")
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path / ".iai-mcp" / "hippo"))
@@ -270,11 +278,11 @@ def test_socket_binds_before_drain_completes(tmp_path, monkeypatch, request):
                     if exc is not None:
                         raise exc
                     return False
-                if tmp_socket.exists():
+                if daemon_endpoint_ready_path(tmp_socket).exists():
                     try:
-                        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                        s = new_daemon_client_socket()
                         s.settimeout(1.0)
-                        await asyncio.to_thread(s.connect, str(tmp_socket))
+                        await asyncio.to_thread(s.connect, daemon_endpoint(tmp_socket))
                         s.close()
                         snapshot["bound_at"] = time.monotonic()
                         snapshot["drain_started"] = drain_state["started"]
@@ -313,6 +321,7 @@ def test_socket_binds_before_drain_completes(tmp_path, monkeypatch, request):
 
 def test_atomic_claim_logs_generic_oserror(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Path.home() reads USERPROFILE on Windows
     monkeypatch.setenv("PYTHON_KEYRING_BACKEND", "keyring.backends.fail.Keyring")
     monkeypatch.setenv("IAI_MCP_CRYPTO_PASSPHRASE", "p6-1-fix-a-test-passphrase")
     monkeypatch.setenv("IAI_MCP_STORE", str(tmp_path / ".iai-mcp" / "hippo"))
@@ -330,14 +339,16 @@ def test_atomic_claim_logs_generic_oserror(tmp_path, monkeypatch):
 
     import pathlib as _pathlib
 
-    real_rename = _pathlib.Path.rename
+    real_replace = _pathlib.Path.replace
 
     def boom(self, target):
         if ".processing-" in str(target) and self == fpath:
             raise PermissionError("simulated EACCES on atomic claim")
-        return real_rename(self, target)
+        return real_replace(self, target)
 
-    monkeypatch.setattr(_pathlib.Path, "rename", boom)
+    # The atomic claim uses Path.replace (os.replace) — not rename — so the
+    # claim survives a pre-existing dest on Windows. Patch what the code calls.
+    monkeypatch.setattr(_pathlib.Path, "replace", boom)
 
     from iai_mcp.capture import drain_deferred_captures
     from iai_mcp.store import MemoryStore
@@ -387,7 +398,8 @@ def test_strip_processing_marker_returns_false_on_rename_failure(
     def boom(self, target):
         raise PermissionError("simulated")
 
-    monkeypatch.setattr(_pathlib.Path, "rename", boom)
+    # _strip_processing_marker uses Path.replace (os.replace), not rename.
+    monkeypatch.setattr(_pathlib.Path, "replace", boom)
 
     new_path, ok = _strip_processing_marker(src, log_path=log_path)
     assert ok is False, "strip MUST report failure"

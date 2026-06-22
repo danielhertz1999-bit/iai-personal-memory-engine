@@ -94,6 +94,16 @@ QUARANTINE_MAX_ATTEMPTS: int = 2
 
 
 def _pid_is_alive(pid: int) -> bool:
+    # NOT os.kill(pid, 0): on Windows signal 0 is CTRL_C_EVENT (it would try to
+    # signal the process group), not a liveness probe — so the stale-PID
+    # crash-recovery rescan never reclaims abandoned .processing-<pid> files.
+    # psutil.pid_exists is correct and cross-platform (psutil is a hard dep).
+    try:
+        import psutil
+
+        return psutil.pid_exists(pid)
+    except Exception:
+        pass
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
