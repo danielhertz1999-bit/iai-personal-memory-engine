@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -40,6 +41,46 @@ MAX_CAPTURE_LEN = 8000
 # This serializes that sequence so a tag can never be checked-as-absent by
 # two threads before either has inserted it.
 _CAPTURE_DEDUP_LOCK = threading.Lock()
+
+# Drain-in-progress accounting for the daemon's lifecycle idle countdown.
+#
+# The wrapper heartbeat file is only ONE signal that the daemon is busy. A
+# deferred-capture drain (triggered by real RPC traffic, kicked off at the
+# drowsy edge, or run on startup) can keep writing to the store long after the
+# heartbeat file has gone stale. If the idle countdown only watched the
+# heartbeat, it would force the FSM toward SLEEP -- which escalates to an
+# EXCLUSIVE store lock -- while these drain threads are still hammering the
+# store, causing lock contention. The daemon consults `is_drain_in_progress`
+# so an in-flight drain holds the idle countdown open. A depth counter (rather
+# than a boolean) keeps this correct under concurrent/overlapping drains across
+# the several threads that asyncio.to_thread dispatch spins up.
+_DRAIN_IN_PROGRESS_LOCK = threading.Lock()
+_drain_in_progress_depth = 0
+
+
+@contextlib.contextmanager
+def _drain_in_progress_guard():
+    """Mark a deferred-capture drain as in flight for its whole duration."""
+    global _drain_in_progress_depth
+    with _DRAIN_IN_PROGRESS_LOCK:
+        _drain_in_progress_depth += 1
+    try:
+        yield
+    finally:
+        with _DRAIN_IN_PROGRESS_LOCK:
+            _drain_in_progress_depth -= 1
+
+
+def is_drain_in_progress() -> bool:
+    """True while at least one deferred-capture drain is running.
+
+    The daemon's lifecycle idle countdown reads this so it does NOT advance the
+    FSM toward SLEEP (and the EXCLUSIVE store lock it takes) while drain threads
+    are still writing to the store.
+    """
+    with _DRAIN_IN_PROGRESS_LOCK:
+        return _drain_in_progress_depth > 0
+
 
 FAILED_MAX_ATTEMPTS: int = 3
 FAILED_BACKOFF_BASE_SEC: float = 60.0
@@ -711,6 +752,17 @@ def write_deferred_captures(
 
 
 def drain_deferred_captures(store: MemoryStore) -> dict[str, int]:
+    """Drain crashed/orphaned deferred-capture files into the store.
+
+    Marks itself in-progress for the daemon idle countdown so the FSM does not
+    advance toward SLEEP (EXCLUSIVE store lock) mid-drain. See
+    `is_drain_in_progress`.
+    """
+    with _drain_in_progress_guard():
+        return _drain_deferred_captures_impl(store)
+
+
+def _drain_deferred_captures_impl(store: MemoryStore) -> dict[str, int]:
     deferred_dir = Path.home() / ".iai-mcp" / ".deferred-captures"
     log_dir = Path.home() / ".iai-mcp" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -1136,6 +1188,23 @@ def drain_permanent_failed_files(
 
 
 def drain_active_live_captures(
+    store: MemoryStore,
+    *,
+    exclude_session_id: str,
+) -> dict[str, int]:
+    """Drain live-session capture files into the store.
+
+    Marked in-progress for the daemon idle countdown, like
+    `drain_deferred_captures` -- both write to the store and must hold the FSM
+    out of SLEEP while running. See `is_drain_in_progress`.
+    """
+    with _drain_in_progress_guard():
+        return _drain_active_live_captures_impl(
+            store, exclude_session_id=exclude_session_id,
+        )
+
+
+def _drain_active_live_captures_impl(
     store: MemoryStore,
     *,
     exclude_session_id: str,
