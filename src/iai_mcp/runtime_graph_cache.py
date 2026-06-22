@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import platform
 import sys
 import threading
 from datetime import datetime, timezone
@@ -104,6 +105,16 @@ _WORKER_TIMEOUT_PER_1K_NODES_S: float = 35.0
 _WORKER_TIMEOUT_MAX_S: float = 3600.0
 _first_spawn_seen: bool = False
 
+# Windows `multiprocessing` spawn is broken for the RGC worker: the spawn child
+# launches under the venv's *base* interpreter (`sys._base_executable`, e.g.
+# `...\Python312\pythonw.exe`) rather than the venv interpreter, re-imports the
+# heavy `iai_mcp.daemon` module, and hangs well past the watchdog timeout —
+# killing it took the parent daemon down with it. `ctx.set_executable(...)` does
+# not override the base-interpreter selection (verified empirically). On Windows
+# we therefore run the worker in an in-process daemon thread (`_ThreadWorkerHandle`)
+# instead of spawning; POSIX keeps the spawned subprocess unchanged.
+_IS_WINDOWS: bool = platform.system() == "Windows"
+
 
 class WorkerCrashedError(RuntimeError):
     """Child worker exited with a non-zero exit code."""
@@ -145,6 +156,69 @@ def _terminate_worker(process) -> None:
             process.kill()
             process.join(timeout=2.0)
     except Exception:  # noqa: BLE001 -- worker cleanup must not raise
+        pass
+
+
+class _ThreadWorkerHandle:
+    """In-process stand-in for a spawned worker `Process`, used on Windows.
+
+    Runs `_worker_entry` in a daemon thread of the current process and exposes
+    the subset of the `multiprocessing.Process` API the rebuild path touches
+    (`start`, `is_alive`, `join`, `exitcode`, `terminate`, `kill`), so the
+    surrounding spawn/drain logic is reused verbatim. See the `_IS_WINDOWS`
+    note above for why spawn cannot be used here.
+
+    Trade-off: the worker no longer runs in a separate address space, so the
+    fat per-rebuild allocations live in the daemon heap until they fall out of
+    scope and are GC'd, rather than being reclaimed by process exit. The
+    rebuild is a periodic sleep-time operation, not a hot path, so this is an
+    acceptable cost for correctness. The AES-key isolation the subprocess gave
+    is moot in-process anyway; the worker module still never imports the
+    storage/crypto surface, so no key is reachable through it.
+    """
+
+    def __init__(self, target, conn) -> None:
+        self._target = target
+        self._conn = conn
+        self._exitcode: int | None = None
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self) -> None:
+        try:
+            self._target(self._conn)
+            self._exitcode = 0
+        except SystemExit as exc:
+            # The worker calls sys.exit(1) on its error path; map that to a
+            # non-zero exitcode so the parent's crash check fires as it would
+            # for a subprocess.
+            self._exitcode = exc.code if isinstance(exc.code, int) else 1
+        except BaseException:  # noqa: BLE001 -- mirror a non-zero subprocess exit
+            self._exitcode = 1
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def is_alive(self) -> bool:
+        return self._thread.is_alive()
+
+    def join(self, timeout: float | None = None) -> None:
+        self._thread.join(timeout)
+
+    @property
+    def exitcode(self) -> int | None:
+        # Mirror Process.exitcode: None while the worker is still running.
+        if self._thread.is_alive():
+            return None
+        return self._exitcode
+
+    def terminate(self) -> None:
+        # A Python thread cannot be force-killed. On the normal path the worker
+        # unwinds when the parent closes its pipe end (EOFError); on a genuine
+        # compute hang the daemon thread is left to finish in the background
+        # (daemon=True, so it never blocks interpreter shutdown).
+        pass
+
+    def kill(self) -> None:
         pass
 
 
@@ -944,20 +1018,27 @@ def _rebuild_and_save_rgc(store: Any, *, force: bool = False) -> dict:
         except Exception:  # noqa: BLE001
             est_node_count = 0
 
-        # Spawn the worker. Spawn-context (not fork) so the child re-imports
-        # cleanly on macOS and Linux; the child closes its end after start so
-        # the parent does not hold a half-of-pipe alive on crash detection.
+        # Start the worker. On POSIX we spawn a subprocess (spawn-context, not
+        # fork, so the child re-imports cleanly on macOS and Linux) and close
+        # the parent's copy of the child end so we don't hold half a pipe alive
+        # on crash detection. On Windows spawn is broken for this worker (see
+        # `_IS_WINDOWS`), so we run it in an in-process daemon thread and keep
+        # child_conn open — the in-process worker owns that same Connection.
         first_spawn_flag = not _first_spawn_seen
         timeout_s = _resolve_timeout(est_node_count)
         ctx = multiprocessing.get_context("spawn")
         parent_conn, child_conn = ctx.Pipe(duplex=True)
-        process = ctx.Process(
-            target=_worker_entry_indirection,
-            args=(child_conn,),
-            daemon=True,
-        )
-        process.start()
-        child_conn.close()
+        if _IS_WINDOWS:
+            process = _ThreadWorkerHandle(_worker_entry_indirection, child_conn)
+            process.start()
+        else:
+            process = ctx.Process(
+                target=_worker_entry_indirection,
+                args=(child_conn,),
+                daemon=True,
+            )
+            process.start()
+            child_conn.close()
 
         db_path = store.db._hippo_dir / "brain.sqlite3"
         ro_conn = None
