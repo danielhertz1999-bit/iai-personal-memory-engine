@@ -545,7 +545,11 @@ def _check_sleep_cycle_staleness(
         if not isinstance(progress, dict):
             return (False, {})
         attempt = progress.get("attempt")
-        if not isinstance(attempt, int) or attempt != 1:
+        # A retried-but-still-wedged cycle (attempt >= 2) is exactly the case the
+        # watchdog must catch, not ignore. Gate on attempt < 1 so any genuine
+        # running attempt is monitored; only attempt 0 / negative / non-int (and
+        # bool, since isinstance(True, int) is True) short-circuits.
+        if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 1:
             return (False, {})
         started_at_raw = progress.get("started_at")
         if not isinstance(started_at_raw, str) or not started_at_raw:

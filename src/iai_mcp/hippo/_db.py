@@ -616,6 +616,15 @@ class HippoDB:
         for row in rows:
             rid = row["id"]
             surface = row["literal_surface"] or ""
+            # On an encrypted store literal_surface is iai:enc:v1: ciphertext; embedding
+            # the ciphertext would produce a garbage vector. Decrypt first (no-op on a
+            # plaintext store or a value that isn't encrypted). A decrypt failure leaves
+            # the row embedding_pending=1 so it is retried rather than poisoned.
+            try:
+                surface = self._decrypt_record_field(rid, "literal_surface", surface)
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("reembed_pending_rows: decrypt failed for id=%s: %s", rid, exc)
+                continue
             try:
                 vec = list(embedder.embed(surface))
             except Exception as exc:  # noqa: BLE001

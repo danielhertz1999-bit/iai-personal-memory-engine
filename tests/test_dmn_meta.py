@@ -142,10 +142,23 @@ def test_reflection_synthesize_returns_semantic_record(
     assert isinstance(prov.get("recalled_count"), int)
 
     assert len(synth.embedding) == store._embed_dim
-    assert all(v == 0.0 for v in synth.embedding), (
-        "synthesised record must carry the zero-vector placeholder; "
-        "next REM consolidation re-embeds"
-    )
+    # The reflection record must carry a REAL embedding of its own
+    # literal_surface, not a zero placeholder. The old zero-vector placeholder
+    # relied on "next REM consolidation re-embeds", but nothing re-embedded an
+    # embedding_pending=0 record, so every daily-reflection record stayed
+    # permanently zero-norm and invisible to vector recall (and fed zero vectors
+    # into the scoring matmul). dmn_reflection now embeds at write time; on embed
+    # failure it falls back to a zero vector flagged embedding_pending=1.
+    import math as _math
+    _norm = _math.sqrt(sum(v * v for v in synth.embedding))
+    if synth.embedding_pending:
+        # Degraded fallback (embedder unavailable): zero + flagged for reembed.
+        assert all(v == 0.0 for v in synth.embedding)
+    else:
+        assert _norm > 0.5, (
+            f"reflection embedding must be a real (non-zero) vector; "
+            f"got norm={_norm}"
+        )
 
 def test_meta_analyst_snapshot_counts_correct(tmp_path: Path) -> None:
     store = _make_store(tmp_path)

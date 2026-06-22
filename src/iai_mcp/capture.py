@@ -317,32 +317,53 @@ def capture_turn(
     from iai_mcp.embed import embedder_for_store
     from iai_mcp.events import TELEMETRY_EMBED_NATIVE_FAILURE, write_event
 
-    try:
-        # Embed the message content, never the cue. The cue is a provenance
-        # label only (transcript drains and deferred-drain pass a positional
-        # cue such as "session <id> turn <n>"); embedding it collapsed the
-        # stored vector space and broke semantic recall. text is already
-        # validated non-empty above (the MIN_CAPTURE_LEN guard), so embedding
-        # text is safe for every caller.
-        emb = embedder_for_store(store).embed(text)
-    except Exception as exc:
-        write_event(
-            store,
-            TELEMETRY_EMBED_NATIVE_FAILURE,
-            {
-                "op_type": "capture",
-                "backend": "rust",
-                "error_type": type(exc).__name__,
-                "error": str(exc),
-            },
-        )
-        raise NativeError(f"capture encode failed: {exc}") from exc
-    embedding = list(emb)
+    # Embedding is the expensive native (Rust) matmul; the exact-key idem dedup
+    # below is a cheap SQLite lookup. Active sessions re-drain the *whole*
+    # transcript every turn (write_deferred_captures / capture_transcript walk
+    # from line 0 on each call), so embedding eagerly here re-embedded every
+    # already-stored turn only to throw the vector away as a "reinforced"
+    # exact-key re-drain -> chronic daemon CPU. Defer the embed so it runs at
+    # most once and only when actually needed: an already-seen episodic turn
+    # short-circuits on its idem tag and never embeds. Embed the message
+    # content, never the cue (the cue is a positional provenance label;
+    # embedding it collapsed the vector space and broke semantic recall). text
+    # is validated non-empty above (the MIN_CAPTURE_LEN guard).
+    _embed_cache: dict[str, list[float]] = {}
+
+    def _compute_embedding() -> list[float]:
+        if "v" in _embed_cache:
+            return _embed_cache["v"]
+        try:
+            emb = embedder_for_store(store).embed(text)
+        except Exception as exc:
+            write_event(
+                store,
+                TELEMETRY_EMBED_NATIVE_FAILURE,
+                {
+                    "op_type": "capture",
+                    "backend": "rust",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
+            )
+            raise NativeError(f"capture encode failed: {exc}") from exc
+        vec = list(emb)
+        _embed_cache["v"] = vec
+        return vec
 
     with _CAPTURE_DEDUP_LOCK:
         if _is_episodic_conversational(tier, role):
             ts_iso = now.isoformat()
             idem_t = _idem_tag(session_id, role, ts_iso, text, source_uuid=source_uuid)
+            # find_record_by_tag reads SQLite, but a just-inserted record may
+            # still sit in the in-process _record_buffer (not yet flushed to the
+            # records table). Under _CAPTURE_DEDUP_LOCK the insert path is
+            # serialized with this find, so flushing the buffer here makes every
+            # prior committed insert visible to the SQLite-backed find and closes
+            # the check-then-insert race that produced live idem-tag duplicates.
+            from iai_mcp.store import flush_record_buffer
+
+            flush_record_buffer(store)
             existing_id = store.find_record_by_tag(idem_t)
             if existing_id is not None:
                 try:
@@ -362,7 +383,7 @@ def capture_turn(
                 }
         else:
             try:
-                neighbours = store.query_similar(embedding, k=3, tier=tier)
+                neighbours = store.query_similar(_compute_embedding(), k=3, tier=tier)
             except (ValueError, IOError) as exc:
                 log.warning(
                     "capture_dedup_query_failed",
@@ -402,7 +423,7 @@ def capture_turn(
             tier=tier,
             literal_surface=text,
             aaak_index="",
-            embedding=embedding,
+            embedding=_compute_embedding(),
             community_id=None,
             centrality=0.0,
             detail_level=2,

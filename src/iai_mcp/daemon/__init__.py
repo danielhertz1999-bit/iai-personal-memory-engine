@@ -28,6 +28,7 @@ from iai_mcp.events import (
     DAEMON_SLEEP_CYCLE_STALE,
     DAEMON_WATCHDOG_NEEDS_OPERATOR,
     DAEMON_WEDGE_KILL,
+    emit_best_effort,
     write_event,
 )
 from iai_mcp.identity_audit import continuous_audit
@@ -282,7 +283,45 @@ def _store_is_empty(store: MemoryStore) -> bool:
         # the unknown case as NOT empty so the tick proceeds; a truly empty store
         # just does a little harmless no-op work.
         log.debug("store empty check failed, assuming NOT empty: %s", exc)
+        # e8f3deb fixed the *behavior* (don't park the tick) but left the
+        # condition invisible. A recurring count failure (sqlite left in an error
+        # state by a heavy reader) should surface to the operator, not just
+        # log.debug. emit_best_effort is buffered and never raises, so it is safe
+        # even when the store connection is the thing failing.
+        try:
+            emit_best_effort(
+                store,
+                "store_empty_check_failed",
+                {"error": str(exc), "error_type": type(exc).__name__},
+                severity="warning",
+            )
+        except Exception:  # noqa: BLE001 -- telemetry must never break the tick
+            pass
         return False
+
+
+def _normalize_boot_lifecycle_state(raw: dict) -> tuple[dict, bool]:
+    """Repair a crash-left incoherent lifecycle state at boot.
+
+    A daemon killed mid-SLEEP can leave lifecycle_state.json at
+    current_state=SLEEP with sleep_cycle_progress=None -- incoherent, because a
+    real in-flight sleep cycle always carries a progress dict. Resuming it wedges
+    the daemon (it never advances the pipeline, never reaches the recluster that
+    clears crisis, and recall stays degraded). Reset that one case to a clean
+    WAKE and drop the stale crisis flag. A genuine degeneration re-arms crisis on
+    the next complete sleep cycle. Returns (state, changed).
+    """
+    if (
+        isinstance(raw, dict)
+        and raw.get("current_state") == "SLEEP"
+        and raw.get("sleep_cycle_progress") is None
+    ):
+        out = dict(raw)
+        out["current_state"] = "WAKE"
+        out["crisis_mode"] = False
+        out["crisis_mode_since_ts"] = None
+        return out, True
+    return raw, False
 
 
 def _is_inside_window(
@@ -1075,6 +1114,38 @@ async def main() -> int:
         _sleep_pipeline = _SleepPipeline(store=store)
 
         from pathlib import Path as _PathS2
+        # Boot normalization for a crash mid-SLEEP: lifecycle_state.json can be
+        # left at current_state=SLEEP with sleep_cycle_progress=None -- an
+        # incoherent state (a real in-flight cycle always carries a progress
+        # dict). Resuming it wedges the daemon: it never advances the sleep
+        # pipeline, never reaches the recluster that clears crisis, and recall
+        # stays degraded (SLEEP + crisis both degrade recall). Reset that one
+        # case to a clean WAKE (and drop the stale crisis flag set before the
+        # crash) so the daemon serves immediately; a genuine degeneration will
+        # simply re-arm crisis on the next complete sleep cycle.
+        try:
+            import json as _json_lc
+            _lc_path = _PathS2.home() / ".iai-mcp" / "lifecycle_state.json"
+            _lc_raw = _json_lc.loads(_lc_path.read_text())
+            _lc_norm, _lc_changed = _normalize_boot_lifecycle_state(_lc_raw)
+            if _lc_changed:
+                _lc_path.write_text(_json_lc.dumps(_lc_norm, indent=2))
+                log.warning(
+                    "lifecycle_boot_normalized: stale SLEEP without "
+                    "sleep_cycle_progress -> WAKE (crisis cleared)"
+                )
+                try:
+                    emit_best_effort(
+                        store,
+                        "lifecycle_boot_normalized",
+                        {"from_state": "SLEEP", "to_state": "WAKE",
+                         "reason": "sleep_without_progress"},
+                        severity="warning",
+                    )
+                except Exception:  # noqa: BLE001 -- telemetry must not block boot
+                    pass
+        except (OSError, ValueError) as _lc_exc:
+            log.debug("lifecycle boot normalization skipped: %s", _lc_exc)
         _s2_config = _load_s2_config()
         _s2_coord = S2Coordinator(
             store=store,

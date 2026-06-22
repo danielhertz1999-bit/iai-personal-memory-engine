@@ -99,12 +99,23 @@ class TestPredicate:
         assert ctx["attempt"] == 1
         assert ctx["crisis_mode"] is False
 
-    def test_attempt_gt_1_is_not_stale(self):
-        # attempt > 1 means the cycle has retried — different failure shape,
-        # outside the scope of this predicate.
+    def test_attempt_gt_1_still_stale(self):
+        # A retried-but-still-wedged cycle (attempt >= 2) is exactly the case the
+        # watchdog must catch: a retry that itself hangs for hours. The gate is
+        # `attempt < 1`, so attempt 2 (10 days stuck) MUST be flagged stale.
         state = _state(
             LifecycleState.SLEEP.value,
             _progress(NOW - timedelta(days=10), attempt=2),
+        )
+        is_stale, ctx = daemon._check_sleep_cycle_staleness(state, NOW)
+        assert is_stale is True
+        assert ctx["attempt"] == 2
+
+    def test_attempt_zero_is_not_stale(self):
+        # attempt 0 (or negative / non-int) is not a genuine running attempt.
+        state = _state(
+            LifecycleState.SLEEP.value,
+            _progress(NOW - timedelta(days=10), attempt=0),
         )
         assert daemon._check_sleep_cycle_staleness(state, NOW)[0] is False
 
