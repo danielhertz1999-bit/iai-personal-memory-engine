@@ -116,7 +116,7 @@ def _find_record_by_tag_direct(db: Any, tag: str) -> str | None:
 
 
 def _try_get_embedding_fast(text: str, cue: str) -> list[float] | None:
-    from iai_mcp._ipc import IS_WINDOWS, make_sync_ipc_socket
+    from iai_mcp._ipc import IS_WINDOWS, make_sync_ipc_socket, send_sync_auth_token
     # On POSIX only proceed when IAI_DAEMON_SOCKET_PATH is explicitly set
     if not IS_WINDOWS and not os.environ.get("IAI_DAEMON_SOCKET_PATH"):
         return None
@@ -124,6 +124,7 @@ def _try_get_embedding_fast(text: str, cue: str) -> list[float] | None:
         s, addr = make_sync_ipc_socket()
         s.settimeout(0.1)
         s.connect(addr)
+        send_sync_auth_token(s)
         s.close()
     except (OSError, ConnectionRefusedError, FileNotFoundError):
         return None
