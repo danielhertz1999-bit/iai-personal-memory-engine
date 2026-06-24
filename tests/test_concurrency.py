@@ -9,6 +9,14 @@ from pathlib import Path
 
 import pytest
 
+from iai_mcp._ipc import IS_WINDOWS, open_ipc_connection
+
+
+def _endpoint_ready_path(sock_path: Path) -> Path:
+    """Path that exists once the control socket has bound: the unix socket on
+    POSIX, the TCP port file (``<sock_path>.port``) on Windows."""
+    return Path(f"{sock_path}.port") if IS_WINDOWS else sock_path
+
 
 @pytest.fixture
 def socket_path(tmp_path, monkeypatch):
@@ -17,6 +25,8 @@ def socket_path(tmp_path, monkeypatch):
     sock_dir.mkdir(parents=True, exist_ok=True)
     sock_path = sock_dir / "d.sock"
     monkeypatch.setattr(concurrency, "SOCKET_PATH", sock_path)
+    # Per-test endpoint isolation honored by start_ipc_server/open_ipc_connection.
+    monkeypatch.setenv("IAI_DAEMON_SOCKET_PATH", str(sock_path))
     try:
         yield sock_path
     finally:
@@ -42,13 +52,14 @@ def test_socket_status_round_trip(socket_path):
             serve_control_socket(store=None, state=state, shutdown=shutdown,
                                  socket_path=socket_path)
         )
+        ready_path = _endpoint_ready_path(socket_path)
         for _ in range(100):
-            if socket_path.exists():
+            if ready_path.exists():
                 break
             await asyncio.sleep(0.02)
-        assert socket_path.exists(), "socket never bound"
+        assert ready_path.exists(), "socket never bound"
 
-        reader, writer = await asyncio.open_unix_connection(path=str(socket_path))
+        reader, writer = await open_ipc_connection()
         writer.write(b'{"type":"status"}\n')
         await writer.drain()
         line = await reader.readline()
@@ -92,15 +103,16 @@ def test_socket_injected_dispatcher(socket_path):
                 dispatcher=custom_dispatcher, socket_path=socket_path,
             )
         )
+        ready_path = _endpoint_ready_path(socket_path)
         for _ in range(100):
-            if socket_path.exists():
+            if ready_path.exists():
                 break
             await asyncio.sleep(0.02)
-        assert socket_path.exists()
+        assert ready_path.exists()
 
         responses = []
         for req in requests:
-            r, w = await asyncio.open_unix_connection(path=str(socket_path))
+            r, w = await open_ipc_connection()
             w.write((json.dumps(req) + "\n").encode())
             await w.drain()
             line = await r.readline()
@@ -122,6 +134,9 @@ def test_socket_injected_dispatcher(socket_path):
         assert resp == {"ok": True, "seen": req["type"]}
 
 
+@pytest.mark.skipif(
+    IS_WINDOWS, reason="stale unix-socket-file cleanup is POSIX-only (Windows uses a TCP port file)"
+)
 def test_stale_socket_cleanup(socket_path):
     from iai_mcp.concurrency import serve_control_socket
 
@@ -157,6 +172,9 @@ def test_stale_socket_cleanup(socket_path):
     assert resp.get("ok") is True
 
 
+@pytest.mark.skipif(
+    IS_WINDOWS, reason="0o600 unix-socket-file mode is POSIX-only (Windows uses a TCP port file)"
+)
 def test_socket_permissions_user_only(socket_path):
     from iai_mcp.concurrency import serve_control_socket
 

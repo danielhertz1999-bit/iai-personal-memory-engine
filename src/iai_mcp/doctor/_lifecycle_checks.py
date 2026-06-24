@@ -134,11 +134,16 @@ async def _socket_connect_probe(socket_path: Path, timeout: float) -> str | None
 
 def check_b_socket_fresh() -> CheckResult:
     socket_path = _resolve_socket_path()
-    if not socket_path.exists():
+    # Windows binds TCP loopback and records the port in a sidecar file — there
+    # is no AF_UNIX socket file — so check whichever endpoint actually exists
+    # for this platform. (The connect probe below is already cross-platform.)
+    from iai_mcp._ipc import IS_WINDOWS, _port_file_path
+    endpoint = _port_file_path() if IS_WINDOWS else socket_path
+    if not endpoint.exists():
         return CheckResult(
             "(b) socket file fresh",
             False,
-            f"{socket_path} does not exist",
+            f"{endpoint} does not exist",
         )
 
     t0 = time.monotonic()

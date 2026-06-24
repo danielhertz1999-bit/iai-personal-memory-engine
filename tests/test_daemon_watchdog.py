@@ -10,6 +10,15 @@ import time
 import pytest
 
 from iai_mcp import daemon
+from _socket_test_helpers import bind_fake_daemon_socket
+
+# The watchdog's self-kill path uses signal.SIGKILL, which doesn't exist on
+# Windows (the production code guards it with hasattr). These tests assert that
+# POSIX self-kill behavior, so they only apply where SIGKILL exists.
+_REQUIRES_SIGKILL = pytest.mark.skipif(
+    not hasattr(signal, "SIGKILL"),
+    reason="watchdog SIGKILL self-kill is POSIX-only (guarded off on Windows)",
+)
 
 HARD_CAP = 2_684_354_560
 FLOOR = 1_610_612_736
@@ -234,6 +243,7 @@ def _read_breadcrumb(log_path):
     return log_path.read_text(encoding="utf-8")
 
 
+@_REQUIRES_SIGKILL
 def test_thread_wedge_after_n_consecutive_kills(watchdog_env):
     store = object()
     consec = 0
@@ -280,6 +290,7 @@ def test_thread_healthy_busy_not_killed(watchdog_env):
     assert consec == 0
 
 
+@_REQUIRES_SIGKILL
 def test_thread_warn_plus_big_memory_kill(watchdog_env):
     store = object()
     consec = 0
@@ -408,6 +419,7 @@ def test_thread_circuit_breaker_emits_needs_operator_not_kill(
         pass
 
 
+@_REQUIRES_SIGKILL
 def test_self_kill_is_unconditional_when_breadcrumb_fails_wedge(
     tmp_path, monkeypatch
 ):
@@ -439,6 +451,7 @@ def test_self_kill_is_unconditional_when_breadcrumb_fails_wedge(
     assert kill_calls == [(os.getpid(), signal.SIGKILL)]
 
 
+@_REQUIRES_SIGKILL
 def test_self_kill_is_unconditional_when_breadcrumb_fails_memory(
     tmp_path, monkeypatch
 ):
@@ -470,6 +483,7 @@ def test_self_kill_is_unconditional_when_breadcrumb_fails_memory(
     assert kill_calls == [(os.getpid(), signal.SIGKILL)]
 
 
+@_REQUIRES_SIGKILL
 def test_self_kill_direct_breadcrumb_failure_still_kills(tmp_path, monkeypatch):
 
     def _raise(_line):
@@ -484,16 +498,17 @@ def test_self_kill_direct_breadcrumb_failure_still_kills(tmp_path, monkeypatch):
     assert kill_calls == [(os.getpid(), signal.SIGKILL)]
 
 
-def test_probe_returns_false_when_no_socket(tmp_path):
+def test_probe_returns_false_when_no_socket(tmp_path, monkeypatch):
     sock_path = str(tmp_path / "absent.sock")
+    # Isolate the endpoint so the probe can't reach a real daemon on this box.
+    monkeypatch.setenv("IAI_DAEMON_SOCKET_PATH", sock_path)
     assert asyncio.run(daemon._probe_status_roundtrip(sock_path, 0.2)) is False
 
 
-def test_probe_returns_false_on_connect_but_no_reply(tmp_path, short_socket):
+def test_probe_returns_false_on_connect_but_no_reply(tmp_path, short_socket, monkeypatch):
     sock_path = str(short_socket)
-    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    srv.bind(sock_path)
-    srv.listen(1)
+    monkeypatch.setenv("IAI_DAEMON_SOCKET_PATH", sock_path)
+    srv = bind_fake_daemon_socket(sock_path)
     accepted: list = []
 
     def _accept_and_hang():
@@ -517,11 +532,10 @@ def test_probe_returns_false_on_connect_but_no_reply(tmp_path, short_socket):
         srv.close()
 
 
-def test_probe_returns_true_on_full_roundtrip(tmp_path, short_socket):
+def test_probe_returns_true_on_full_roundtrip(tmp_path, short_socket, monkeypatch):
     sock_path = str(short_socket)
-    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    srv.bind(sock_path)
-    srv.listen(1)
+    monkeypatch.setenv("IAI_DAEMON_SOCKET_PATH", sock_path)
+    srv = bind_fake_daemon_socket(sock_path)
     held: list = []
 
     def _accept_and_reply():

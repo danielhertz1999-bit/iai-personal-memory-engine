@@ -29,6 +29,22 @@ def _stop_escalation_bound() -> float:
     return STOP_TERM_TIMEOUT_S
 
 
+def _signal_daemon_wake() -> None:
+    """Create the wake signal before a kickstart so the booting daemon WAKEs.
+
+    Without it the daemon boots, re-reads its persisted HIBERNATION state and
+    hibernate-exits within a tick, closing the socket before it ever serves
+    recall. Best-effort: a failure here just falls back to the old behaviour.
+    """
+    try:
+        from iai_mcp.wake_handler import WakeHandler
+
+        root = os.environ.get("IAI_MCP_STORE") or os.path.expanduser("~/.iai-mcp")
+        WakeHandler(Path(root) / "wake.signal").signal_wake()
+    except Exception:  # noqa: BLE001 -- never let the wake signal break daemon start
+        pass
+
+
 def _stop_poll_interval() -> float:
     raw = os.environ.get("IAI_DAEMON_STOP_POLL_S")
     if raw:
@@ -73,7 +89,13 @@ def _find_pythonw() -> str:
 def _render_schtasks_xml() -> str:
     pythonw = _find_pythonw()
     username = os.environ.get("USERNAME", "")
-    log_dir = Path(os.environ.get("APPDATA", str(Path.home()))) / "iai-mcp" / "logs"
+    # No <WorkingDirectory>: the Task Scheduler engine rejects a working
+    # directory set via XML when the path contains spaces (e.g. the default
+    # %APPDATA% under "C:\\Users\\First Last\\..."), failing the launch with
+    # 0x8007010B "The directory name is invalid" — even though the path exists
+    # and CreateProcess accepts it fine outside the scheduler. The daemon never
+    # depends on cwd (all state lives under ~/.iai-mcp via absolute paths), so
+    # we omit it and let the task default to %windir%\\system32.
     return f"""\
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -104,7 +126,6 @@ def _render_schtasks_xml() -> str:
     <Exec>
       <Command>{pythonw}</Command>
       <Arguments>-m iai_mcp.daemon</Arguments>
-      <WorkingDirectory>{log_dir}</WorkingDirectory>
     </Exec>
   </Actions>
 </Task>"""
@@ -252,6 +273,7 @@ def cmd_daemon_install(args: argparse.Namespace) -> int:
                 f"{result.stderr.strip()}",
                 file=sys.stderr,
             )
+        _signal_daemon_wake()
         _cli.subprocess.run(
             ["launchctl", "kickstart", f"gui/{uid}/{_cli.DAEMON_LABEL}"],
             check=False, capture_output=True,
@@ -359,6 +381,7 @@ def cmd_daemon_start(args: argparse.Namespace) -> int:
             ["launchctl", "bootstrap", f"gui/{uid}", str(target)],
             check=False, capture_output=True,
         )
+        _signal_daemon_wake()
         _cli.subprocess.run(
             ["launchctl", "kickstart", f"gui/{uid}/{_cli.DAEMON_LABEL}"],
             check=False, capture_output=True,

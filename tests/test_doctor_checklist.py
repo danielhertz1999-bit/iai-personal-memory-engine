@@ -10,6 +10,9 @@ from pathlib import Path
 
 import pytest
 
+from iai_mcp._ipc import IS_WINDOWS
+from _socket_test_helpers import bind_fake_daemon_socket
+
 
 @pytest.fixture
 def short_socket_paths(tmp_path, monkeypatch):
@@ -222,9 +225,7 @@ def test_check_b_passes_against_silent_listening_socket(short_socket_paths):
     if sock_path.exists():
         sock_path.unlink()
 
-    server = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
-    server.bind(str(sock_path))
-    server.listen(8)
+    server = bind_fake_daemon_socket(sock_path)
     stop = threading.Event()
     accepted: list = []
 
@@ -269,6 +270,10 @@ def test_check_b_passes_against_silent_listening_socket(short_socket_paths):
         th.join(timeout=1.0)
 
 
+@pytest.mark.skipif(
+    IS_WINDOWS,
+    reason="regular-file-where-a-socket-should-be is an AF_UNIX concept; Windows uses a TCP port file",
+)
 def test_check_b_fails_when_socket_is_regular_file(short_socket_paths):
     _, sock_path, _ = short_socket_paths
     if sock_path.exists():

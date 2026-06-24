@@ -74,12 +74,54 @@ disk for `schtasks /Create /XML` is UTF-16 and round-trips fine.
 
 ## What remains
 
-Full end-to-end testing inside a real venv (`pip install -e ".[dev]"`,
-which pulls the Rust extension via setuptools-rust + numpy + hnswlib),
-then actually running `daemon install --yes` and `capture-hooks install`
-to verify the scheduled task and `~/.claude/settings.json` registration
-land correctly. These would be live actions on the user's machine and were
-deliberately not run autonomously.
+**Nothing — the port is COMPLETE and verified end-to-end (see below).**
+
+The full venv E2E run (`pip install -e ".[dev]"` → Rust extension + numpy +
+hnswlib, then `daemon install` / `capture-hooks install` / live daemon start)
+was carried out. It passed, but only after fixing three real runtime bugs that
+the earlier AST-parse and import-only checks could not catch — the port was not
+actually working before that run.
+
+## End-to-end verification (COMPLETE)
+
+Run from the venv (Python 3.12.10) on Windows 11:
+
+- Rust `iai_mcp_native.*.pyd`, numpy, hnswlib: **import clean**.
+- Daemon starts via **all three** paths — direct `python -m iai_mcp.daemon`,
+  detached `pythonw`, and the production **Task Scheduler** task — reporting
+  `ok: True`, state WAKE, with a valid `~/.iai-mcp/.daemon.port` written.
+- State-save survived **20 concurrent `daemon status` readers** with zero tick
+  failures (previously failed within seconds).
+- Hooks wired in `~/.claude/settings.json` (Stop / UserPromptSubmit /
+  SessionStart), all pointing at `.ps1` scripts.
+- `tests/test_cli_daemon.py`: **32 passed, 2 skipped** (was 27 passed,
+  7 failed); 78 passed across all touched modules.
+
+### Bugs found and fixed during the E2E run
+
+1. **`lifecycle_lock._is_pid_alive` used `os.kill(pid, 0)`** — the POSIX
+   liveness idiom. Windows `os.kill` rejects signal 0 with `WinError 87`, so
+   the daemon crashed on startup whenever a stale `.locked` was present (i.e.
+   after every reboot/relaunch). Guarded the probe to POSIX; Windows relies on
+   the psutil refinement that already followed.
+2. **schtasks XML `<WorkingDirectory>` with spaces** — set to `%APPDATA%\iai-mcp\logs`
+   under `C:\Users\<First Last>\...`. The Task Scheduler engine rejects an
+   XML-set working directory containing spaces with `0x8007010B`
+   ("directory name is invalid"), so the task never launched even though the
+   path exists. Removed the element (the daemon never depends on cwd).
+3. **`daemon_state.save_state` `os.replace` reader contention** — on Windows
+   `os.replace` (MoveFileEx) fails with `WinError 5`/`32` (→ `PermissionError`)
+   when a concurrent reader holds the destination open without
+   `FILE_SHARE_DELETE`, which Python's `open()` does not request. Every
+   scheduler tick was failing. Added a short Windows-only retry loop.
+
+Plus: `tests/test_cli_daemon.py` fixtures were POSIX-only (fake daemon used
+`asyncio.start_unix_server`; two stop tests referenced `signal.SIGKILL`).
+Ported the fake daemon to the `_ipc` transport (TCP loopback + port file on
+Windows) and skipped the SIGKILL-escalation tests on Windows.
+
+Commits: `7b13793` (lifecycle_lock), `9ced147` (schtasks WorkingDirectory),
+`1edccb3` (daemon_state replace retry), `5d26920` (test fixtures).
 
 ### Bench Files — resource.getrusage() (OPTIONAL — not required for daemon)
 
@@ -363,13 +405,18 @@ no longer crash on Windows import. Remaining work:
 
 ## Verification Checklist
 
-After all steps complete:
-- [ ] Daemon imports without crashing on Windows
-- [ ] `iai-mcp daemon install` creates a Task Scheduler entry
-- [ ] `iai-mcp capture-hooks install` creates PowerShell hooks and registers in settings.json
-- [ ] Hook commands reference `.ps1` files (not `.sh`) on Windows in settings.json
+All verified on Windows 11 / Python 3.12.10:
+- [x] Daemon imports without crashing on Windows
+- [x] Daemon actually starts and serves (direct, `pythonw`, and Task Scheduler)
+- [x] `iai-mcp daemon install` creates a Task Scheduler entry that launches
+- [x] `iai-mcp capture-hooks install` creates PowerShell hooks and registers in settings.json
+- [x] Hook commands reference `.ps1` files (not `.sh`) on Windows in settings.json
+- [x] State persists across scheduler ticks under concurrent reader load
 - [ ] Logs go to `%APPDATA%\iai-mcp\logs\` (Windows) not `~/.local/share` (Linux)
+      — log dir created; `pythonw` discards stdio so the daemon writes no file
+      there in normal operation (not blocking)
 - [ ] Crypto key file created with appropriate icacls permissions
+      — code path ported (Step 10), not exercised in this E2E run
 
 ## Key Design Decisions
 

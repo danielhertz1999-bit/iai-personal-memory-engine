@@ -35,7 +35,7 @@ def parity_data() -> dict:
     if not PARITY_JSON_PATH.exists():
         pytest.skip(
             f"Parity JSON not yet produced. Run "
-            f"`PYTHONPATH=src python bench/contradiction_longitudinal_claude.py "
+            f"`PYTHONPATH=src python bench/contradiction_longitudinal.py "
             f"--scale honest --seeds 13 42 137 "
             f"--output-dir bench/results/v7.1/iteration-0/` then the post-process "
             f"pipeline (analyze_efe_ab.py + write contradiction_longitudinal_"

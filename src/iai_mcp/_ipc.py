@@ -40,21 +40,39 @@ _TOKEN_BYTES = 32  # 256-bit random token → 64 hex chars on the wire
 # Port file helpers (Windows only)
 # ---------------------------------------------------------------------------
 
+def _port_file_path() -> Path:
+    """Resolve the Windows port-file location at call time.
+
+    Mirrors the POSIX ``IAI_DAEMON_SOCKET_PATH`` override (see ``ipc_address``)
+    so a daemon bound to a non-default endpoint — a custom ``IAI_MCP_STORE``,
+    or an isolated test harness — persists its port *alongside* that socket
+    path (``<socket-path>.port``) instead of always clobbering the shared
+    ``~/.iai-mcp/.daemon.port``. Without this, every Windows daemon (and every
+    test) raced for one global port file. Resolved dynamically, not as a module
+    constant, because tests set the env var after import.
+    """
+    env = os.environ.get("IAI_DAEMON_SOCKET_PATH")
+    if env:
+        return Path(f"{env}.port")
+    return PORT_FILE
+
+
 def _read_port() -> int | None:
     try:
-        return int(PORT_FILE.read_text(encoding="utf-8").strip())
+        return int(_port_file_path().read_text(encoding="utf-8").strip())
     except (FileNotFoundError, ValueError, OSError):
         return None
 
 
 def _write_port(port: int) -> None:
-    PORT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    PORT_FILE.write_text(str(port), encoding="utf-8")
+    path = _port_file_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(str(port), encoding="utf-8")
 
 
 def _remove_port_file() -> None:
     try:
-        PORT_FILE.unlink()
+        _port_file_path().unlink()
     except (FileNotFoundError, OSError):
         pass
 
@@ -186,7 +204,7 @@ async def open_ipc_connection(
         port = _read_port()
         if port is None:
             raise FileNotFoundError(
-                "Daemon not running: ~/.iai-mcp/.daemon.port not found."
+                f"Daemon not running: {_port_file_path()} not found."
             )
         coro = asyncio.open_connection("127.0.0.1", port)
     else:

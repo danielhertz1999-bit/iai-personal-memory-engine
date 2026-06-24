@@ -15,6 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 from test_store import _make
+from _socket_test_helpers import bind_fake_daemon_socket
 
 
 SLEEP_SKIP_CEILING_S = 1.5
@@ -56,15 +57,7 @@ def _start_stall_server(sock_path: str, stall_seconds: float = 60.0) -> threadin
     ready = threading.Event()
 
     def _server():
-        try:
-            os.unlink(sock_path)
-        except FileNotFoundError:
-            pass
-
-        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        srv.bind(sock_path)
-        srv.listen(5)
+        srv = bind_fake_daemon_socket(sock_path)
         ready.set()
         srv.settimeout(120.0)
         try:

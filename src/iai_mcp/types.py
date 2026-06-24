@@ -131,6 +131,11 @@ class MemoryHit:
     valid_to: datetime | None = None
     session_id: str | None = None
     captured_at: str | None = None
+    # Internal ranking key, unclamped. `score` is the *displayed* value (clamped
+    # to [0,1] at serialization); `sort_score` preserves the raw engine ordering
+    # after multiplicative boosts (trigram*2, FTS*3, valence) push it past 1.0.
+    # When None, callers fall back to `score` (backward compatible).
+    sort_score: float | None = None
 
 
 @dataclass

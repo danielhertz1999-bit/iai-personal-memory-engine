@@ -2,11 +2,41 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 STATE_PATH: Path = Path.home() / ".iai-mcp" / ".daemon-state.json"
+
+_IS_WINDOWS: bool = platform.system() == "Windows"
+
+
+def _atomic_replace(src: str, dst: Path) -> None:
+    """os.replace, with a brief retry loop on Windows.
+
+    On Windows os.replace maps to MoveFileEx, which fails with
+    PermissionError (WinError 5/ACCESS_DENIED or 32/SHARING_VIOLATION) when
+    another process momentarily holds the destination open. Python's open()
+    on Windows does not request FILE_SHARE_DELETE, so any concurrent reader
+    (`daemon status`, the MCP server, a hook reading first-turn state) can
+    transiently block the replace. The handle is held only briefly, so a few
+    short retries resolve it. POSIX rename is atomic and never sees this, so
+    the path there is unchanged (single attempt, errors propagate).
+    """
+    if not _IS_WINDOWS:
+        os.replace(src, dst)
+        return
+    attempts = 10
+    for i in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if i == attempts - 1:
+                raise
+            time.sleep(0.05)
 
 DIGEST_SHOW_THRESHOLD_HOURS: int = 18
 
@@ -36,7 +66,7 @@ def save_state(state: dict) -> None:
             f.flush()
             os.fsync(f.fileno())
         os.chmod(tmp, 0o600)
-        os.replace(tmp, STATE_PATH)
+        _atomic_replace(tmp, STATE_PATH)
     except (OSError, TypeError, ValueError):
         try:
             os.unlink(tmp)

@@ -28,7 +28,7 @@ def _inline_production_route(cue: str) -> tuple[str, str]:
 
 def test_route_determinism(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("IAI_MCP_AROUSAL_USE_SHADOW", raising=False)
-    from bench import contradiction_longitudinal_claude as bench
+    from bench import contradiction_longitudinal as bench
 
     helper = bench._bench_arousal_route_for_cue  # noqa: SLF001
 
@@ -42,7 +42,7 @@ def test_route_determinism(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_route_split_balance(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("IAI_MCP_AROUSAL_USE_SHADOW", raising=False)
-    from bench import contradiction_longitudinal_claude as bench
+    from bench import contradiction_longitudinal as bench
 
     helper = bench._bench_arousal_route_for_cue  # noqa: SLF001
 
@@ -67,7 +67,7 @@ def test_env_override_shadow_forces_all_to_shadow(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("IAI_MCP_AROUSAL_USE_SHADOW", "1")
-    from bench import contradiction_longitudinal_claude as bench
+    from bench import contradiction_longitudinal as bench
 
     helper = bench._bench_arousal_route_for_cue  # noqa: SLF001
 
@@ -94,7 +94,7 @@ def test_bench_production_route_parity(
     cue: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("IAI_MCP_AROUSAL_USE_SHADOW", raising=False)
-    from bench import contradiction_longitudinal_claude as bench
+    from bench import contradiction_longitudinal as bench
 
     bench_route, bench_hash = bench._bench_arousal_route_for_cue(cue)  # noqa: SLF001
     prod_route, prod_hash = _inline_production_route(cue)
