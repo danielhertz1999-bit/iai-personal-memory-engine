@@ -17,6 +17,7 @@ from _socket_test_helpers import (
     daemon_endpoint,
     daemon_endpoint_ready_path,
     new_daemon_client_socket,
+    send_daemon_token,
 )
 
 @pytest.fixture
@@ -156,6 +157,7 @@ def test_kill_daemon_during_active_connection(short_socket_paths, tmp_path):
         s = new_daemon_client_socket()
         s.settimeout(15)
         s.connect(daemon_endpoint(sock_path))
+        send_daemon_token(s, sock_path)  # Windows handshake; no-op on POSIX
         msg = (json.dumps({"type": "status"}) + "\n").encode("utf-8")
         s.sendall(msg)
 

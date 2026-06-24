@@ -92,25 +92,37 @@ def _restrict_token_file(path: Path) -> None:
         )
 
 
+def _token_file_path() -> Path:
+    """Resolve the Windows auth-token file at call time, mirroring
+    ``_port_file_path`` so the token is per-endpoint (an isolated test harness
+    or a custom ``IAI_MCP_STORE``) rather than a single shared
+    ``~/.iai-mcp/.daemon.token`` that every daemon and test would clobber."""
+    env = os.environ.get("IAI_DAEMON_SOCKET_PATH")
+    if env:
+        return Path(f"{env}.token")
+    return TOKEN_FILE
+
+
 def _generate_token() -> str:
-    """Generate a fresh 32-byte random token and persist it to TOKEN_FILE."""
+    """Generate a fresh 32-byte random token and persist it to the token file."""
     token = secrets.token_hex(_TOKEN_BYTES)
-    TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-    TOKEN_FILE.write_text(token, encoding="utf-8")
-    _restrict_token_file(TOKEN_FILE)
+    path = _token_file_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(token, encoding="utf-8")
+    _restrict_token_file(path)
     return token
 
 
 def _read_token() -> str | None:
     try:
-        return TOKEN_FILE.read_text(encoding="utf-8").strip()
+        return _token_file_path().read_text(encoding="utf-8").strip()
     except (FileNotFoundError, OSError):
         return None
 
 
 def _remove_token_file() -> None:
     try:
-        TOKEN_FILE.unlink()
+        _token_file_path().unlink()
     except (FileNotFoundError, OSError):
         pass
 
@@ -148,7 +160,7 @@ async def _send_token_async(writer: asyncio.StreamWriter) -> None:
     token = _read_token()
     if token is None:
         raise FileNotFoundError(
-            "Daemon auth token not found: ~/.iai-mcp/.daemon.token missing."
+            f"Daemon auth token not found: {_token_file_path()} missing."
         )
     writer.write((token + "\n").encode("utf-8"))
     await writer.drain()
@@ -159,7 +171,7 @@ def _send_token_sync(sock: socket.socket) -> None:
     token = _read_token()
     if token is None:
         raise FileNotFoundError(
-            "Daemon auth token not found: ~/.iai-mcp/.daemon.token missing."
+            f"Daemon auth token not found: {_token_file_path()} missing."
         )
     sock.sendall((token + "\n").encode("utf-8"))
 

@@ -11,10 +11,29 @@ accept/recv/reply logic unchanged.
 from __future__ import annotations
 
 import os
+import secrets
 import socket
 from pathlib import Path
 
 from iai_mcp._ipc import IS_WINDOWS
+
+
+def write_fake_daemon_token(sock_path) -> None:
+    """Write an auth token alongside a fake daemon socket so the production
+    client's mandatory Windows handshake (see ``_ipc._send_token_async``) finds
+    one. The raw fake servers don't validate it, so any value works. No-op on
+    POSIX, where access control is the unix-socket file permissions."""
+    if IS_WINDOWS:
+        Path(f"{sock_path}.token").write_text(secrets.token_hex(16), encoding="utf-8")
+
+
+def send_daemon_token(sock: socket.socket, sock_path) -> None:
+    """Send the auth token as the first line on a *raw* client socket, matching
+    the daemon's Windows handshake. Reads ``<sock_path>.token`` (written by the
+    daemon or by ``write_fake_daemon_token``). No-op on POSIX."""
+    if IS_WINDOWS:
+        token = Path(f"{sock_path}.token").read_text(encoding="utf-8").strip()
+        sock.sendall((token + "\n").encode("utf-8"))
 
 
 def bind_fake_daemon_socket(sock_path) -> socket.socket:
@@ -32,6 +51,7 @@ def bind_fake_daemon_socket(sock_path) -> socket.socket:
         srv.bind(("127.0.0.1", 0))
         port = srv.getsockname()[1]
         Path(f"{sock_path}.port").write_text(str(port), encoding="utf-8")
+        write_fake_daemon_token(sock_path)
     else:
         try:
             os.unlink(sock_path)
