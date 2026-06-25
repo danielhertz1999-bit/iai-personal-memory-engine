@@ -6,6 +6,7 @@
 
 <h3 align="center">The best open-source personal memory engine for AI coding assistants.</h3>
 <p align="center">Every claim ships with the harness that proves it. Run the benchmarks yourself.</p>
+<p align="center"><b>Persistent memory for any MCP client.</b> Local, encrypted, verbatim recall via vector search + knowledge graph. MIT.</p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/release-v1.1.2-1f6feb?style=flat-square" alt="Release v1.1.2">
@@ -30,7 +31,7 @@
 
 **Your AI assistant forgets you every session. iai-pme gives it a memory that doesn't.**
 
-*Independent Autistic Intelligence — a personal memory engine. Fully local, ambient. Works with Claude and other MCP-compatible hosts.*
+*Independent Autistic Intelligence — a personal memory engine. Fully local, ambient. Works with Claude Code, Claude Desktop, Cursor, Codex CLI, Gemini CLI, Cline, Continue.dev, Zed, Cherry Studio, Goose, Aider, Hermes, OpenClaw, Le Chat, Kimi — anything that speaks MCP-over-stdio.*
 
 ## Table of contents
 
