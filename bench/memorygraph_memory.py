@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import gc
-import resource
 import sys
 from pathlib import Path
 from uuid import uuid4
@@ -14,6 +13,11 @@ if _SRC_PATH not in sys.path:
 
 
 def rss_mb() -> float:
+    if sys.platform == "win32":
+        import psutil
+        mi = psutil.Process().memory_info()
+        return float(getattr(mi, "peak_wset", mi.rss)) / (1024 * 1024)
+    import resource
     ru = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     if sys.platform == "darwin":
         return ru / (1024 * 1024)

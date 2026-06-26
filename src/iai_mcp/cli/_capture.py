@@ -90,7 +90,7 @@ def read_live_fingerprint(session_id: str) -> int | None:
     try:
         if not p.exists():
             return None
-        raw = p.read_text().strip()
+        raw = p.read_text(encoding="utf-8").strip()
         if not raw:
             return None
         return int(raw)
@@ -102,7 +102,7 @@ def write_live_fingerprint(session_id: str, total_size: int) -> None:
     d = Path.home() / ".iai-mcp" / ".capture-state"
     d.mkdir(parents=True, exist_ok=True)
     tmp = d / f"{session_id}.live-fingerprint.tmp"
-    tmp.write_text(str(total_size))
+    tmp.write_text(str(total_size), encoding="utf-8")
     os.replace(tmp, d / f"{session_id}.live-fingerprint")
 
 
@@ -142,7 +142,7 @@ def read_watermark(session_id: str) -> str | None:
     try:
         if not p.exists():
             return None
-        return p.read_text().strip() or None
+        return p.read_text(encoding="utf-8").strip() or None
     except OSError:
         return None
 
@@ -151,7 +151,7 @@ def write_watermark(session_id: str, ts: str) -> None:
     d = Path.home() / ".iai-mcp" / ".capture-state"
     d.mkdir(parents=True, exist_ok=True)
     tmp = d / f"{session_id}.watermark.tmp"
-    tmp.write_text(_utc_iso(ts))
+    tmp.write_text(_utc_iso(ts), encoding="utf-8")
     os.replace(tmp, d / f"{session_id}.watermark")
 
 
@@ -276,11 +276,11 @@ def cmd_capture_turn_deferred(args: argparse.Namespace) -> int:
         prev_offset = 0
         if offset_path.exists():
             try:
-                prev_offset = int(offset_path.read_text().strip() or "0")
+                prev_offset = int(offset_path.read_text(encoding="utf-8").strip() or "0")
             except ValueError:
                 prev_offset = 0
 
-        with transcript.open() as fh:
+        with transcript.open(encoding="utf-8") as fh:
             all_lines = fh.readlines()
         total = len(all_lines)
 
@@ -310,7 +310,7 @@ def cmd_capture_turn_deferred(args: argparse.Namespace) -> int:
 
         new_offset = prev_offset + consumed
         tmp_path = offset_path.parent / (offset_path.name + ".tmp")
-        tmp_path.write_text(str(new_offset))
+        tmp_path.write_text(str(new_offset), encoding="utf-8")
         os.replace(tmp_path, offset_path)
         return 0
     except Exception as e:
@@ -323,15 +323,17 @@ def cmd_capture_turn_deferred(args: argparse.Namespace) -> int:
 
 
 def _capture_hook_paths() -> tuple:
-    src = _res.files("iai_mcp") / "_deploy" / "hooks" / "iai-mcp-session-capture.sh"
-    dst = Path.home() / ".claude" / "hooks" / "iai-mcp-session-capture.sh"
+    ext = _hook_ext()
+    src = _res.files("iai_mcp") / "_deploy" / "hooks" / f"iai-mcp-session-capture{ext}"
+    dst = Path.home() / ".claude" / "hooks" / f"iai-mcp-session-capture{ext}"
     settings = Path.home() / ".claude" / "settings.json"
     return src, dst, settings
 
 
 def _turn_hook_paths() -> tuple:
-    src = _res.files("iai_mcp") / "_deploy" / "hooks" / "iai-mcp-turn-capture.sh"
-    dst = Path.home() / ".claude" / "hooks" / "iai-mcp-turn-capture.sh"
+    ext = _hook_ext()
+    src = _res.files("iai_mcp") / "_deploy" / "hooks" / f"iai-mcp-turn-capture{ext}"
+    dst = Path.home() / ".claude" / "hooks" / f"iai-mcp-turn-capture{ext}"
     return src, dst
 
 
@@ -387,6 +389,38 @@ def _build_iai_mcp_server_entry() -> dict:
     }
 
 
+def _iai_entry_or_placeholder(config_label: str, *, include_type: bool) -> dict:
+    """Build the MCP server entry, or a placeholder (with a stderr warning)
+    when the wrapper isn't built yet, so ``capture-hooks install`` doesn't
+    crash mid-run after it has already written the hooks. ``include_type``
+    controls the stdio ``type`` field that Claude Code expects but Claude
+    Desktop omits."""
+    from iai_mcp import cli as _cli
+
+    try:
+        entry = _build_iai_mcp_server_entry()
+    except FileNotFoundError as exc:
+        print(
+            f"WARN: MCP wrapper not found — {config_label} entry written with "
+            f"placeholder args. Build it first: cd mcp-wrapper && npm run build. "
+            f"({exc})",
+            file=_cli.sys.stderr,
+        )
+        entry = {
+            "command": "node",
+            "args": ["<run: cd mcp-wrapper && npm run build>"],
+            "env": {
+                "IAI_MCP_PYTHON": _cli.sys.executable,
+                "IAI_MCP_STORE": str(Path.home() / ".iai-mcp"),
+                "TRANSFORMERS_VERBOSITY": "error",
+                "TOKENIZERS_PARALLELISM": "false",
+            },
+        }
+    if include_type:
+        entry.setdefault("type", "stdio")
+    return entry
+
+
 def _patch_claude_desktop_config(action: str) -> str:
     from iai_mcp import cli as _cli
     import json as _json
@@ -399,12 +433,13 @@ def _patch_claude_desktop_config(action: str) -> str:
         if action == "uninstall":
             return f"Claude Desktop: {cfg_path} absent — skipped"
         cfg_path.parent.mkdir(parents=True, exist_ok=True)
-        data = {"mcpServers": {"iai-mcp": _build_iai_mcp_server_entry()}}
-        cfg_path.write_text(_json.dumps(data, indent=2))
+        entry = _iai_entry_or_placeholder("Claude Desktop", include_type=False)
+        data = {"mcpServers": {"iai-mcp": entry}}
+        cfg_path.write_text(_json.dumps(data, indent=2), encoding="utf-8")
         return f"Claude Desktop: created {cfg_path} with iai-mcp registered"
 
     try:
-        data = _json.loads(cfg_path.read_text())
+        data = _json.loads(cfg_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
         return f"Claude Desktop: {cfg_path} unreadable ({type(e).__name__}) — skipped"
 
@@ -413,20 +448,19 @@ def _patch_claude_desktop_config(action: str) -> str:
     if action == "uninstall":
         if "iai-mcp" in servers:
             servers.pop("iai-mcp", None)
-            cfg_path.write_text(_json.dumps(data, indent=2))
+            cfg_path.write_text(_json.dumps(data, indent=2), encoding="utf-8")
             return f"Claude Desktop: removed iai-mcp from {cfg_path}"
         return f"Claude Desktop: iai-mcp not in config — no change"
 
-    new_entry = _build_iai_mcp_server_entry()
+    new_entry = _iai_entry_or_placeholder("Claude Desktop", include_type=False)
     if servers.get("iai-mcp") == new_entry:
         return f"Claude Desktop: {cfg_path} already has iai-mcp — no change"
     servers["iai-mcp"] = new_entry
-    cfg_path.write_text(_json.dumps(data, indent=2))
+    cfg_path.write_text(_json.dumps(data, indent=2), encoding="utf-8")
     return f"Claude Desktop: patched {cfg_path} (iai-mcp registered)"
 
 
 def _patch_claude_code_config(action: str) -> str:
-    from iai_mcp import cli as _cli
     import json as _json
 
     cfg_path = Path.home() / ".claude.json"
@@ -435,46 +469,25 @@ def _patch_claude_code_config(action: str) -> str:
         if not cfg_path.exists():
             return "Claude Code: ~/.claude.json absent — skipped"
         try:
-            data = _json.loads(cfg_path.read_text())
+            data = _json.loads(cfg_path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as e:
             return f"Claude Code: ~/.claude.json unreadable ({type(e).__name__}) — skipped"
         servers = data.get("mcpServers", {})
         if "iai-mcp" in servers:
             servers.pop("iai-mcp")
             data["mcpServers"] = servers
-            cfg_path.write_text(_json.dumps(data, indent=2))
+            cfg_path.write_text(_json.dumps(data, indent=2), encoding="utf-8")
             return "Claude Code: removed iai-mcp from ~/.claude.json"
         return "Claude Code: iai-mcp not in ~/.claude.json — no change"
 
-    try:
-        entry = _build_iai_mcp_server_entry()
-    except FileNotFoundError as exc:
-        entry = {
-            "type": "stdio",
-            "command": "node",
-            "args": ["<run: cd mcp-wrapper && npm run build>"],
-            "env": {
-                "IAI_MCP_PYTHON": _cli.sys.executable,
-                "IAI_MCP_STORE": str(Path.home() / ".iai-mcp"),
-                "TRANSFORMERS_VERBOSITY": "error",
-                "TOKENIZERS_PARALLELISM": "false",
-            },
-        }
-        print(
-            f"WARN: MCP wrapper not found — ~/.claude.json entry written with "
-            f"placeholder args. Build it first: cd mcp-wrapper && npm run build. "
-            f"({exc})",
-            file=_cli.sys.stderr,
-        )
-    else:
-        entry.setdefault("type", "stdio")
+    entry = _iai_entry_or_placeholder("~/.claude.json", include_type=True)
 
     if not cfg_path.exists():
-        cfg_path.write_text(_json.dumps({"mcpServers": {"iai-mcp": entry}}, indent=2))
+        cfg_path.write_text(_json.dumps({"mcpServers": {"iai-mcp": entry}}, indent=2), encoding="utf-8")
         return "Claude Code: created ~/.claude.json with iai-mcp registered"
 
     try:
-        data = _json.loads(cfg_path.read_text())
+        data = _json.loads(cfg_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
         return f"Claude Code: ~/.claude.json unreadable ({type(e).__name__}) — skipped"
 
@@ -482,18 +495,25 @@ def _patch_claude_code_config(action: str) -> str:
     if servers.get("iai-mcp") == entry:
         return "Claude Code: ~/.claude.json already has iai-mcp — no change"
     servers["iai-mcp"] = entry
-    cfg_path.write_text(_json.dumps(data, indent=2))
+    cfg_path.write_text(_json.dumps(data, indent=2), encoding="utf-8")
     return "Claude Code: patched ~/.claude.json (iai-mcp registered)"
 
 
-_CAPTURE_HOOK_MARKER = "iai-mcp-session-capture.sh"
-_TURN_HOOK_MARKER = "iai-mcp-turn-capture.sh"
-_SESSION_RECALL_HOOK_MARKER = "iai-mcp-session-recall.sh"
+import platform as _platform
+
+_CAPTURE_HOOK_MARKER = "iai-mcp-session-capture"
+_TURN_HOOK_MARKER = "iai-mcp-turn-capture"
+_SESSION_RECALL_HOOK_MARKER = "iai-mcp-session-recall"
+
+
+def _hook_ext() -> str:
+    return ".ps1" if _platform.system() == "Windows" else ".sh"
 
 
 def _session_recall_hook_paths() -> tuple:
-    src = _res.files("iai_mcp") / "_deploy" / "hooks" / "iai-mcp-session-recall.sh"
-    dst = Path.home() / ".claude" / "hooks" / "iai-mcp-session-recall.sh"
+    ext = _hook_ext()
+    src = _res.files("iai_mcp") / "_deploy" / "hooks" / f"iai-mcp-session-recall{ext}"
+    dst = Path.home() / ".claude" / "hooks" / f"iai-mcp-session-recall{ext}"
     settings = Path.home() / ".claude" / "settings.json"
     return src, dst, settings
 
@@ -503,7 +523,7 @@ def _load_settings(path):
     if not path.exists():
         return {}
     try:
-        return _json.loads(path.read_text())
+        return _json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
 
@@ -525,12 +545,14 @@ def cmd_capture_hooks_install(args: argparse.Namespace) -> int:
 
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_bytes(src.read_bytes())
-    dst.chmod(dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
+    if hasattr(os, "chmod") and _platform.system() != "Windows":
+        dst.chmod(dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
     print(f"installed: {dst}")
 
     turn_dst.parent.mkdir(parents=True, exist_ok=True)
     turn_dst.write_bytes(turn_src.read_bytes())
-    turn_dst.chmod(turn_dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
+    if hasattr(os, "chmod") and _platform.system() != "Windows":
+        turn_dst.chmod(turn_dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
     print(f"installed: {turn_dst}")
 
     settings.parent.mkdir(parents=True, exist_ok=True)
@@ -539,8 +561,12 @@ def cmd_capture_hooks_install(args: argparse.Namespace) -> int:
     stop_list = data["hooks"].setdefault("Stop", [])
     submit_list = data["hooks"].setdefault("UserPromptSubmit", [])
 
-    hook_cmd = f"bash {dst}"
-    turn_cmd = f"bash {turn_dst}"
+    if _platform.system() == "Windows":
+        hook_cmd = f"powershell -ExecutionPolicy Bypass -File \"{dst}\""
+        turn_cmd = f"powershell -ExecutionPolicy Bypass -File \"{turn_dst}\""
+    else:
+        hook_cmd = f"bash {dst}"
+        turn_cmd = f"bash {turn_dst}"
 
     already_stop = any(
         any(_CAPTURE_HOOK_MARKER in (h.get("command") or "")
@@ -568,11 +594,15 @@ def cmd_capture_hooks_install(args: argparse.Namespace) -> int:
     if src_recall.exists():
         dst_recall.parent.mkdir(parents=True, exist_ok=True)
         dst_recall.write_bytes(src_recall.read_bytes())
-        dst_recall.chmod(dst_recall.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
+        if hasattr(os, "chmod") and _platform.system() != "Windows":
+            dst_recall.chmod(dst_recall.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
         print(f"installed: {dst_recall}")
 
         ss_list = data["hooks"].setdefault("SessionStart", [])
-        recall_cmd = f"bash {dst_recall}"
+        if _platform.system() == "Windows":
+            recall_cmd = f"powershell -ExecutionPolicy Bypass -File \"{dst_recall}\""
+        else:
+            recall_cmd = f"bash {dst_recall}"
         already_recall = any(
             any(_SESSION_RECALL_HOOK_MARKER in (h.get("command") or "")
                 for h in (entry.get("hooks") or []))
@@ -589,7 +619,7 @@ def cmd_capture_hooks_install(args: argparse.Namespace) -> int:
     else:
         print(f"WARN: recall hook template missing in package data: {src_recall}")
 
-    settings.write_text(_json.dumps(data, indent=2))
+    settings.write_text(_json.dumps(data, indent=2), encoding="utf-8")
 
     code_msg = _patch_claude_code_config("install")
     print(code_msg)
@@ -648,7 +678,7 @@ def cmd_capture_hooks_uninstall(args: argparse.Namespace) -> int:
                 changed = True
                 print(f"patched: {settings} ({key} entry removed)")
         if changed:
-            settings.write_text(_json.dumps(data, indent=2))
+            settings.write_text(_json.dumps(data, indent=2), encoding="utf-8")
         else:
             print(f"(no hook entry to remove) {settings}")
 
@@ -664,7 +694,7 @@ def cmd_capture_hooks_uninstall(args: argparse.Namespace) -> int:
                 data["hooks"]["SessionStart"] = kept_ss
             else:
                 data["hooks"].pop("SessionStart", None)
-            settings.write_text(_json.dumps(data, indent=2))
+            settings.write_text(_json.dumps(data, indent=2), encoding="utf-8")
             print(f"patched: {settings} (SessionStart entry removed)")
         else:
             print(f"(no SessionStart entry to remove) {settings}")
@@ -724,7 +754,7 @@ def cmd_capture_hooks_status(args: argparse.Namespace) -> int:
         desktop_wired = False
     else:
         try:
-            d = _json.loads(desktop_cfg.read_text())
+            d = _json.loads(desktop_cfg.read_text(encoding="utf-8"))
             desktop_wired = "iai-mcp" in d.get("mcpServers", {})
             desktop_line = f"Claude Desktop: {desktop_cfg}  {'WIRED' if desktop_wired else 'NOT WIRED'}"
         except (OSError, ValueError):

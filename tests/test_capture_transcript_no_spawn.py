@@ -37,7 +37,7 @@ def _count_iai_mcp_processes() -> dict[str, int]:
 
 
 def _isolated_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
-    sock_dir = Path(f"/tmp/iai-no-spawn-{os.getpid()}-{id(tmp_path)}")
+    sock_dir = tmp_path / "sock"
     sock_dir.mkdir(parents=True, exist_ok=True)
     sock_path = sock_dir / "d.sock"
 

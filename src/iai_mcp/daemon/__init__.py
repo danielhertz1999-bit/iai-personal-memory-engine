@@ -6,7 +6,7 @@ import faulthandler
 import json
 import logging
 import os
-import resource
+import platform as _platform
 import signal
 import sys
 import threading
@@ -116,6 +116,10 @@ _DAEMON_NOFILE_FLOOR_DEFAULT: int = 8192
 
 
 def _raise_fd_limit() -> None:
+    if _platform.system() == "Windows":
+        return
+    import resource as _resource
+
     try:
         floor = int(
             os.environ.get("IAI_MCP_DAEMON_NOFILE_FLOOR", _DAEMON_NOFILE_FLOOR_DEFAULT)
@@ -124,18 +128,18 @@ def _raise_fd_limit() -> None:
         floor = _DAEMON_NOFILE_FLOOR_DEFAULT
 
     try:
-        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        soft, hard = _resource.getrlimit(_resource.RLIMIT_NOFILE)
     except (OSError, ValueError):
         return
 
-    effective_hard = hard if hard != resource.RLIM_INFINITY else floor
+    effective_hard = hard if hard != _resource.RLIM_INFINITY else floor
 
     target = min(max(soft, floor), effective_hard)
     if target <= soft:
         return
 
     try:
-        resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+        _resource.setrlimit(_resource.RLIMIT_NOFILE, (target, hard))
         log.debug("daemon_fd_limit_raised soft=%d->%d hard=%d", soft, target, hard)
     except (OSError, ValueError) as exc:
         log.debug("daemon_fd_limit_raise failed (non-fatal): %s", exc)
@@ -750,10 +754,35 @@ def _set_process_title(title: str = "iai lilli (iai_mcp.daemon)") -> None:
         pass
 
 
+def _auto_set_embed_offline() -> None:
+    """Set IAI_MCP_EMBED_OFFLINE if the bge-small-en-v1.5 model is already cached locally.
+
+    The Rust hf-hub client uses a different TLS stack than Python and may fail to reach
+    huggingface.co in restricted network environments (e.g., containers with custom CA
+    certificates). When the model files are already present in the HF cache, setting this
+    env var tells the Rust embedder to skip the network entirely.
+    """
+    if os.environ.get("IAI_MCP_EMBED_OFFLINE"):
+        return
+    import pathlib
+
+    revision = "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
+    hf_home = os.environ.get("HF_HOME") or os.environ.get("HUGGINGFACE_HUB_CACHE")
+    if hf_home:
+        cache_base = pathlib.Path(hf_home)
+    else:
+        cache_base = pathlib.Path.home() / ".cache" / "huggingface" / "hub"
+    snap = cache_base / "models--BAAI--bge-small-en-v1.5" / "snapshots" / revision
+    if (snap / "model.safetensors").exists() and (snap / "tokenizer.json").exists():
+        os.environ["IAI_MCP_EMBED_OFFLINE"] = "1"
+        log.debug("bge-small-en-v1.5 found in HF cache — setting IAI_MCP_EMBED_OFFLINE=1")
+
+
 async def main() -> int:
     _set_process_title()
     _require_native()
     _raise_fd_limit()
+    _auto_set_embed_offline()
 
     store = await _open_exclusive_store_with_backoff(
         lambda: MemoryStore(
@@ -1000,10 +1029,15 @@ async def main() -> int:
 
         shutdown = asyncio.Event()
         loop = asyncio.get_running_loop()
-        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        _shutdown_sigs = [signal.SIGINT]
+        if hasattr(signal, "SIGTERM"):
+            _shutdown_sigs.append(signal.SIGTERM)
+        if hasattr(signal, "SIGHUP"):
+            _shutdown_sigs.append(signal.SIGHUP)
+        for sig in _shutdown_sigs:
             try:
                 loop.add_signal_handler(sig, shutdown.set)
-            except (NotImplementedError, RuntimeError):
+            except (NotImplementedError, RuntimeError, ValueError):
                 pass
 
         try:

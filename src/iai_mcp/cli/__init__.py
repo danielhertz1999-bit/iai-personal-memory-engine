@@ -23,6 +23,7 @@ SYSTEMD_TARGET: Path = Path.home() / ".config" / "systemd" / "user" / "iai-mcp-d
 
 DAEMON_LABEL: str = "com.iai-mcp.daemon"
 SERVICE_NAME: str = "iai-mcp-daemon.service"
+SCHTASKS_TASK_NAME: str = "iai-mcp-daemon"
 
 CONSENT_BANNER: str = """\
 ==============================================================================
@@ -56,6 +57,10 @@ def _is_linux() -> bool:
     return platform.system() == "Linux"
 
 
+def _is_windows() -> bool:
+    return platform.system() == "Windows"
+
+
 def _ensure_crypto_key_present():
     if os.environ.get("IAI_MCP_CRYPTO_PASSPHRASE"):
         return None
@@ -72,15 +77,17 @@ def _ensure_crypto_key_present():
 
 
 def _try_short_timeout_connect(timeout_ms: int = 250) -> bool:
-    import socket as _socket
-
-    sock_path = os.environ.get("IAI_DAEMON_SOCKET_PATH") or str(SOCKET_PATH)
-    s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    from iai_mcp._ipc import make_sync_ipc_socket, send_sync_auth_token
+    try:
+        s, addr = make_sync_ipc_socket()
+    except (FileNotFoundError, OSError):
+        return False
     s.settimeout(timeout_ms / 1000.0)
     try:
-        s.connect(sock_path)
+        s.connect(addr)
+        send_sync_auth_token(s)
         return True
-    except (FileNotFoundError, ConnectionRefusedError, OSError, _socket.timeout):
+    except (FileNotFoundError, ConnectionRefusedError, OSError):
         return False
     finally:
         try:
@@ -99,18 +106,14 @@ def _send_jsonrpc_request(
     read_timeout: float = 30.0,
 ) -> dict | None:
     import asyncio
+    from iai_mcp._ipc import open_ipc_connection
     from iai_mcp.cli._capture import _is_custom_store as _isc
     if not os.environ.get("IAI_DAEMON_SOCKET_PATH") and _isc():
         return None
 
-    sock_path = os.environ.get("IAI_DAEMON_SOCKET_PATH") or str(SOCKET_PATH)
-
     async def _runner() -> dict | None:
         try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_unix_connection(sock_path),
-                timeout=connect_timeout,
-            )
+            reader, writer = await open_ipc_connection(timeout=connect_timeout)
         except (FileNotFoundError, ConnectionRefusedError, OSError, asyncio.TimeoutError):
             return None
         try:
@@ -142,17 +145,12 @@ def _send_jsonrpc_request(
 
 def _send_socket_request(req: dict, *, timeout: float = 30.0) -> dict | None:
     import asyncio
+    from iai_mcp._ipc import open_ipc_connection
 
     async def _runner() -> dict | None:
-        _sock = os.environ.get("IAI_DAEMON_SOCKET_PATH") or str(SOCKET_PATH)
         try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_unix_connection(_sock),
-                timeout=5.0,
-            )
-        except (FileNotFoundError, ConnectionRefusedError):
-            return None
-        except OSError:
+            reader, writer = await open_ipc_connection(timeout=5.0)
+        except (FileNotFoundError, ConnectionRefusedError, OSError):
             return None
         try:
             writer.write((json.dumps(req) + "\n").encode("utf-8"))
@@ -324,6 +322,7 @@ from ._daemon import (
     _launchd_template,
     _render_launchd_plist,
     _render_systemd_unit,
+    _render_schtasks_xml,
     _prompt_consent,
     _record_consent_receipt,
     _remove_state_files,
@@ -658,14 +657,17 @@ def _build_parser() -> argparse.ArgumentParser:
     di = daemon_sub.add_parser(
         "install",
         help=(
-            "install launchd plist (macOS) / systemd user unit (Linux); "
-            "first-run consent banner unless --yes"
+            "install launchd plist (macOS) / systemd user unit (Linux) / "
+            "Task Scheduler job (Windows); first-run consent banner unless --yes"
         ),
     )
     di.add_argument(
         "--dry-run",
         action="store_true",
-        help="print plist/unit contents without writing or invoking launchctl/systemctl",
+        help=(
+            "print service definition (plist / unit / schtasks XML) without "
+            "writing or invoking launchctl/systemctl/schtasks"
+        ),
     )
     di.add_argument(
         "--yes", "-y",
@@ -676,17 +678,19 @@ def _build_parser() -> argparse.ArgumentParser:
 
     du = daemon_sub.add_parser(
         "uninstall",
-        help="C4 clean uninstall: remove plist/unit + 3 state files",
+        help="C4 clean uninstall: remove plist/unit/scheduled task + 3 state files",
     )
     du.add_argument("--yes", "-y", action="store_true")
     du.set_defaults(func=cmd_daemon_uninstall)
 
     daemon_sub.add_parser(
-        "start", help="launchctl kickstart / systemctl --user start",
+        "start",
+        help="launchctl kickstart / systemctl --user start / schtasks /Run",
     ).set_defaults(func=cmd_daemon_start)
 
     daemon_sub.add_parser(
-        "stop", help="launchctl kill SIGTERM / systemctl --user stop",
+        "stop",
+        help="launchctl kill SIGTERM / systemctl --user stop / schtasks /End",
     ).set_defaults(func=cmd_daemon_stop)
 
     daemon_sub.add_parser(
@@ -699,7 +703,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     dlogs = daemon_sub.add_parser(
         "logs",
-        help="tail daemon log file (macOS Library/Logs) or journalctl (Linux)",
+        help=(
+            "tail daemon log file (macOS Library/Logs, "
+            "Linux journalctl, Windows %%APPDATA%%\\iai-mcp\\logs)"
+        ),
     )
     dlogs.add_argument("-f", "--follow", action="store_true")
     dlogs.add_argument("-n", "--lines", type=int, default=50)
@@ -1046,7 +1053,23 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _force_utf8_streams() -> None:
+    """Recalled memory is arbitrary UTF-8 (emoji, CJK, smart quotes, em-dashes).
+    The session-recall hook reads this CLI's stdout, but on Windows — and under
+    a POSIX C/POSIX locale — stdout/stderr default to a non-UTF-8 codepage, so
+    writing recalled memory would raise UnicodeEncodeError and the hook would
+    silently produce no context. Force UTF-8 on the std streams."""
+    for _stream in (sys.stdout, sys.stderr):
+        _reconfigure = getattr(_stream, "reconfigure", None)
+        if _reconfigure is not None:
+            try:
+                _reconfigure(encoding="utf-8")
+            except (ValueError, OSError):
+                pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_streams()
     parser = _build_parser()
     args = parser.parse_args(argv)
     return args.func(args)

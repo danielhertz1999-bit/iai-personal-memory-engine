@@ -66,17 +66,12 @@ def _send_embed_cue_rpc(cue: str, timeout_ms: int) -> "list[float] | None":
     import asyncio
     import json
 
-    from iai_mcp.concurrency import SOCKET_PATH
-
-    sock_path = os.environ.get("IAI_DAEMON_SOCKET_PATH") or str(SOCKET_PATH)
+    from iai_mcp._ipc import open_ipc_connection
     connect_timeout = timeout_ms / 1000.0
 
     async def _runner() -> "list[float] | None":
         try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_unix_connection(sock_path),
-                timeout=connect_timeout,
-            )
+            reader, writer = await open_ipc_connection(timeout=connect_timeout)
         except (FileNotFoundError, ConnectionRefusedError, OSError, asyncio.TimeoutError):
             return None
         try:

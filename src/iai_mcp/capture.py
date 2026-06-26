@@ -145,6 +145,16 @@ QUARANTINE_MAX_ATTEMPTS: int = 2
 
 
 def _pid_is_alive(pid: int) -> bool:
+    # NOT os.kill(pid, 0): on Windows signal 0 is CTRL_C_EVENT (it would try to
+    # signal the process group), not a liveness probe — so the stale-PID
+    # crash-recovery rescan never reclaims abandoned .processing-<pid> files.
+    # psutil.pid_exists is correct and cross-platform (psutil is a hard dep).
+    try:
+        import psutil
+
+        return psutil.pid_exists(pid)
+    except Exception:
+        pass
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -164,11 +174,13 @@ def _strip_processing_marker(
         return path, True
     new_path = path.with_name(new_name)
     try:
-        path.rename(new_path)
+        # replace (not rename): rename raises on Windows if the dest exists;
+        # POSIX rename already replaces, so behaviour is unchanged there.
+        path.replace(new_path)
     except OSError as e:
         if log_path is not None:
             try:
-                with log_path.open("a") as logf:
+                with log_path.open("a", encoding="utf-8") as logf:
                     logf.write(
                         f"{datetime.now(timezone.utc).isoformat()} "
                         f"strip-marker-failed {path.name}: {type(e).__name__}\n"
@@ -214,7 +226,7 @@ def _quarantine_file(
     except Exception as exc:  # noqa: BLE001 -- fail-safe boundary
         log.debug("quarantine_event_write_failed: %s", exc)
         try:
-            with log_path.open("a") as logf:
+            with log_path.open("a", encoding="utf-8") as logf:
                 logf.write(
                     f"{datetime.now(timezone.utc).isoformat()} "
                     f"quarantined-event-skipped {target.name}\n"
@@ -223,7 +235,7 @@ def _quarantine_file(
             log.debug("quarantine_event_log_fallback_failed: %s", exc2)
 
     try:
-        with log_path.open("a") as logf:
+        with log_path.open("a", encoding="utf-8") as logf:
             logf.write(
                 f"{datetime.now(timezone.utc).isoformat()} "
                 f"quarantined {target.name}: crash_loop attempts={attempts}\n"
@@ -262,7 +274,7 @@ def _advance_failed_path(
     if next_attempt > FAILED_MAX_ATTEMPTS:
         new_name = f"{base}.permanent-failed-{ts_str}.jsonl"
         failed_path = fpath.with_name(new_name)
-        fpath.rename(failed_path)
+        fpath.replace(failed_path)
         try:
             from iai_mcp.events import write_event
 
@@ -280,7 +292,7 @@ def _advance_failed_path(
         except Exception as exc:  # noqa: BLE001 -- fail-safe boundary
             log.debug("permanent_capture_failure_event_failed: %s", exc)
             try:
-                with log_path.open("a") as logf:
+                with log_path.open("a", encoding="utf-8") as logf:
                     logf.write(
                         f"{datetime.now(timezone.utc).isoformat()} "
                         f"permanent_capture_failure-event-skipped {new_name}\n"
@@ -290,7 +302,7 @@ def _advance_failed_path(
         return failed_path
     new_name = f"{base}.failed-{ts_str}-attempt-{next_attempt}.jsonl"
     failed_path = fpath.with_name(new_name)
-    fpath.rename(failed_path)
+    fpath.replace(failed_path)
     return failed_path
 
 
@@ -652,7 +664,7 @@ def capture_transcript(
 
     counts = {"inserted": 0, "reinforced": 0, "skipped": 0, "errors": 0}
     seen = 0
-    with path.open() as fh:
+    with path.open(encoding="utf-8") as fh:
         for line in fh:
             if seen >= max_turns:
                 break
@@ -758,7 +770,7 @@ def write_deferred_event(
     deferred_dir.mkdir(parents=True, exist_ok=True)
     path = deferred_dir / f"{session_id}.live.jsonl"
     need_header = (not path.exists()) or path.stat().st_size == 0
-    with path.open("a") as fh:
+    with path.open("a", encoding="utf-8") as fh:
         if need_header:
             header = {
                 "version": 1,
@@ -887,7 +899,7 @@ def write_deferred_captures(
     final_name = f"{session_id}-{int(time.time())}-{os.getpid()}.jsonl"
     out_path = deferred_dir / final_name
     tmp_path = deferred_dir / f"{final_name}.tmp"
-    with tmp_path.open("w") as fh:
+    with tmp_path.open("w", encoding="utf-8") as fh:
         header = {
             "version": 1,
             "deferred_at": datetime.now(timezone.utc).isoformat(),
@@ -898,7 +910,7 @@ def write_deferred_captures(
         path = Path(transcript_path).expanduser()
         if path.exists():
             seen = 0
-            with path.open() as src:
+            with path.open(encoding="utf-8") as src:
                 for line in src:
                     if seen >= max_turns:
                         break
@@ -1039,7 +1051,7 @@ def _drain_deferred_captures_locked(
                 ".jsonl", f".crash-{next_n}.jsonl"
             )
             try:
-                fpath.rename(fpath.with_name(new_name))
+                fpath.replace(fpath.with_name(new_name))
             except Exception as exc:  # noqa: BLE001
                 log.debug("crash_rename_failed %s: %s", fpath.name, exc)
 
@@ -1091,12 +1103,12 @@ def _drain_deferred_captures_locked(
             fpath.stem + f".processing-{os.getpid()}.jsonl"
         )
         try:
-            fpath.rename(claim_path)
+            fpath.replace(claim_path)
         except FileNotFoundError:
             continue
         except OSError as e:
             try:
-                with log_path.open("a") as logf:
+                with log_path.open("a", encoding="utf-8") as logf:
                     logf.write(
                         f"{datetime.now(timezone.utc).isoformat()} "
                         f"claim-failed {fpath.name}: {type(e).__name__}\n"
@@ -1109,14 +1121,14 @@ def _drain_deferred_captures_locked(
         file_had_insert_failure = False
         file_first_error: str | None = None
         try:
-            with work_path.open() as fh:
+            with work_path.open(encoding="utf-8") as fh:
                 lines = [ln.rstrip("\n") for ln in fh if ln.strip()]
             if not lines:
                 work_path.unlink()
                 continue
             header = json.loads(lines[0])
             if header.get("version", 0) > 1:
-                with log_path.open("a") as logf:
+                with log_path.open("a", encoding="utf-8") as logf:
                     logf.write(
                         f"{datetime.now(timezone.utc).isoformat()} skip "
                         f"{work_path.name}: version={header.get('version')}\n"
@@ -1137,7 +1149,7 @@ def _drain_deferred_captures_locked(
                         break
                     partial_path = work_path.with_suffix(".partial.jsonl")
                     tmp_path = work_path.with_suffix(".partial.tmp")
-                    with tmp_path.open("w") as ph:
+                    with tmp_path.open("w", encoding="utf-8") as ph:
                         ph.write(lines[0] + "\n")
                         for r in remainder:
                             ph.write(r + "\n")
@@ -1264,7 +1276,7 @@ def _drain_deferred_captures_locked(
                 )
                 if not _strip_ok:
                     try:
-                        with log_path.open("a") as logf:
+                        with log_path.open("a", encoding="utf-8") as logf:
                             logf.write(
                                 f"{datetime.now(timezone.utc).isoformat()} "
                                 f"insert-failed-skip {work_path.name}: "
@@ -1280,7 +1292,7 @@ def _drain_deferred_captures_locked(
                     first_error=file_first_error or "unknown",
                     log_path=log_path,
                 )
-                with log_path.open("a") as logf:
+                with log_path.open("a", encoding="utf-8") as logf:
                     logf.write(
                         f"{datetime.now(timezone.utc).isoformat()} insert-failed "
                         f"{work_path.name}: first_error={file_first_error}\n"
@@ -1296,7 +1308,7 @@ def _drain_deferred_captures_locked(
                 )
                 if not _strip_ok:
                     try:
-                        with log_path.open("a") as logf:
+                        with log_path.open("a", encoding="utf-8") as logf:
                             logf.write(
                                 f"{datetime.now(timezone.utc).isoformat()} "
                                 f"exception-skip {work_path.name}: "
@@ -1312,7 +1324,7 @@ def _drain_deferred_captures_locked(
                     first_error=file_first_error or repr(e),
                     log_path=log_path,
                 )
-                with log_path.open("a") as logf:
+                with log_path.open("a", encoding="utf-8") as logf:
                     logf.write(
                         f"{datetime.now(timezone.utc).isoformat()} failed "
                         f"{work_path.name}: {type(e).__name__}: {e}\n"
@@ -1369,7 +1381,7 @@ _PERMANENT_FAILED_NAMED_RE = re.compile(r"^(.+)\.permanent-failed-([^.]+)\.jsonl
 
 def _count_lines(fpath: Path) -> int:
     try:
-        with fpath.open() as fh:
+        with fpath.open(encoding="utf-8") as fh:
             return sum(1 for ln in fh if ln.strip())
     except OSError:
         return 0
@@ -1434,7 +1446,7 @@ def drain_permanent_failed_files(
         file_dropped = 0
 
         try:
-            with fpath.open() as fh:
+            with fpath.open(encoding="utf-8") as fh:
                 lines = [ln.rstrip("\n") for ln in fh if ln.strip()]
 
             if not lines:
@@ -1573,7 +1585,7 @@ def _drain_active_live_captures_impl(
         if not _LIVE_ACTIVE_RE.search(fpath.name):
             continue
         try:
-            with fpath.open() as fh:
+            with fpath.open(encoding="utf-8") as fh:
                 raw_lines = fh.readlines()
         except OSError:
             continue
@@ -1599,7 +1611,7 @@ def _drain_active_live_captures_impl(
         prev_offset: int = 0
         try:
             if offset_path.exists():
-                prev_offset = int(offset_path.read_text().strip() or "0")
+                prev_offset = int(offset_path.read_text(encoding="utf-8").strip() or "0")
         except (ValueError, OSError):
             prev_offset = 0
 
@@ -1647,7 +1659,7 @@ def _drain_active_live_captures_impl(
         state_dir.mkdir(parents=True, exist_ok=True)
         tmp_offset = offset_path.with_suffix(".drain-offset.tmp")
         try:
-            tmp_offset.write_text(str(new_offset))
+            tmp_offset.write_text(str(new_offset), encoding="utf-8")
             os.replace(tmp_offset, offset_path)
         except OSError as exc:
             log.warning("drain_active_offset_write_failed: %s", exc)

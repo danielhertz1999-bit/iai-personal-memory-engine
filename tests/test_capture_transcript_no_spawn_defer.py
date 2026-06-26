@@ -20,7 +20,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def _isolated_env(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
-    sock_dir = Path(f"/tmp/iai-no-spawn-defer-{os.getpid()}-{id(tmp_path)}")
+    sock_dir = tmp_path / "sock"
     sock_dir.mkdir(parents=True, exist_ok=True)
     sock_path = sock_dir / "d.sock"
 

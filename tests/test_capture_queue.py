@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import errno
-import fcntl
 import json
+from iai_mcp._filelock import LOCK_EX, LOCK_NB, LOCK_SH, LOCK_UN
+from iai_mcp._filelock import flock as _flock
 import os
 import threading
 import time
@@ -171,7 +172,7 @@ def test_idempotent_ingest_lock_skipped(tmp_path):
     lock_a = tmp_path / f"pending-{ulid_a}.lock"
     fd = os.open(str(lock_a), os.O_WRONLY | os.O_CREAT, 0o600)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _flock(fd, LOCK_EX | LOCK_NB)
 
         seen: list[str] = []
 
@@ -186,7 +187,7 @@ def test_idempotent_ingest_lock_skipped(tmp_path):
         assert not (tmp_path / f"pending-{ulid_c}.json").exists()
     finally:
         try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            _flock(fd, LOCK_UN)
         except OSError:
             pass
         os.close(fd)

@@ -12,11 +12,27 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 
+import platform as _platform
+import subprocess as _subprocess
+
 CIPHERTEXT_PREFIX: str = "iai:enc:v1:"
 NONCE_BYTES: int = 12
 KEY_BYTES: int = 32
 PBKDF2_ITERATIONS: int = 600_000
 SERVICE_NAME_DEFAULT: str = "iai-mcp"
+
+
+def _secure_key_file(path: Path) -> None:
+    """Restrict file permissions to owner-only. On POSIX uses chmod; on Windows uses icacls."""
+    if _platform.system() == "Windows":
+        user = os.environ.get("USERNAME", "")
+        if user:
+            _subprocess.run(
+                ["icacls", str(path), "/inheritance:d", "/grant:r", f"{user}:F"],
+                check=False, capture_output=True,
+            )
+    else:
+        path.chmod(0o600)
 
 _DEFAULT_STORE_ROOT: Path = Path.home() / ".iai-mcp"
 _KEY_FILE_NAME: str = ".crypto.key"
@@ -112,13 +128,13 @@ class CryptoKey:
         if not path.exists():
             return None
         st = os.stat(path)
-        if st.st_mode & 0o077 != 0:
+        if hasattr(os, "geteuid") and st.st_mode & 0o077 != 0:
             raise CryptoKeyError(
                 f"crypto key file at {path} has insecure mode "
                 f"0o{st.st_mode & 0o777:03o}; expected 0o600 "
                 f"(run: chmod 0o600 {path})"
             )
-        if st.st_uid != os.geteuid():
+        if hasattr(os, "geteuid") and st.st_uid != os.geteuid():
             raise CryptoKeyError(
                 f"crypto key file at {path} is owned by uid={st.st_uid}; "
                 f"current process runs as uid={os.geteuid()} (refusing to read)"
@@ -144,12 +160,18 @@ class CryptoKey:
         tmp = final.parent / f"{final.name}.tmp.{os.getpid()}"
         fd = os.open(str(tmp), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         try:
-            os.fchmod(fd, 0o600)
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)
             os.write(fd, key)
             os.fsync(fd)
         finally:
             os.close(fd)
-        os.rename(str(tmp), str(final))
+        if not hasattr(os, "fchmod"):
+            _secure_key_file(tmp)
+        # os.replace (not os.rename): on Windows rename raises if the
+        # destination exists, which it always does during key rotation. POSIX
+        # rename already replaces, so this is behaviour-preserving there.
+        os.replace(str(tmp), str(final))
 
 
     def get_or_create(self) -> bytes:

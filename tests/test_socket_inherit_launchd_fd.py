@@ -48,7 +48,7 @@ def _bind_to_fd_3(sock_path: Path) -> Iterator[socket.socket]:
             pass
 
 def _short_sock_path(suffix: str) -> Path:
-    sock_dir = Path(f"/tmp/iai-launchd-{os.getpid()}-{suffix}")
+    sock_dir = tmp_path / "sock"
     sock_dir.mkdir(parents=True, exist_ok=True)
     return sock_dir / "d.sock"
 

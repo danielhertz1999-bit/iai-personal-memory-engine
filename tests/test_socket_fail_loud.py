@@ -13,10 +13,17 @@ from pathlib import Path
 import psutil
 import pytest
 
+from _socket_test_helpers import (
+    daemon_endpoint,
+    daemon_endpoint_ready_path,
+    new_daemon_client_socket,
+    send_daemon_token,
+)
+
 @pytest.fixture
 def short_socket_paths(tmp_path):
     lock_path = tmp_path / ".lock"
-    sock_dir = Path(f"/tmp/iai-fl-{os.getpid()}-{id(tmp_path)}")
+    sock_dir = tmp_path / "sock"
     sock_dir.mkdir(parents=True, exist_ok=True)
     sock_path = sock_dir / "d.sock"
     state_path = tmp_path / ".daemon-state.json"
@@ -63,9 +70,10 @@ def _spawn_daemon_for_test(sock_path: Path, store_root: Path) -> subprocess.Pope
     )
 
 def _wait_for_socket(sock_path: Path, timeout_sec: float = 30.0) -> bool:
+    ready = daemon_endpoint_ready_path(sock_path)
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline:
-        if sock_path.exists():
+        if ready.exists():
             return True
         time.sleep(0.1)
     return False
@@ -93,7 +101,7 @@ def test_kill_daemon_midcall_no_orphan_core_spawn(short_socket_paths, tmp_path):
             f"(baseline={baseline}, before={before}) — singleton invariant violated"
         )
 
-        proc.send_signal(signal.SIGKILL)
+        proc.kill()
         proc.wait(timeout=5)
 
         time.sleep(0.5)
@@ -106,11 +114,11 @@ def test_kill_daemon_midcall_no_orphan_core_spawn(short_socket_paths, tmp_path):
             "— invariant: the daemon must never spawn a second core."
         )
 
-        s = sk.socket(sk.AF_UNIX, sk.SOCK_STREAM)
+        s = new_daemon_client_socket()
         s.settimeout(0.5)
         err_kind = None
         try:
-            s.connect(str(sock_path))
+            s.connect(daemon_endpoint(sock_path))
             err_kind = "no_error"
         except (ConnectionRefusedError, FileNotFoundError, OSError) as e:
             err_kind = type(e).__name__
@@ -120,11 +128,11 @@ def test_kill_daemon_midcall_no_orphan_core_spawn(short_socket_paths, tmp_path):
             except OSError:
                 pass
         assert err_kind in (
-            "ConnectionRefusedError", "FileNotFoundError", "OSError",
+            "ConnectionRefusedError", "FileNotFoundError", "OSError", "TimeoutError",
         ), f"unexpected post-kill connect outcome: {err_kind}"
     finally:
         if proc.poll() is None:
-            proc.send_signal(signal.SIGKILL)
+            proc.kill()
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
@@ -146,9 +154,10 @@ def test_kill_daemon_during_active_connection(short_socket_paths, tmp_path):
             "daemon never bound socket within 30s"
         )
 
-        s = sk.socket(sk.AF_UNIX, sk.SOCK_STREAM)
+        s = new_daemon_client_socket()
         s.settimeout(15)
-        s.connect(str(sock_path))
+        s.connect(daemon_endpoint(sock_path))
+        send_daemon_token(s, sock_path)  # Windows handshake; no-op on POSIX
         msg = (json.dumps({"type": "status"}) + "\n").encode("utf-8")
         s.sendall(msg)
 
@@ -162,7 +171,7 @@ def test_kill_daemon_during_active_connection(short_socket_paths, tmp_path):
         decoded = json.loads(first_response.decode("utf-8"))
         assert decoded.get("ok") is True, decoded
 
-        proc.send_signal(signal.SIGKILL)
+        proc.kill()
         proc.wait(timeout=5)
 
         s.settimeout(2.0)
@@ -183,11 +192,11 @@ def test_kill_daemon_during_active_connection(short_socket_paths, tmp_path):
             "wrapper-side daemon_unreachable translation would silently hang"
         )
 
-        s2 = sk.socket(sk.AF_UNIX, sk.SOCK_STREAM)
+        s2 = new_daemon_client_socket()
         s2.settimeout(0.5)
         err_kind = None
         try:
-            s2.connect(str(sock_path))
+            s2.connect(daemon_endpoint(sock_path))
             err_kind = "no_error"
         except (ConnectionRefusedError, FileNotFoundError, OSError) as e:
             err_kind = type(e).__name__
@@ -197,11 +206,11 @@ def test_kill_daemon_during_active_connection(short_socket_paths, tmp_path):
             except OSError:
                 pass
         assert err_kind in (
-            "ConnectionRefusedError", "FileNotFoundError", "OSError",
+            "ConnectionRefusedError", "FileNotFoundError", "OSError", "TimeoutError",
         ), f"unexpected post-kill connect outcome: {err_kind}"
     finally:
         if proc.poll() is None:
-            proc.send_signal(signal.SIGKILL)
+            proc.kill()
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:

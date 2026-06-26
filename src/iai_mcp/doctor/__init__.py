@@ -56,11 +56,9 @@ def _resolve_socket_path() -> Path:
 
 
 async def _socket_status_probe(socket_path: Path, timeout: float) -> dict | None:
+    from iai_mcp._ipc import open_ipc_connection
     try:
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_unix_connection(path=str(socket_path)),
-            timeout=timeout,
-        )
+        reader, writer = await open_ipc_connection(str(socket_path), timeout=timeout)
     except (FileNotFoundError, ConnectionRefusedError, asyncio.TimeoutError, OSError):
         return None
     try:
@@ -307,7 +305,8 @@ def _kill_orphan_cores() -> tuple[bool, str, int]:
             if "iai_mcp.core" not in cl:
                 continue
             pid = p.info["pid"]
-            os.kill(pid, signal.SIGTERM)
+            _term = getattr(signal, "SIGTERM", signal.SIGINT)
+            os.kill(pid, _term)
             killed.append(pid)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue

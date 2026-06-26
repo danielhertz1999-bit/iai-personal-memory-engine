@@ -113,11 +113,9 @@ def check_a_daemon_alive() -> CheckResult:
 
 
 async def _socket_connect_probe(socket_path: Path, timeout: float) -> str | None:
+    from iai_mcp._ipc import open_ipc_connection
     try:
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_unix_connection(path=str(socket_path)),
-            timeout=timeout,
-        )
+        reader, writer = await open_ipc_connection(str(socket_path), timeout=timeout)
     except FileNotFoundError:
         return "FileNotFoundError"
     except ConnectionRefusedError:
@@ -136,11 +134,16 @@ async def _socket_connect_probe(socket_path: Path, timeout: float) -> str | None
 
 def check_b_socket_fresh() -> CheckResult:
     socket_path = _resolve_socket_path()
-    if not socket_path.exists():
+    # Windows binds TCP loopback and records the port in a sidecar file — there
+    # is no AF_UNIX socket file — so check whichever endpoint actually exists
+    # for this platform. (The connect probe below is already cross-platform.)
+    from iai_mcp._ipc import IS_WINDOWS, _port_file_path
+    endpoint = _port_file_path() if IS_WINDOWS else socket_path
+    if not endpoint.exists():
         return CheckResult(
             "(b) socket file fresh",
             False,
-            f"{socket_path} does not exist",
+            f"{endpoint} does not exist",
         )
 
     t0 = time.monotonic()
@@ -169,7 +172,8 @@ def check_b_socket_fresh() -> CheckResult:
 
 def check_c_lock_healthy() -> CheckResult:
     import errno as _errno
-    import fcntl as _fcntl
+    from iai_mcp._filelock import LOCK_NB, LOCK_SH, LOCK_UN
+    from iai_mcp._filelock import flock as _flock
 
     lock_path = _resolve_hippo_db_path().parent / ".lock"
     if not lock_path.exists():
@@ -180,10 +184,12 @@ def check_c_lock_healthy() -> CheckResult:
         )
     fd = None
     try:
-        fd = os.open(str(lock_path), os.O_RDONLY)
+        # O_RDWR required on Windows (msvcrt.locking needs write access);
+        # harmless on POSIX since flock ignores open mode.
+        fd = os.open(str(lock_path), os.O_RDWR)
         try:
-            _fcntl.flock(fd, _fcntl.LOCK_SH | _fcntl.LOCK_NB)
-            _fcntl.flock(fd, _fcntl.LOCK_UN)
+            _flock(fd, LOCK_SH | LOCK_NB)
+            _flock(fd, LOCK_UN)
             return CheckResult(
                 "(c) lock file healthy",
                 True,
@@ -197,7 +203,7 @@ def check_c_lock_healthy() -> CheckResult:
                     f"{lock_path} held (consolidating or recall active — normal)",
                 )
             raise
-    except Exception as e:  # noqa: BLE001 — fcntl/OSError/permission all FAIL
+    except Exception as e:  # noqa: BLE001 — flock/OSError/permission all FAIL
         logger.debug("check_c: store-lock probe failed: %s", e)
         return CheckResult(
             "(c) lock file healthy",

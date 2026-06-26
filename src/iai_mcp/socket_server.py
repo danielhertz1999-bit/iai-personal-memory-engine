@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from iai_mcp._ipc import IS_WINDOWS, cleanup_ipc_address, open_ipc_connection, shutdown_ipc, start_ipc_server
 from iai_mcp.concurrency import SOCKET_PATH, cleanup_stale_socket
 from iai_mcp.core import UnknownMethodError
 
@@ -205,30 +206,32 @@ class SocketServer:
 
 
     async def serve(self, socket_path: Path | None = None) -> None:
+        if IS_WINDOWS:
+            # Windows: TCP server on loopback; socket_path is unused
+            server, actual_addr, needs_cleanup = await start_ipc_server(self.handle)
+            try:
+                async with server:
+                    await self.shutdown_event.wait()
+                    server.close()
+                    await server.wait_closed()
+            finally:
+                if needs_cleanup:
+                    shutdown_ipc(actual_addr)
+            return
+
         if socket_path is None:
             env_path = os.environ.get("IAI_DAEMON_SOCKET_PATH")
             socket_path = Path(env_path) if env_path else SOCKET_PATH
 
-        sig = inspect.signature(asyncio.start_unix_server)
-        supports_cleanup_socket = "cleanup_socket" in sig.parameters
-
         inherited = _inherit_activated_socket()
         if inherited is not None:
-            server = await asyncio.start_unix_server(
-                self.handle,
-                sock=inherited,
-            )
+            server = await asyncio.start_unix_server(self.handle, sock=inherited)
+            needs_cleanup = False
+            actual_addr: Any = str(socket_path)
         else:
-            cleanup_stale_socket(socket_path)
+            cleanup_ipc_address(socket_path)
             socket_path.parent.mkdir(parents=True, exist_ok=True)
-            server_kwargs: dict[str, Any] = (
-                {"cleanup_socket": True} if supports_cleanup_socket else {}
-            )
-            server = await asyncio.start_unix_server(
-                self.handle,
-                path=str(socket_path),
-                **server_kwargs,
-            )
+            server, actual_addr, needs_cleanup = await start_ipc_server(self.handle, socket_path)
             try:
                 os.chmod(str(socket_path), 0o600)
             except OSError:
@@ -240,8 +243,5 @@ class SocketServer:
                 server.close()
                 await server.wait_closed()
         finally:
-            if inherited is None and not supports_cleanup_socket:
-                try:
-                    socket_path.unlink()
-                except (FileNotFoundError, OSError):
-                    pass
+            if inherited is None and needs_cleanup:
+                shutdown_ipc(actual_addr)

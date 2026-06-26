@@ -63,7 +63,7 @@ def _launchd_template():
 
 def _render_launchd_plist() -> str:
     from iai_mcp import cli as _cli
-    text = _launchd_template().read_text()
+    text = _launchd_template().read_text(encoding="utf-8")
     username = os.environ.get("USER") or Path.home().name
     text = text.replace("/usr/local/bin/python3", _cli.sys.executable)
     text = text.replace("{USERNAME}", username)
@@ -73,9 +73,62 @@ def _render_launchd_plist() -> str:
 def _render_systemd_unit() -> str:
     from iai_mcp import cli as _cli
     tmpl = _res.files("iai_mcp") / "_deploy" / "systemd" / "iai-mcp-daemon.service"
-    text = tmpl.read_text()
+    text = tmpl.read_text(encoding="utf-8")
     text = text.replace("/usr/bin/python3", _cli.sys.executable)
     return text
+
+
+def _find_pythonw() -> str:
+    exe = Path(sys.executable)
+    pythonw = exe.parent / "pythonw.exe"
+    if pythonw.exists():
+        return str(pythonw)
+    return sys.executable
+
+
+def _render_schtasks_xml() -> str:
+    pythonw = _find_pythonw()
+    username = os.environ.get("USERNAME", "")
+    # No <WorkingDirectory>: the Task Scheduler engine rejects a working
+    # directory set via XML when the path contains spaces (e.g. the default
+    # %APPDATA% under "C:\\Users\\First Last\\..."), failing the launch with
+    # 0x8007010B "The directory name is invalid" — even though the path exists
+    # and CreateProcess accepts it fine outside the scheduler. The daemon never
+    # depends on cwd (all state lives under ~/.iai-mcp via absolute paths), so
+    # we omit it and let the task default to %windir%\\system32.
+    return f"""\
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>iai-mcp sleep daemon — background memory consolidation for Claude Code</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>{username}</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>{username}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Hidden>true</Hidden>
+  </Settings>
+  <Actions>
+    <Exec>
+      <Command>{pythonw}</Command>
+      <Arguments>-m iai_mcp.daemon</Arguments>
+    </Exec>
+  </Actions>
+</Task>"""
 
 
 def _prompt_consent(stream_out=None) -> bool:
@@ -106,7 +159,7 @@ def _record_consent_receipt() -> None:
     safe_ts = ts.replace(":", "").replace("-", "").replace(".", "")
     receipt = state_dir / f".consent-{safe_ts}.json"
     try:
-        receipt.write_text(json.dumps(payload, indent=2))
+        receipt.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         os.chmod(receipt, 0o600)
     except OSError as exc:
         print(f"warning: could not write consent receipt: {exc}", file=sys.stderr)
@@ -140,25 +193,71 @@ def cmd_daemon_install(args: argparse.Namespace) -> int:
     elif _cli._is_linux():
         content = _render_systemd_unit()
         target = _cli.SYSTEMD_TARGET
+    elif _cli._is_windows():
+        content = _render_schtasks_xml()
+        target = None
     else:
         print(f"Unsupported OS: {platform.system()}", file=sys.stderr)
         return 1
 
     if dry_run:
-        print(f"# Would install to: {target}")
+        if target is not None:
+            print(f"# Would install to: {target}")
+        else:
+            print(f"# Would create scheduled task: {_cli.SCHTASKS_TASK_NAME}")
         print(content)
         return 0
 
+    _cli._ensure_crypto_key_present()
+
+    if _cli._is_windows():
+        import subprocess as _sp
+        import tempfile as _tmpmod
+
+        log_dir = Path(os.environ.get("APPDATA", str(Path.home()))) / "iai-mcp" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        fd, xml_path = _tmpmod.mkstemp(suffix=".xml", prefix="iai-mcp-task-")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-16") as f:
+                f.write(content)
+            result = _sp.run(
+                [
+                    "schtasks", "/Create",
+                    "/TN", _cli.SCHTASKS_TASK_NAME,
+                    "/XML", xml_path,
+                    "/F",
+                ],
+                check=False, capture_output=True, text=True,
+            )
+            if result.returncode != 0:
+                print(
+                    f"schtasks /Create failed ({result.returncode}): "
+                    f"{result.stderr.strip()}",
+                    file=sys.stderr,
+                )
+                return 1
+        finally:
+            try:
+                os.unlink(xml_path)
+            except OSError:
+                pass
+
+        _sp.run(
+            ["schtasks", "/Run", "/TN", _cli.SCHTASKS_TASK_NAME],
+            check=False, capture_output=True,
+        )
+        print(f"Installed scheduled task: {_cli.SCHTASKS_TASK_NAME}")
+        return 0
+
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content)
+    target.write_text(content, encoding="utf-8")
     try:
         os.chmod(target, 0o644)
     except OSError:
         pass
 
-    _cli._ensure_crypto_key_present()
-
-    uid = os.getuid()
+    uid = os.getuid() if hasattr(os, "getuid") else 0
     if _cli._is_macos():
         _cli.subprocess.run(
             ["launchctl", "bootout", f"gui/{uid}", str(target)],
@@ -228,7 +327,7 @@ def cmd_daemon_uninstall(args: argparse.Namespace) -> int:
             print("Uninstall cancelled.", file=sys.stderr)
             return 1
 
-    uid = os.getuid()
+    uid = os.getuid() if hasattr(os, "getuid") else 0
     if _cli._is_macos():
         if _cli.LAUNCHD_TARGET.exists():
             _cli.subprocess.run(
@@ -253,6 +352,16 @@ def cmd_daemon_uninstall(args: argparse.Namespace) -> int:
                 ["systemctl", "--user", "daemon-reload"],
                 check=False, capture_output=True,
             )
+    elif _cli._is_windows():
+        import subprocess as _sp
+        _sp.run(
+            ["schtasks", "/End", "/TN", _cli.SCHTASKS_TASK_NAME],
+            check=False, capture_output=True,
+        )
+        _sp.run(
+            ["schtasks", "/Delete", "/TN", _cli.SCHTASKS_TASK_NAME, "/F"],
+            check=False, capture_output=True,
+        )
 
     _remove_state_files()
     print("Daemon uninstalled. State files removed.")
@@ -261,7 +370,7 @@ def cmd_daemon_uninstall(args: argparse.Namespace) -> int:
 
 def cmd_daemon_start(args: argparse.Namespace) -> int:
     from iai_mcp import cli as _cli
-    uid = os.getuid()
+    uid = os.getuid() if hasattr(os, "getuid") else 0
     if _cli._is_macos():
         target = _cli.LAUNCHD_TARGET
         _cli.subprocess.run(
@@ -281,6 +390,12 @@ def cmd_daemon_start(args: argparse.Namespace) -> int:
         _cli.subprocess.run(
             ["systemctl", "--user", "start", _cli.SERVICE_NAME],
             check=False,
+        )
+    elif _cli._is_windows():
+        import subprocess as _sp
+        _sp.run(
+            ["schtasks", "/Run", "/TN", _cli.SCHTASKS_TASK_NAME],
+            check=False, capture_output=True,
         )
     else:
         print(f"Unsupported OS: {platform.system()}", file=sys.stderr)
@@ -302,7 +417,7 @@ def cmd_daemon_stop(args: argparse.Namespace) -> int:
     except (OSError, ValueError, RuntimeError) as exc:
         logger.debug("sentinel write failed (non-blocking): %s", exc)
 
-    uid = os.getuid()
+    uid = os.getuid() if hasattr(os, "getuid") else 0
     if _cli._is_macos():
         from iai_mcp.lifecycle_lock import LifecycleLock, _is_pid_alive
 
@@ -318,8 +433,9 @@ def cmd_daemon_stop(args: argparse.Namespace) -> int:
             return 0
 
         if _is_pid_alive(pid):
+            _term_sig = getattr(_signal, "SIGTERM", _signal.SIGINT)
             try:
-                os.kill(pid, _signal.SIGTERM)
+                os.kill(pid, _term_sig)
             except (ProcessLookupError, PermissionError) as exc:
                 logger.debug("SIGTERM to daemon pid=%d failed: %s", pid, exc)
                 return 0
@@ -332,8 +448,9 @@ def cmd_daemon_stop(args: argparse.Namespace) -> int:
                 _time.sleep(interval)
 
             if _is_pid_alive(pid):
+                _kill_sig = getattr(_signal, "SIGKILL", _term_sig)
                 try:
-                    os.kill(pid, _signal.SIGKILL)
+                    os.kill(pid, _kill_sig)
                 except (ProcessLookupError, PermissionError) as exc:
                     logger.debug("SIGKILL to daemon pid=%d failed: %s", pid, exc)
         return 0
@@ -342,6 +459,36 @@ def cmd_daemon_stop(args: argparse.Namespace) -> int:
             ["systemctl", "--user", "stop", _cli.SERVICE_NAME],
             check=False,
         )
+    elif _cli._is_windows():
+        import subprocess as _sp
+        from iai_mcp.lifecycle_lock import LifecycleLock, _is_pid_alive
+
+        _sp.run(
+            ["schtasks", "/End", "/TN", _cli.SCHTASKS_TASK_NAME],
+            check=False, capture_output=True,
+        )
+
+        payload = LifecycleLock().read()
+        pid = payload["pid"] if payload else None
+        if pid is not None and _is_pid_alive(pid):
+            try:
+                os.kill(pid, _signal.SIGINT)
+            except (ProcessLookupError, PermissionError) as exc:
+                logger.debug("SIGINT to daemon pid=%d failed: %s", pid, exc)
+                return 0
+
+            deadline = _time.monotonic() + _stop_escalation_bound()
+            interval = _stop_poll_interval()
+            while _time.monotonic() < deadline:
+                if not _is_pid_alive(pid):
+                    return 0
+                _time.sleep(interval)
+
+            if _is_pid_alive(pid):
+                _sp.run(
+                    ["taskkill", "/F", "/PID", str(pid)],
+                    check=False, capture_output=True,
+                )
     else:
         print(f"Unsupported OS: {platform.system()}", file=sys.stderr)
         return 1
@@ -437,12 +584,20 @@ def cmd_daemon_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _get_daemon_log_path() -> Path:
+    if platform.system() == "Darwin":
+        return Path.home() / "Library" / "Logs" / "iai-mcp-daemon.stderr.log"
+    if platform.system() == "Windows":
+        return Path(os.environ.get("APPDATA", str(Path.home()))) / "iai-mcp" / "logs" / "daemon.log"
+    return Path.home() / ".local" / "share" / "iai-mcp" / "logs" / "daemon.log"
+
+
 def cmd_daemon_logs(args: argparse.Namespace) -> int:
     from iai_mcp import cli as _cli
     follow = bool(getattr(args, "follow", False))
     lines = int(getattr(args, "lines", 50))
     if _cli._is_macos():
-        path = Path.home() / "Library" / "Logs" / "iai-mcp-daemon.stderr.log"
+        path = _get_daemon_log_path()
         argv = ["tail"]
         if follow:
             argv.append("-f")
@@ -453,6 +608,15 @@ def cmd_daemon_logs(args: argparse.Namespace) -> int:
         if follow:
             argv.append("-f")
         _cli.subprocess.run(argv, check=False)
+    elif platform.system() == "Windows":
+        path = _get_daemon_log_path()
+        if not path.exists():
+            print(f"No log file at {path}", file=sys.stderr)
+            return 1
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            all_lines = f.readlines()
+        for line in all_lines[-lines:]:
+            print(line, end="")
     else:
         print(f"Unsupported OS: {platform.system()}", file=sys.stderr)
         return 1

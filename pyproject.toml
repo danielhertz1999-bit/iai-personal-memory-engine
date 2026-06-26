@@ -72,6 +72,7 @@ iai_mcp = [
     "_deploy/launchd/*.plist",
     "_deploy/systemd/*.service",
     "_deploy/hooks/*.sh",
+    "_deploy/hooks/*.ps1",
     "_wrapper/*.js",
 ]
 

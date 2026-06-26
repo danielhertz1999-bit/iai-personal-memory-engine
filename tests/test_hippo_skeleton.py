@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import stat
 from datetime import datetime, timezone
 from pathlib import Path
@@ -220,7 +222,8 @@ def test_lock_file_created_on_open(tmp_path: Path) -> None:
     with HippoDB(tmp_path):
         assert lock_path.exists()
         mode = stat.S_IMODE(lock_path.stat().st_mode)
-        assert mode == 0o600, f"Expected 0o600, got {oct(mode)}"
+        if sys.platform != "win32":
+            assert mode == 0o600, f"Expected 0o600, got {oct(mode)}"
 
 
 def test_second_open_same_process_succeeds(tmp_path: Path) -> None:

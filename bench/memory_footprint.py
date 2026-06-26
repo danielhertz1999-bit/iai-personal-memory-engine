@@ -4,7 +4,6 @@ import argparse
 import gc
 import json
 import os
-import resource
 import sys
 import tempfile
 import time
@@ -42,6 +41,11 @@ def _threshold_mb_for_n(n: int) -> float:
 
 
 def _rss_mb() -> float:
+    if sys.platform == "win32":
+        import psutil
+        mi = psutil.Process().memory_info()
+        return float(getattr(mi, "peak_wset", mi.rss)) / 1024.0 / 1024.0
+    import resource
     r = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     if sys.platform == "darwin":
         return float(r) / 1024.0 / 1024.0

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import tempfile
+
 import hashlib
 import json
 import os
@@ -29,7 +31,7 @@ def _write_live_file(
         "version": version,
         "deferred_at": datetime.now(timezone.utc).isoformat(),
         "session_id": session_id,
-        "cwd": "/tmp/test",
+        "cwd": str(Path(tempfile.gettempdir()) / "test"),
     }
     lines = [json.dumps(header, ensure_ascii=False)]
     for ev in events:

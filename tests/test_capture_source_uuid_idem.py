@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import tempfile
+
 import json
 import platform
 from datetime import datetime, timezone
@@ -240,7 +242,7 @@ def test_drain_deferred_deduplicates_already_inserted_uuid(iai_home):
         "version": 1,
         "deferred_at": "2026-05-31T18:00:00.000Z",
         "session_id": SESSION,
-        "cwd": "/tmp/test",
+        "cwd": str(Path(tempfile.gettempdir()) / "test"),
     }
     event = {
         "text": TEXT,

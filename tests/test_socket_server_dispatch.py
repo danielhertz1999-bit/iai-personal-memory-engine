@@ -8,17 +8,32 @@ from pathlib import Path
 
 import pytest
 
+from iai_mcp._ipc import IS_WINDOWS, open_ipc_connection
+
+
+def _endpoint_ready_path(sock_path: Path) -> Path:
+    """Path that exists once the SocketServer has bound its endpoint.
+    POSIX: the unix socket file. Windows: the TCP port file written alongside
+    it (``<sock_path>.port``, see iai_mcp._ipc._port_file_path)."""
+    return Path(f"{sock_path}.port") if IS_WINDOWS else sock_path
+
+
 @pytest.fixture
 def short_socket_paths(tmp_path, monkeypatch):
     from iai_mcp import concurrency, daemon_state
 
-    sock_dir = Path(f"/tmp/iai-srvdisp-{os.getpid()}-{id(tmp_path)}")
+    sock_dir = tmp_path / "sock"
     sock_dir.mkdir(parents=True, exist_ok=True)
     sock_path = sock_dir / "d.sock"
     state_path = tmp_path / ".daemon-state.json"
 
     monkeypatch.setattr(concurrency, "SOCKET_PATH", sock_path)
     monkeypatch.setattr(daemon_state, "STATE_PATH", state_path)
+    # Isolate the IPC endpoint per-test. POSIX uses this as the unix socket
+    # path; Windows persists the ephemeral TCP port to "<sock_path>.port".
+    # Both SocketServer.serve() and open_ipc_connection() resolve through it,
+    # so concurrent tests never collide on the shared default endpoint.
+    monkeypatch.setenv("IAI_DAEMON_SOCKET_PATH", str(sock_path))
     store_root = tmp_path / "store_root"
     store_root.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("IAI_MCP_STORE", str(store_root))
@@ -44,10 +59,7 @@ async def _send_jsonrpc(
     *,
     timeout: float = 10.0,
 ) -> dict:
-    reader, writer = await asyncio.wait_for(
-        asyncio.open_unix_connection(path=str(sock_path)),
-        timeout=timeout,
-    )
+    reader, writer = await open_ipc_connection(timeout=timeout)
     try:
         envelope: dict = {"jsonrpc": "2.0", "id": req_id, "method": method}
         if params is not None:
@@ -66,10 +78,7 @@ async def _send_jsonrpc(
     return json.loads(line.decode("utf-8"))
 
 async def _send_raw(sock_path: Path, raw_bytes: bytes, *, timeout: float = 5.0) -> dict:
-    reader, writer = await asyncio.wait_for(
-        asyncio.open_unix_connection(path=str(sock_path)),
-        timeout=timeout,
-    )
+    reader, writer = await open_ipc_connection(timeout=timeout)
     try:
         writer.write(raw_bytes)
         await writer.drain()
@@ -88,13 +97,16 @@ async def _with_socket_server(sock_path: Path, store, coro_fn):
     from iai_mcp.socket_server import SocketServer
 
     srv = SocketServer(store, idle_secs=99999)
-    server_task = asyncio.create_task(srv.serve(socket_path=sock_path))
+    # No socket_path: serve() resolves the endpoint from IAI_DAEMON_SOCKET_PATH
+    # (set by the fixture) — a unix socket on POSIX, TCP loopback on Windows.
+    server_task = asyncio.create_task(srv.serve())
 
+    ready_path = _endpoint_ready_path(sock_path)
     for _ in range(250):
-        if sock_path.exists():
+        if ready_path.exists():
             break
         await asyncio.sleep(0.01)
-    if not sock_path.exists():
+    if not ready_path.exists():
         srv.shutdown_event.set()
         try:
             await asyncio.wait_for(server_task, timeout=5)

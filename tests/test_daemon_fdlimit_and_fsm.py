@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
-import resource
 import sys
+
+if sys.platform != "win32":
+    import resource
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -13,6 +15,7 @@ from iai_mcp.fsm_reconcile import _CANONICAL_TO_LEGACY, reconcile_fsm_state
 from iai_mcp.s2_coordinator import S2Coordinator
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="resource module not available on Windows")
 class TestRaiseFdLimitClampsToHard:
 
     def test_raises_low_soft_to_floor(self):

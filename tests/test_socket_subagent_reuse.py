@@ -155,7 +155,7 @@ def _spawn_daemon_in_background(
     )
 
 def test_subagent_spawns_zero_new_processes(built_wrapper, tmp_path):
-    sock_dir = Path(f"/tmp/iai-subagent-{os.getpid()}-{id(tmp_path)}")
+    sock_dir = tmp_path / "sock"
     sock_dir.mkdir(parents=True, exist_ok=True)
     sock_path = sock_dir / "d.sock"
     store_dir = sock_dir / "store"

@@ -5,8 +5,16 @@ import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
+import {
+  type ConnectTarget,
+  createDaemonConnection,
+  getDaemonConnectTarget,
+  IS_WINDOWS,
+} from "./ipc.js";
 
 const execFileAsync = promisify(execFile);
+
+const SCHTASKS_TASK_NAME = "iai-mcp-daemon";
 
 
 export const HEARTBEAT_REFRESH_INTERVAL_MS = 30_000;
@@ -95,7 +103,10 @@ export class WrapperLifecycle {
     if (alive) {
       return;
     }
-    if (this.platform === "darwin") {
+    // macOS: launchctl kickstart. Windows: schtasks /Run the daemon task.
+    // Both are best-effort; fall through to the wake-signal sentinel on
+    // failure or on Linux (where systemd/scripts own daemon startup).
+    if (this.platform === "darwin" || this.platform === "win32") {
       try {
         await this.spawnKickstart();
         return;
@@ -170,7 +181,12 @@ function isoNow(): string {
 
 function defaultSocketReachable(socketPath: string): () => Promise<boolean> {
   return async () => {
-    const { createConnection } = await import("node:net");
+    // POSIX: probe the (possibly injected) Unix socket path. Windows: probe
+    // the TCP loopback endpoint from the daemon port file.
+    const target: ConnectTarget | null = IS_WINDOWS
+      ? getDaemonConnectTarget()
+      : socketPath;
+    if (target === null) return false;
     return await new Promise<boolean>((resolve) => {
       let settled = false;
       const settle = (v: boolean): void => {
@@ -182,7 +198,7 @@ function defaultSocketReachable(socketPath: string): () => Promise<boolean> {
         }
         resolve(v);
       };
-      const socket = createConnection({ path: socketPath });
+      const socket = createDaemonConnection(target);
       socket.setTimeout(1_000);
       socket.once("connect", () => settle(true));
       socket.once("error", () => settle(false));
@@ -192,6 +208,13 @@ function defaultSocketReachable(socketPath: string): () => Promise<boolean> {
 }
 
 function defaultSpawnKickstart(): () => Promise<void> {
+  if (IS_WINDOWS) {
+    return async () => {
+      await execFileAsync("schtasks", ["/Run", "/TN", SCHTASKS_TASK_NAME], {
+        timeout: KICKSTART_TIMEOUT_MS,
+      });
+    };
+  }
   return async () => {
     const uid = typeof process.getuid === "function" ? process.getuid() : 0;
     const args = ["kickstart", "-k", `gui/${uid}/${LAUNCHD_LABEL}`];

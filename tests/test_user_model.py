@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import os
 import stat
 import uuid
@@ -139,7 +141,8 @@ def test_R1_persistence_roundtrip_chmod_default(
     assert target.exists(), "save() must materialise the file at tmp path"
 
     mode = stat.S_IMODE(os.stat(target).st_mode)
-    assert mode == 0o600, f"file mode must be 0o600, got {oct(mode)}"
+    if sys.platform != "win32":
+        assert mode == 0o600, f"file mode must be 0o600, got {oct(mode)}"
 
     loaded = load()
     assert loaded.top_recent_topics == [

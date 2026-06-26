@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import errno
-import fcntl
 import logging
 import os
 import re
@@ -20,6 +19,7 @@ import hnswlib
 import numpy as np
 import pyarrow as pa
 
+from iai_mcp._filelock import LOCK_EX, LOCK_NB, LOCK_SH, LOCK_UN, flock
 from iai_mcp.crypto import (
     decrypt_field,
     encrypt_field,
@@ -239,7 +239,7 @@ class HippoDB:
                 )
                 os.chmod(str(self._lock_path), 0o600)
                 try:
-                    fcntl.flock(base_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    flock(base_fd, LOCK_EX | LOCK_NB)
                 except OSError as exc:
                     os.close(base_fd)
                     if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
@@ -299,7 +299,7 @@ class HippoDB:
                 continue
 
             try:
-                fcntl.flock(base_fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                flock(base_fd, LOCK_SH | LOCK_NB)
             except OSError as exc:
                 if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
                     if time.monotonic() >= deadline:
@@ -310,7 +310,7 @@ class HippoDB:
                 raise
 
             if _intent_path.exists():
-                fcntl.flock(base_fd, fcntl.LOCK_UN)
+                flock(base_fd, LOCK_UN)
                 if time.monotonic() >= deadline:
                     break
                 time.sleep(_SHARED_RETRY_SLEEP_S)
@@ -326,7 +326,7 @@ class HippoDB:
         with _PROCESS_LOCKS_GUARD:
             held_sh = _PROCESS_LOCKS_SHARED.get(self._lock_key)
             if held_sh is not None:
-                fcntl.flock(base_fd, fcntl.LOCK_UN)
+                flock(base_fd, LOCK_UN)
                 os.close(base_fd)
                 base_fd2, refcount2 = held_sh
                 self._lock_fd = os.dup(base_fd2)
@@ -352,7 +352,7 @@ class HippoDB:
                 return
             base_fd, refcount = held
             try:
-                fcntl.flock(base_fd, fcntl.LOCK_SH)
+                flock(base_fd, LOCK_SH)
             except OSError:
                 return
             del _PROCESS_LOCKS[self._lock_key]
@@ -393,7 +393,7 @@ class HippoDB:
         acquired = False
         while time.monotonic() < deadline:
             try:
-                fcntl.flock(base_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                flock(base_fd, LOCK_EX | LOCK_NB)
                 acquired = True
                 break
             except OSError as exc:
@@ -819,7 +819,7 @@ class HippoDB:
                     _log.warning("ingest_pending_embeddings: malformed .npy %s, skipping", npy_path)
                     continue
                 vec = list(_struct.unpack(f"<{n_floats}f", vec_bytes))
-                meta = _json.loads(json_path.read_text())
+                meta = _json.loads(json_path.read_text(encoding="utf-8"))
                 vec_label = int(meta["vec_label"])
             except Exception as exc:  # noqa: BLE001
                 _log.warning("ingest_pending_embeddings: failed to load %s: %s", npy_path, exc)
@@ -1203,7 +1203,7 @@ class HippoDB:
                     base_fd, refcount = held
                     if refcount <= 1:
                         try:
-                            fcntl.flock(base_fd, fcntl.LOCK_UN)
+                            flock(base_fd, LOCK_UN)
                         except Exception:  # noqa: BLE001
                             pass
                         try:
