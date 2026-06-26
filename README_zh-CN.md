@@ -14,11 +14,11 @@
 <p align="center">每一项声明都附带可复现的基准测试脚本。你可以自己跑一遍验证。</p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/release-v1.1.7-1f6feb?style=flat-square" alt="Release v1.1.7">
+  <img src="https://img.shields.io/badge/release-v1.2.0-1f6feb?style=flat-square" alt="Release v1.2.0">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-1f6feb?style=flat-square" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-3.11%20|%203.12-3776ab?style=flat-square&logo=python&logoColor=white" alt="Python 3.11 | 3.12">
   <img src="https://img.shields.io/badge/platform-macOS%20|%20Linux-555?style=flat-square" alt="Platform: macOS and Linux">
-  <img src="https://img.shields.io/badge/Windows-coming%20soon-999?style=flat-square&logo=windows&logoColor=white" alt="Windows: coming soon">
+  <img src="https://img.shields.io/badge/Windows-beta-dbab09?style=flat-square&logo=windows&logoColor=white" alt="Windows: beta">
   <img src="https://img.shields.io/badge/engine-Rust%20native-dea584?style=flat-square&logo=rust&logoColor=black" alt="Rust-native engine">
 </p>
 <p align="center">
@@ -65,14 +65,14 @@
 
 ### 前置条件
 
-- macOS（Apple Silicon）或 Linux
+- macOS（Apple Silicon）、Linux 或 Windows（beta）
 - Python 3.11 或 3.12
 - Node.js 18+
 - Rust 工具链 —— 原生引擎从源码构建
 - 支持 MCP 的 CLI 客户端 —— [Claude Code](https://docs.claude.com/en/docs/claude-code/overview)、Codex CLI、Gemini CLI、Cursor CLI 等
 - 约 500 MB 可用磁盘空间
 
-支持 macOS 和 Linux。**Windows 即将支持。** 欢迎贡献：如果你想帮忙落地 Windows 支持，请开 issue 或 PR。
+macOS 和 Linux 已完整支持。**Windows 处于 beta** —— 运行时已移植并在 Windows 11 上验证，但测试套件仍在移植中，请视为实验性。欢迎贡献：遇到 Windows 问题请开 issue 或 PR。
 
 ### 安装
 
@@ -93,7 +93,7 @@ iai-mcp build-native        # 原地重建原生引擎
 
 ```bash
 cd mcp-wrapper && npm install && npm run build && cd ..
-iai-mcp daemon install      # macOS 用 launchd，Linux 用 systemd
+iai-mcp daemon install      # macOS 用 launchd，Linux 用 systemd，Windows 用任务计划程序
 iai --version
 ```
 

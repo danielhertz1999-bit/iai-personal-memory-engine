@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] — 2026-06-26
+
+### Added
+
+- **Windows support (beta).** The daemon and CLI now run on Windows: Unix-domain
+  sockets fall back to authenticated TCP loopback, `fcntl` / `resource` / `signal`
+  calls are shimmed or guarded, the daemon installs via Task Scheduler, and
+  crypto-key permissions are set with `icacls`. The MCP wrapper dials the daemon
+  over the same transport. The runtime is ported and validated on Windows 11; the
+  test suite is still being ported, so Windows is beta for now. Thanks to
+  @danielhertz1999-bit for the port, and to @warplayer for thorough Windows 11
+  validation.
+
 ## [1.1.7] — 2026-06-22
 
 ### Added
