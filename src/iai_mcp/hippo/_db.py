@@ -474,11 +474,11 @@ class HippoDB:
                 self._allocate_standby_index(cap)
                 return
 
-        active_label_count = len(self._label_map)
-        if active_label_count != sqlite_count:
+        hnsw_count = self._hnsw.get_current_count()
+        if hnsw_count != sqlite_count:
             _log.info(
-                "Boot integrity check: active labels=%d != sqlite count=%d — rebuilding",
-                active_label_count,
+                "Boot integrity check: hnsw count=%d != sqlite count=%d — rebuilding",
+                hnsw_count,
                 sqlite_count,
             )
             self._rebuild_index_from_sqlite()
