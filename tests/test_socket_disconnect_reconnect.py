@@ -173,8 +173,10 @@ def _drop_fake_daemon_conn(proc: subprocess.Popen) -> None:
 
 @pytest.fixture
 def fake_daemon():
-    sock_dir = tmp_path / "sock"
-    sock_dir.mkdir(parents=True, exist_ok=True)
+    # Short mkdtemp dir: AF_UNIX sun_path is capped near 104 chars and pytest's
+    # macOS CI tmp_path exceeds it, so the daemon can't bind. This also fixes a
+    # NameError — tmp_path was never a parameter of this fixture.
+    sock_dir = Path(tempfile.mkdtemp(prefix="iai-sock-"))
     sock_path = sock_dir / "d.sock"
 
     proc = _spawn_fake_daemon(sock_path)
