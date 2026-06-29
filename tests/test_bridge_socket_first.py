@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -176,8 +178,10 @@ def _wait_for_daemon_socket(sock_path: Path, timeout_sec: float = 30.0) -> bool:
 def test_start_throws_DaemonUnreachableError_when_socket_missing(
     built_wrapper, tmp_path
 ):
-    sock_dir = tmp_path / "sock"
-    sock_dir.mkdir(parents=True, exist_ok=True)
+    # Short mkdtemp dir, not tmp_path: pytest's macOS tmp_path exceeds the
+    # AF_UNIX sun_path limit (~104 chars), so the daemon can't bind a socket
+    # placed under it. Cleaned up in this test's teardown below.
+    sock_dir = Path(tempfile.mkdtemp(prefix="iai-sock-"))
     sock_path = sock_dir / "d.sock"
     store_dir = sock_dir / "store"
     store_dir.mkdir(parents=True, exist_ok=True)
@@ -291,11 +295,14 @@ def test_start_throws_DaemonUnreachableError_when_socket_missing(
             sock_path.unlink()
         except OSError:
             pass
+        shutil.rmtree(sock_dir, ignore_errors=True)
 
 
 def test_start_succeeds_with_warm_daemon_no_extra_spawn(built_wrapper, tmp_path):
-    sock_dir = tmp_path / "sock"
-    sock_dir.mkdir(parents=True, exist_ok=True)
+    # Short mkdtemp dir, not tmp_path: pytest's macOS tmp_path exceeds the
+    # AF_UNIX sun_path limit (~104 chars), so the daemon can't bind a socket
+    # placed under it. Cleaned up in this test's teardown below.
+    sock_dir = Path(tempfile.mkdtemp(prefix="iai-sock-"))
     sock_path = sock_dir / "d.sock"
     store_dir = sock_dir / "store"
     store_dir.mkdir(parents=True, exist_ok=True)
@@ -363,3 +370,4 @@ def test_start_succeeds_with_warm_daemon_no_extra_spawn(built_wrapper, tmp_path)
             sock_path.unlink()
         except OSError:
             pass
+        shutil.rmtree(sock_dir, ignore_errors=True)

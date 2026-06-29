@@ -7,6 +7,7 @@ import re
 import socket
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -20,8 +21,10 @@ pytestmark = pytest.mark.skipif(
 
 
 def _isolated_env(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
-    sock_dir = tmp_path / "sock"
-    sock_dir.mkdir(parents=True, exist_ok=True)
+    # Socket under a short mkdtemp dir, not tmp_path: pytest's macOS tmp_path
+    # blows past the AF_UNIX sun_path limit (~104 chars) so the daemon can't
+    # bind it. (Small empty dir; left for the ephemeral CI runner to reap.)
+    sock_dir = Path(tempfile.mkdtemp(prefix="iai-sock-"))
     sock_path = sock_dir / "d.sock"
 
     iai_dir = tmp_path / ".iai-mcp"
