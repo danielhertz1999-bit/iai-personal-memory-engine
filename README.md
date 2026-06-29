@@ -309,6 +309,7 @@ On raw retrieval — the headline both projects ship — it's an **exact tie** o
 | Benchmark | Result | What it measures |
 |---|---|---|
 | **Rescue@10** (post-contradiction) | **1.000** | After a fact is updated/contradicted, the *current* fact still ranks top-10 — where flat-vector stores collapse on the more-similar stale fact. |
+| Historical-verbatim (hit@10) | **1.000** | The *superseded/archived* wording of an updated fact also ranks top-10 — both current and prior versions stay retrievable. Flat-cosine baseline ~0.71. |
 | Personal-fact drift (recall@10) | 0.9933 | Retention across 50 facts / 50 sessions / 30 intervening sessions. |
 | Sleep-consolidation (recall@10) | 1.000 → 1.000 | Recall survives a full consolidation cycle. |
 | Session-start tokens | 1,629 min / 2,993 std | Under the ≤3,000-token budget. |
