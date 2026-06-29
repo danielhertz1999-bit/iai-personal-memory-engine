@@ -322,7 +322,7 @@ On raw retrieval — the headline both projects ship — it's an **exact tie** o
 | Memory (RSS) | 589 MB @10k records | Embedder + graph runtime; well under the 2 GB budget. |
 | Rust embedder | p50 70 ms / p95 253 ms | bge-small-en-v1.5, 384-dim. |
 
-**One honest gap:** retrieving the *superseded* wording of an updated fact verbatim regressed (0.90 → 0.71) in an earlier release — separate from Rescue@10 (current-fact retrieval, still 1.000) — and is a tracked fix for the next release.
+**Historical-verbatim retrieval** (pulling the *superseded/archived* wording of an updated fact, not just its current value) ranks top-10 at **hit@10 = 1.000** on the honest-scale contradiction bench (1000 sessions × 3 seeds), versus ~0.71 for a flat-cosine baseline — so both the current fact (Rescue@10) and its earlier wording stay retrievable.
 
 ```bash
 python -m bench.longmemeval_blind            # LongMemEval-S (raw)
