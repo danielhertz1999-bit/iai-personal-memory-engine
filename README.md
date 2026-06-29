@@ -488,4 +488,6 @@ I built this because I needed it. It works for me. If it works for you, take it.
 
 ## Contributing
 
-Issues and PRs welcome. If your change touches retrieval, capture, or consolidation, include bench re-runs.
+Issues and PRs welcome. If your change touches retrieval, capture, or consolidation, include bench re-runs. See [CONTRIBUTING.md](CONTRIBUTING.md) for scope, development setup, and how to run the tests, and please follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+Found a security issue? Please report it privately as described in [SECURITY.md](SECURITY.md).
