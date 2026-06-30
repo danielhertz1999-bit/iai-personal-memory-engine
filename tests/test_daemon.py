@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import plistlib
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -23,8 +24,10 @@ def _short_socket_paths(tmp_path, monkeypatch):
     import os
     from iai_mcp import concurrency
     lock_path = tmp_path / ".lock"
-    sock_dir = tmp_path / "sock"
-    sock_dir.mkdir(parents=True, exist_ok=True)
+    # AF_UNIX paths are capped at ~104 chars on macOS; the pytest tmp_path under
+    # /private/var/folders/.../pytest-of-runner/... overflows it. A short
+    # mkdtemp dir keeps the socket path within the limit.
+    sock_dir = Path(tempfile.mkdtemp(prefix="iai-sock-"))
     sock_path = sock_dir / "d.sock"
     monkeypatch.setattr(concurrency, "SOCKET_PATH", sock_path)
     return lock_path, sock_path, sock_dir

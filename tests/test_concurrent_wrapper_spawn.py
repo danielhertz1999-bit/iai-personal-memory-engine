@@ -7,6 +7,7 @@ import select
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -37,8 +38,11 @@ def test_launchagent(tmp_path):
     if os.environ.get("IAI_MCP_SKIP_LAUNCHCTL_TESTS") == "1":
         pytest.skip("IAI_MCP_SKIP_LAUNCHCTL_TESTS=1")
 
-    sock_dir = tmp_path / "sock"
-    sock_dir.mkdir(parents=True, exist_ok=True)
+    # AF_UNIX paths are capped at ~104 chars on macOS; the pytest tmp_path under
+    # /private/var/folders/.../pytest-of-runner/... overflows it. A short
+    # mkdtemp dir keeps the socket path within the limit. (Cleaned in teardown
+    # below via sock_dir.rmdir().)
+    sock_dir = Path(tempfile.mkdtemp(prefix="iai-sock-"))
     sock_path = sock_dir / "d.sock"
     if sock_path.exists():
         sock_path.unlink()

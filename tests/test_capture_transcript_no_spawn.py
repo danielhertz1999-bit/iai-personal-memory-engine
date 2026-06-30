@@ -5,6 +5,7 @@ import os
 import platform
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -37,8 +38,10 @@ def _count_iai_mcp_processes() -> dict[str, int]:
 
 
 def _isolated_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
-    sock_dir = tmp_path / "sock"
-    sock_dir.mkdir(parents=True, exist_ok=True)
+    # AF_UNIX paths are capped at ~104 chars on macOS; the pytest tmp_path under
+    # /private/var/folders/.../pytest-of-runner/... overflows it. A short
+    # mkdtemp dir keeps the socket path within the limit.
+    sock_dir = Path(tempfile.mkdtemp(prefix="iai-sock-"))
     sock_path = sock_dir / "d.sock"
 
     iai_dir = tmp_path / ".iai-mcp"

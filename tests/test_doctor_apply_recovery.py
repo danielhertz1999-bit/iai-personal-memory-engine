@@ -6,6 +6,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -23,8 +24,11 @@ def isolated_daemon_paths(tmp_path, monkeypatch):
     store_dir = iai_dir / "store"
     store_dir.mkdir(parents=True, exist_ok=True)
 
-    sock_dir = tmp_path / "sock"
-    sock_dir.mkdir(parents=True, exist_ok=True)
+    # AF_UNIX paths are capped at ~104 chars on macOS; the pytest tmp_path under
+    # /private/var/folders/.../pytest-of-runner/... overflows it. A short
+    # mkdtemp dir keeps the socket path within the limit. (Cleaned in teardown
+    # below via sock_dir.rmdir().)
+    sock_dir = Path(tempfile.mkdtemp(prefix="iai-sock-"))
     sock_path = sock_dir / "d.sock"
 
     real_hf_home = Path.home() / ".cache" / "huggingface"
