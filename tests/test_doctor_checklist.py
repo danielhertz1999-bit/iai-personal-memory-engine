@@ -150,6 +150,43 @@ def test_all_pass_returns_exit_0(short_socket_paths, monkeypatch, capsys):
     assert "All checks passed" in out
 
 
+def test_warn_does_not_count_as_fail_or_drive_exit(short_socket_paths, monkeypatch, capsys):
+    # A WARN check renders as [WARN] but historically carried passed=False, so it
+    # was counted toward fail_count and forced Exit 1 — printing "N/M FAIL" with
+    # zero [FAIL] rows on screen. A WARN is advisory: all-real-checks-pass must
+    # yield Exit 0 and an explicit warning count.
+    from iai_mcp import doctor
+
+    forced = [
+        doctor.CheckResult(name, True, "synthetic pass") for name in (
+            "(a) daemon process alive",
+            "(b) socket file fresh",
+            "(c) lock file healthy",
+            "(d) no orphan iai_mcp.core procs",
+            "(e) daemon state file valid",
+        )
+    ]
+    forced.append(
+        doctor.CheckResult(
+            "(x) no collapsed-timestamp groups",
+            False,
+            "1 group(s) with >= 5 records at one timestamp",
+            status="WARN",
+        )
+    )
+    monkeypatch.setattr(doctor, "run_diagnosis", lambda: forced)
+
+    args = argparse.Namespace(apply=False, yes=False)
+    rc = doctor.cmd_doctor(args)
+    out = capsys.readouterr().out
+
+    assert rc == 0, f"WARN must not drive a non-zero exit; got rc={rc}\n{out}"
+    assert "All checks passed" in out
+    assert "1 warning" in out
+    assert "[WARN]" in out
+    assert "FAIL. Run with --apply" not in out  # no spurious FAIL summary line
+
+
 def test_apply_without_yes_warns_when_yes_alone(short_socket_paths, monkeypatch, capsys):
     from iai_mcp import doctor
 

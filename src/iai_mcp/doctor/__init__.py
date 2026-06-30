@@ -553,10 +553,18 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(hint)
         print()
     print_checklist(results)
-    fail_count = sum(1 for r in results if not r.passed)
+    # A WARN is advisory: it renders as [WARN] and must NOT count as a FAIL or
+    # drive the exit code (otherwise e.g. the (x) collapsed-timestamp advisory
+    # prints "1/25 FAIL ... Exit 1" with zero [FAIL] rows on screen). Only a
+    # genuine non-passing, non-WARN check is a hard fail.
+    fail_count = sum(1 for r in results if not r.passed and r.status != "WARN")
+    warn_count = sum(1 for r in results if r.status == "WARN")
 
     if fail_count == 0:
-        print("\nAll checks passed. Exit 0.")
+        if warn_count:
+            print(f"\nAll checks passed ({warn_count} warning(s)). Exit 0.")
+        else:
+            print("\nAll checks passed. Exit 0.")
         return 0
 
     if not apply:
@@ -603,7 +611,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print("\nRe-running checks ...")
     final_results = run_diagnosis()
     print_checklist(final_results)
-    final_fails = [r.name for r in final_results if not r.passed]
+    # WARNs are advisory and have no repair action, so they must not keep the
+    # exit code at 2 — only genuine non-WARN fails count as "still broken".
+    final_fails = [
+        r.name for r in final_results if not r.passed and r.status != "WARN"
+    ]
     if not final_fails:
         print(f"\nFIXED. All {len(final_results)} checks pass. Exit 0.")
         return 0
