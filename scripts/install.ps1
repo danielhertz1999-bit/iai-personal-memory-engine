@@ -43,6 +43,16 @@ function Invoke-Step {
     & $Block
 }
 
+# Yes/No prompt that defaults to Yes. In -DryRun mode (e.g. CI) it never
+# blocks on Read-Host — it auto-answers Yes so the flow is traced end to end
+# without any interactive input or system changes.
+function Confirm-Yes {
+    param([string]$Prompt)
+    if ($DryRun) { Ok "DRY-RUN: auto-yes — $Prompt"; return $true }
+    $ans = Read-Host $Prompt
+    return ($ans -match "^[Yy]?$")
+}
+
 Push-Location $RepoRoot
 
 # ---------------------------------------------------------------------------
@@ -156,8 +166,7 @@ if ($LASTEXITCODE -eq 0) {
     Ok "Task Scheduler task '$taskName' already registered — skipping"
 } else {
     Write-Host ""
-    $ans = Read-Host "Install iai-mcp daemon via Windows Task Scheduler? [Y/n]"
-    if ($ans -match "^[Yy]?$") {
+    if (Confirm-Yes "Install iai-mcp daemon via Windows Task Scheduler? [Y/n]") {
         Invoke-Step "schtasks /Create" {
             $logDir = Join-Path $env:APPDATA "iai-mcp\logs"
             New-Item -ItemType Directory -Force -Path $logDir | Out-Null
@@ -208,8 +217,7 @@ if ($LASTEXITCODE -eq 0) {
         Ok "Task Scheduler task '$taskName' registered (starts at logon)"
 
         Write-Host ""
-        $startNow = Read-Host "Start the daemon now? [Y/n]"
-        if ($startNow -match "^[Yy]?$") {
+        if (Confirm-Yes "Start the daemon now? [Y/n]") {
             Invoke-Step "schtasks /Run" { schtasks /Run /TN $taskName | Out-Null }
             Ok "Daemon started (Task: $taskName)"
         }
@@ -223,8 +231,7 @@ if ($LASTEXITCODE -eq 0) {
 # ---------------------------------------------------------------------------
 Step "capture + recall hooks"
 Write-Host ""
-$ans = Read-Host "Install ambient capture+recall hooks into ~/.claude/settings.json? [Y/n]"
-if ($ans -match "^[Yy]?$") {
+if (Confirm-Yes "Install ambient capture+recall hooks into ~/.claude/settings.json? [Y/n]") {
     Invoke-Step "capture-hooks install" {
         & $python -m iai_mcp.cli capture-hooks install --yes
     }

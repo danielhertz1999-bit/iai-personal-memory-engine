@@ -1,24 +1,32 @@
 """Platform-agnostic file locking shim.
 
 On POSIX: thin wrapper around fcntl.flock.
-On Windows: msvcrt.locking with errno normalisation so callers checking
-errno.EWOULDBLOCK / errno.EAGAIN on non-blocking failures work unchanged.
-The file offset is saved/restored around each call (msvcrt locks relative to
-the file position; fcntl.flock does not move it) and the blocking path polls
-so it waits indefinitely like POSIX rather than giving up after msvcrt's ~10 s.
+On Windows: Win32 ``LockFileEx`` / ``UnlockFileEx`` via ctypes, with errno
+normalisation so callers checking errno.EWOULDBLOCK / errno.EAGAIN on
+non-blocking failures work unchanged. ``LockFileEx`` locks a byte range on the
+file handle itself (independent of the file position), so — unlike the previous
+``msvcrt.locking`` backend — there is no need to seek to 0 or save/restore the
+file offset.
 
-Known divergence — shared locks are not truly shared on Windows.
-``msvcrt.locking`` only offers exclusive byte-range locks, so LOCK_SH is
-serviced as an exclusive lock: a second concurrent reader blocks where POSIX
-would let both in. This is a throughput limitation, not a correctness one, and
-it is deliberately NOT fixed with Win32 ``LockFileEx`` (which does support
-shared locks) because callers in ``hippo/_db.py`` rely on fcntl.flock's atomic
-lock *conversion* — downgrading EXCLUSIVE->SHARED and escalating SHARED->
-EXCLUSIVE in place on the same fd. ``LockFileEx`` has no atomic conversion
-(you must Unlock then re-Lock, racing other waiters), so swapping it in would
-trade a throughput limit for a correctness hazard on the conversion paths.
-A faithful port would need those call sites reworked to a conversion-free
-protocol first.
+Shared locks ARE truly shared on Windows. ``LockFileEx`` supports both shared
+(reader) and exclusive (writer) byte-range locks, so LOCK_SH lets multiple
+concurrent readers in, matching fcntl.flock semantics. (The older msvcrt
+backend could only take exclusive locks, so LOCK_SH silently behaved as
+LOCK_EX — that throughput limitation is now gone.)
+
+Remaining divergence — lock *conversion* is not atomic on Windows.
+fcntl.flock converts a held lock in place: calling LOCK_SH on an fd that
+already holds LOCK_EX (or LOCK_EX on one holding LOCK_SH) atomically swaps the
+mode without ever releasing. ``LockFileEx`` has no in-place conversion — the
+old range must be unlocked and a new one re-locked. The two conversion call
+sites in ``hippo/_db.py`` (``downgrade_to_shared`` and ``escalate_to_exclusive``)
+are handled by detecting an already-held lock on the fd and routing through an
+Unlock-then-Lock. This opens a brief race window where another waiter could
+acquire the lock between the unlock and the re-lock. Both call sites already
+tolerate this: ``escalate_to_exclusive`` retries against a deadline, and
+``downgrade_to_shared`` returns on OSError. This is strictly better than the
+old behaviour (where SH was silently exclusive); a fully race-free port would
+still need those call sites reworked to a conversion-free protocol.
 """
 from __future__ import annotations
 
@@ -26,64 +34,142 @@ import os
 import platform
 
 if platform.system() == "Windows":
+    import ctypes as _ctypes
     import errno as _errno
     import msvcrt as _msvcrt
     import time as _time
+    from ctypes import wintypes as _wintypes
+
+    # msvcrt is used only to translate a CRT fd into the OS file HANDLE that
+    # LockFileEx/UnlockFileEx operate on.
+    _msvcrt_get_osfhandle = _msvcrt.get_osfhandle
 
     LOCK_SH = 1
     LOCK_EX = 2
     LOCK_NB = 4
     LOCK_UN = 8
 
-    _LOCK_BYTES = 2**30
-    # Poll interval when emulating POSIX's block-until-acquired behaviour.
+    # Lock the maximum possible byte range so every caller contends on the
+    # same region regardless of file size. fcntl.flock locks the whole file;
+    # this 64-bit-wide range is the LockFileEx equivalent.
+    _LOCK_LOW = 0xFFFFFFFF
+    _LOCK_HIGH = 0xFFFFFFFF
+
+    # dwFlags for LockFileEx.
+    _LOCKFILE_EXCLUSIVE_LOCK = 0x00000002
+    _LOCKFILE_FAIL_IMMEDIATELY = 0x00000001
+
+    # Win32 error codes returned via GetLastError on a failed non-blocking lock.
+    _ERROR_LOCK_VIOLATION = 33
+    _ERROR_IO_PENDING = 997
+
+    # Poll interval when emulating POSIX's block-until-acquired behaviour for
+    # the conversion path (see below).
     _BLOCK_POLL_SECONDS = 0.05
+
+    _kernel32 = _ctypes.WinDLL("kernel32", use_last_error=True)
+
+    class _OVERLAPPED(_ctypes.Structure):
+        _fields_ = [
+            ("Internal", _ctypes.c_void_p),
+            ("InternalHigh", _ctypes.c_void_p),
+            ("Offset", _wintypes.DWORD),
+            ("OffsetHigh", _wintypes.DWORD),
+            ("hEvent", _wintypes.HANDLE),
+        ]
+
+    _LockFileEx = _kernel32.LockFileEx
+    _LockFileEx.restype = _wintypes.BOOL
+    _LockFileEx.argtypes = [
+        _wintypes.HANDLE,   # hFile
+        _wintypes.DWORD,    # dwFlags
+        _wintypes.DWORD,    # dwReserved
+        _wintypes.DWORD,    # nNumberOfBytesToLockLow
+        _wintypes.DWORD,    # nNumberOfBytesToLockHigh
+        _ctypes.POINTER(_OVERLAPPED),
+    ]
+
+    _UnlockFileEx = _kernel32.UnlockFileEx
+    _UnlockFileEx.restype = _wintypes.BOOL
+    _UnlockFileEx.argtypes = [
+        _wintypes.HANDLE,   # hFile
+        _wintypes.DWORD,    # dwReserved
+        _wintypes.DWORD,    # nNumberOfBytesToUnlockLow
+        _wintypes.DWORD,    # nNumberOfBytesToUnlockHigh
+        _ctypes.POINTER(_OVERLAPPED),
+    ]
+
+    # Per-fd record of whether THIS process currently holds a lock on the fd,
+    # so a second lock call (a conversion request) can be routed through an
+    # unlock first. fcntl.flock does the conversion in-kernel; we have to track
+    # it ourselves because LockFileEx would otherwise deadlock against our own
+    # held lock. Keyed by os.open fd; cleared on LOCK_UN.
+    _HELD: dict[int, bool] = {}
+
+    def _handle_for(fd: int) -> int:
+        return _msvcrt_get_osfhandle(fd)
+
+    def _new_overlapped() -> _OVERLAPPED:
+        ov = _OVERLAPPED()
+        ov.Offset = 0
+        ov.OffsetHigh = 0
+        ov.hEvent = 0
+        return ov
+
+    def _do_unlock(handle: int) -> None:
+        ov = _new_overlapped()
+        _UnlockFileEx(handle, 0, _LOCK_LOW, _LOCK_HIGH, _ctypes.byref(ov))
+
+    def _do_lock(handle: int, flags: int) -> bool:
+        ov = _new_overlapped()
+        ok = _LockFileEx(
+            handle, flags, 0, _LOCK_LOW, _LOCK_HIGH, _ctypes.byref(ov)
+        )
+        return bool(ok)
 
     def flock(fd: int, operation: int) -> None:
         if not isinstance(fd, int):
             fd = fd.fileno()
-        # msvcrt.locking locks bytes starting from the current file position, so
-        # we must seek to 0 to lock a consistent byte range across callers.
-        # fcntl.flock leaves the file offset untouched, however, so save the
-        # caller's offset and restore it afterwards to match POSIX semantics.
-        try:
-            saved_offset: int | None = os.lseek(fd, 0, os.SEEK_CUR)
-        except OSError:
-            saved_offset = None
-        os.lseek(fd, 0, os.SEEK_SET)
-        try:
-            if operation & LOCK_UN:
-                try:
-                    _msvcrt.locking(fd, _msvcrt.LK_UNLCK, _LOCK_BYTES)
-                except OSError:
-                    pass
-            elif operation & (LOCK_EX | LOCK_SH):
-                if operation & LOCK_NB:
-                    try:
-                        _msvcrt.locking(fd, _msvcrt.LK_NBLCK, _LOCK_BYTES)
-                    except OSError:
-                        raise OSError(
-                            _errno.EWOULDBLOCK, "resource temporarily unavailable"
-                        )
-                else:
-                    # POSIX flock blocks until the lock is acquired, but msvcrt
-                    # has no infinite-block mode (LK_LOCK gives up after ~10 s
-                    # and raises). Poll LK_NBLCK so a blocking acquire matches
-                    # POSIX semantics instead of spuriously failing under long
-                    # contention (e.g. while the consolidator holds the lock).
-                    while True:
-                        try:
-                            _msvcrt.locking(fd, _msvcrt.LK_NBLCK, _LOCK_BYTES)
-                            break
-                        except OSError:
-                            os.lseek(fd, 0, os.SEEK_SET)
-                            _time.sleep(_BLOCK_POLL_SECONDS)
-        finally:
-            if saved_offset is not None:
-                try:
-                    os.lseek(fd, saved_offset, os.SEEK_SET)
-                except OSError:
-                    pass
+        handle = _handle_for(fd)
+
+        if operation & LOCK_UN:
+            _do_unlock(handle)
+            _HELD.pop(fd, None)
+            return
+
+        if not (operation & (LOCK_EX | LOCK_SH)):
+            return
+
+        flags = 0
+        if operation & LOCK_EX:
+            flags |= _LOCKFILE_EXCLUSIVE_LOCK
+        if operation & LOCK_NB:
+            flags |= _LOCKFILE_FAIL_IMMEDIATELY
+
+        # Conversion: this fd already holds a lock and is now asking for a
+        # different mode. LockFileEx cannot convert in place and would block
+        # forever against our own lock, so release first, then re-acquire.
+        # This is the documented non-atomic window (see module docstring).
+        if _HELD.get(fd):
+            _do_unlock(handle)
+            _HELD.pop(fd, None)
+
+        if operation & LOCK_NB:
+            if _do_lock(handle, flags):
+                _HELD[fd] = True
+                return
+            raise OSError(
+                _errno.EWOULDBLOCK, "resource temporarily unavailable"
+            )
+
+        # Blocking acquire. LockFileEx without FAIL_IMMEDIATELY blocks until the
+        # lock is granted, matching POSIX flock. (We still loop defensively in
+        # case a spurious failure is reported, polling like the old backend.)
+        while True:
+            if _do_lock(handle, flags):
+                _HELD[fd] = True
+                return
+            _time.sleep(_BLOCK_POLL_SECONDS)
 
 else:
     import fcntl as _fcntl

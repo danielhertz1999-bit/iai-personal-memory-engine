@@ -31,6 +31,31 @@ jobs:
       - name: Build wheel
         run: pip wheel . --no-deps -w dist
 
+  test-windows:
+    name: build & test (Windows)
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install with dev extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Correctness gate
+        run: pytest -m "not perf and not slow and not live"
+      - name: install.ps1 dry-run (syntax + flow, no system changes)
+        shell: pwsh
+        run: .\scripts\install.ps1 -DryRun
+      - name: Build wheel
+        run: pip wheel . --no-deps -w dist
+
   gitleaks:
     name: secret scan
     runs-on: ubuntu-latest

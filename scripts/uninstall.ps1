@@ -67,23 +67,24 @@ if ($LASTEXITCODE -eq 0) {
 # 3. Kill any lingering daemon processes
 # ---------------------------------------------------------------------------
 Step "kill lingering daemon"
-$procs = Get-Process -ErrorAction SilentlyContinue |
-    Where-Object { $_.CommandLine -like "*iai_mcp.daemon*" -or $_.MainWindowTitle -like "*iai_mcp*" }
-# Fall back to WMI for hidden processes without a window
+# Match the daemon by command line via WMI (the daemon runs hidden under
+# pythonw.exe with no window, so Get-Process title matching won't find it).
+# NB: $pid is a reserved read-only automatic variable in PowerShell, so the
+# loop variable below is $procId, not $pid.
 try {
     $wmiProcs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         Where-Object { $_.CommandLine -like "*iai_mcp.daemon*" }
-    $pids = @($wmiProcs | Select-Object -ExpandProperty ProcessId)
+    $procIds = @($wmiProcs | Select-Object -ExpandProperty ProcessId)
 } catch {
-    $pids = @()
+    $procIds = @()
 }
 
-if ($pids.Count -gt 0) {
-    Warn "Found PIDs: $($pids -join ', ')"
-    foreach ($pid in $pids) {
-        if ($DryRun) { Ok "DRY-RUN: would Stop-Process -Id $pid" }
+if ($procIds.Count -gt 0) {
+    Warn "Found PIDs: $($procIds -join ', ')"
+    foreach ($procId in $procIds) {
+        if ($DryRun) { Ok "DRY-RUN: would Stop-Process -Id $procId" }
         else {
-            Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
+            Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
         }
     }
     if (-not $DryRun) { Ok "Lingering daemon process(es) terminated" }

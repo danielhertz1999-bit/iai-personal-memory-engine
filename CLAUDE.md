@@ -101,10 +101,14 @@ The token is regenerated on every daemon start and removed on shutdown.
 from iai_mcp._filelock import flock, LOCK_EX, LOCK_SH, LOCK_NB, LOCK_UN
 ```
 
-On Windows this delegates to `msvcrt.locking`. Known divergence: `LOCK_SH` is
-serviced as an exclusive lock on Windows (two concurrent readers block each other).
-This is a throughput limitation, not a correctness one — see the docstring in
-`src/iai_mcp/_filelock.py` for the full rationale.
+On Windows this delegates to Win32 `LockFileEx` / `UnlockFileEx` (via ctypes).
+Shared locks are truly shared: `LOCK_SH` admits multiple concurrent readers,
+matching `fcntl.flock`. The one remaining divergence is that in-place lock
+*conversion* (the EXCLUSIVE↔SHARED swaps in `hippo/_db.py`) is non-atomic on
+Windows — `LockFileEx` has no in-place conversion, so the shim unlocks then
+re-locks, opening a brief race window. Both conversion call sites tolerate this
+(retry-with-deadline on escalate, return-on-error on downgrade). See the
+docstring in `src/iai_mcp/_filelock.py` for the full rationale.
 
 #### Windows capture/recall hooks
 
