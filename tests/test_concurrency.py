@@ -4,7 +4,7 @@ import sys
 
 import asyncio
 import json
-import shutil
+import os
 import tempfile
 from pathlib import Path
 
@@ -22,18 +22,20 @@ def _endpoint_ready_path(sock_path: Path) -> Path:
 @pytest.fixture
 def socket_path(monkeypatch):
     from iai_mcp import concurrency
-    # Short mkdtemp dir, not tmp_path: the AF_UNIX sun_path limit (~104 chars)
-    # is exceeded by pytest's macOS tmp_path (/private/var/folders/.../
-    # pytest-of-runner/...), so the daemon can't bind a socket placed there.
-    sock_dir = Path(tempfile.mkdtemp(prefix="iai-sock-"))
-    sock_path = sock_dir / "d.sock"
-    monkeypatch.setattr(concurrency, "SOCKET_PATH", sock_path)
-    # Per-test endpoint isolation honored by start_ipc_server/open_ipc_connection.
-    monkeypatch.setenv("IAI_DAEMON_SOCKET_PATH", str(sock_path))
-    try:
-        yield sock_path
-    finally:
-        shutil.rmtree(sock_dir, ignore_errors=True)
+    with tempfile.TemporaryDirectory(prefix="iai-sock-") as sock_dir_name:
+        sock_dir = Path(sock_dir_name)
+        sock_path = sock_dir / "d.sock"
+        monkeypatch.setattr(concurrency, "SOCKET_PATH", sock_path)
+        # Per-test endpoint isolation honored by start_ipc_server/open_ipc_connection.
+        monkeypatch.setenv("IAI_DAEMON_SOCKET_PATH", str(sock_path))
+        try:
+            yield sock_path
+        finally:
+            try:
+                if sock_path.exists():
+                    sock_path.unlink()
+            except OSError:
+                pass
 
 
 def test_socket_status_round_trip(socket_path):

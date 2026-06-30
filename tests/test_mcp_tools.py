@@ -33,14 +33,10 @@ def built_wrapper() -> Path:
 
 @pytest.fixture(scope="module")
 def daemon_sock() -> "Path":
-    # AF_UNIX sun_path is capped near 104 chars; pytest's tmp_path on macOS CI
-    # runners (/private/var/folders/.../pytest-of-runner/...) exceeds it, so the
-    # daemon can't bind. Bind under a short mkdtemp dir. This also fixes a
-    # NameError: tmp_path was never a parameter of this module-scoped fixture
-    # (and the function-scoped tmp_path isn't usable from module scope anyway).
-    sock_dir = Path(tempfile.mkdtemp(prefix="iai-sock-"))
+    sock_dir_ctx = tempfile.TemporaryDirectory(prefix="iai-sock-")
+    sock_dir = Path(sock_dir_ctx.name)
     sock_path = sock_dir / "d.sock"
-    store_dir = sock_dir / "store"
+    store_dir = Path(tempfile.mkdtemp(prefix="iai-store-"))
     store_dir.mkdir(parents=True, exist_ok=True)
 
     env = os.environ.copy()
@@ -95,7 +91,8 @@ def daemon_sock() -> "Path":
     except OSError:
         pass
     try:
-        shutil.rmtree(sock_dir, ignore_errors=True)
+        sock_dir_ctx.cleanup()
+        shutil.rmtree(store_dir, ignore_errors=True)
     except OSError:
         pass
 

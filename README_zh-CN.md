@@ -36,7 +36,7 @@
 
 **你的 AI 助手每次会话都会忘记你。iai-pme 给它一个不会忘的记忆。**
 
-*Independent Autistic Intelligence —— 个人记忆引擎。完全本地、环境无感、自动运行。兼容 Claude 以及其他支持 MCP 协议的客户端。*
+*Independent Autistic Intelligence —— 个人记忆引擎。完全本地、环境无感、自动运行。兼容 Claude Code、Claude Desktop、Cursor、Codex CLI、Gemini CLI、Cline、Continue.dev、Zed、Cherry Studio、Goose、Aider、Hermes、OpenClaw、Le Chat、Kimi —— 任何支持 MCP-over-stdio 的客户端。*
 
 ## 目录
 

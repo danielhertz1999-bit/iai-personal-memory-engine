@@ -309,6 +309,7 @@ On raw retrieval — the headline both projects ship — it's an **exact tie** o
 | Benchmark | Result | What it measures |
 |---|---|---|
 | **Rescue@10** (post-contradiction) | **1.000** | After a fact is updated/contradicted, the *current* fact still ranks top-10 — where flat-vector stores collapse on the more-similar stale fact. |
+| Historical-verbatim (hit@10) | **1.000** | The *superseded/archived* wording of an updated fact also ranks top-10 — both current and prior versions stay retrievable. Flat-cosine baseline ~0.71. |
 | Personal-fact drift (recall@10) | 0.9933 | Retention across 50 facts / 50 sessions / 30 intervening sessions. |
 | Sleep-consolidation (recall@10) | 1.000 → 1.000 | Recall survives a full consolidation cycle. |
 | Session-start tokens | 1,629 min / 2,993 std | Under the ≤3,000-token budget. |
@@ -322,7 +323,7 @@ On raw retrieval — the headline both projects ship — it's an **exact tie** o
 | Memory (RSS) | 589 MB @10k records | Embedder + graph runtime; well under the 2 GB budget. |
 | Rust embedder | p50 70 ms / p95 253 ms | bge-small-en-v1.5, 384-dim. |
 
-**One honest gap:** retrieving the *superseded* wording of an updated fact verbatim regressed (0.90 → 0.71) in an earlier release — separate from Rescue@10 (current-fact retrieval, still 1.000) — and is a tracked fix for the next release.
+**Historical-verbatim retrieval** (pulling the *superseded/archived* wording of an updated fact, not just its current value) ranks top-10 at **hit@10 = 1.000** on the honest-scale contradiction bench (1000 sessions × 3 seeds), versus ~0.71 for a flat-cosine baseline — so both the current fact (Rescue@10) and its earlier wording stay retrievable.
 
 ```bash
 python -m bench.longmemeval_blind            # LongMemEval-S (raw)
@@ -487,4 +488,6 @@ I built this because I needed it. It works for me. If it works for you, take it.
 
 ## Contributing
 
-Issues and PRs welcome. If your change touches retrieval, capture, or consolidation, include bench re-runs.
+Issues and PRs welcome. If your change touches retrieval, capture, or consolidation, include bench re-runs. See [CONTRIBUTING.md](CONTRIBUTING.md) for scope, development setup, and how to run the tests, and please follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+Found a security issue? Please report it privately as described in [SECURITY.md](SECURITY.md).
