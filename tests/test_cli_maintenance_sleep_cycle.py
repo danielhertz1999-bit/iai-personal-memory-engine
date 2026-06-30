@@ -27,6 +27,13 @@ def _make_args(**kwargs) -> argparse.Namespace:
 @pytest.fixture
 def iai_root(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    # Path.home() / os.path.expanduser("~") consults USERPROFILE on Windows, NOT
+    # HOME. Without this, the reload below recomputes LIFECYCLE_STATE_PATH back
+    # to the REAL home on Windows, so save_state(..., LIFECYCLE_STATE_PATH) and
+    # the CLI under test write quarantine/progress into the developer's live
+    # ~/.iai-mcp/lifecycle_state.json (POSIX CI is unaffected, which is why this
+    # leak went unnoticed). Redirect home cross-platform.
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
     monkeypatch.setenv(
         "PYTHON_KEYRING_BACKEND", "keyring.backends.fail.Keyring"
