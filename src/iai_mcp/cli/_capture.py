@@ -337,6 +337,24 @@ def _turn_hook_paths() -> tuple:
     return src, dst
 
 
+def _wrapper_deps_resolvable(index_js: Path) -> bool:
+    """Whether ``index_js``'s npm dependencies actually resolve from its location.
+
+    Node resolves bare imports like ``@modelcontextprotocol/sdk`` by walking
+    parent directories for a ``node_modules`` that contains the package. The
+    wrapper bundled inside the wheel (``iai_mcp/_wrapper/index.js``) ships the JS
+    but no ``node_modules``, so spawning it fails with
+    ``ERR_MODULE_NOT_FOUND: @modelcontextprotocol/sdk``. This lets resolution
+    prefer a wrapper that is genuinely runnable (e.g. ``mcp-wrapper/dist``
+    sitting next to its ``node_modules``) over one that merely exists.
+    """
+    sentinel = Path("node_modules") / "@modelcontextprotocol" / "sdk"
+    for parent in index_js.parents:
+        if (parent / sentinel).exists():
+            return True
+    return False
+
+
 def _resolve_wrapper_path() -> Path:
     import iai_mcp as _pkg
 
@@ -349,10 +367,15 @@ def _resolve_wrapper_path() -> Path:
             f"IAI_MCP_WRAPPER_PATH={env_val!r} is set but the file does not exist."
         )
 
+    # Collect candidate wrappers in preference order, then return the first whose
+    # npm deps actually resolve. Choosing a wrapper purely because it exists is
+    # the bug behind #26: the in-wheel _wrapper/ has no node_modules, so wiring
+    # it into ~/.claude.json yields an MCP server that fails at spawn.
+    candidates: list[Path] = []
     try:
         pkg_p = Path(str(_res.files("iai_mcp") / "_wrapper" / "index.js"))
         if pkg_p.exists():
-            return pkg_p
+            candidates.append(pkg_p)
     except (TypeError, FileNotFoundError):
         pass
 
@@ -360,7 +383,23 @@ def _resolve_wrapper_path() -> Path:
     repo_root = src_file.parent.parent.parent
     editable_path = repo_root / "mcp-wrapper" / "dist" / "index.js"
     if editable_path.exists():
-        return editable_path
+        candidates.append(editable_path)
+
+    for cand in candidates:
+        if _wrapper_deps_resolvable(cand):
+            return cand
+
+    # A wrapper exists but its deps are not installed — surface a clear error
+    # rather than silently registering a broken MCP entry. Callers route
+    # FileNotFoundError through the placeholder/warning path.
+    if candidates:
+        raise FileNotFoundError(
+            f"MCP wrapper found at {candidates[0]} but its npm dependencies are "
+            "not installed (no node_modules with @modelcontextprotocol/sdk "
+            "alongside it), so it would fail at spawn with ERR_MODULE_NOT_FOUND. "
+            "Build a runnable wrapper: cd mcp-wrapper && npm install && npm run "
+            "build, or point IAI_MCP_WRAPPER_PATH at a runnable index.js."
+        )
 
     raise FileNotFoundError(
         "MCP wrapper (index.js) not found. Checked locations:\n"
