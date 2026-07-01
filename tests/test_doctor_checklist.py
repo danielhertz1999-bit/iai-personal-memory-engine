@@ -10,6 +10,18 @@ from pathlib import Path
 
 import pytest
 
+# Checks (b) socket-file lifecycle tests below redirect the unix-socket path and
+# assert on file-based states (missing / regular file / silent listener). On
+# Windows the daemon transport is TCP loopback (127.0.0.1:<port> via
+# .daemon.port), so open_ipc_connection ignores the redirected path and there is
+# no socket FILE to be missing or stat as a regular file. These exercise POSIX
+# unix-socket semantics specifically; the Windows-equivalent path is covered by
+# the live `iai-mcp doctor` run.
+_posix_socket_only = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX unix-socket file lifecycle; Windows uses TCP loopback + .daemon.port",
+)
+
 
 @pytest.fixture
 def short_socket_paths(tmp_path, monkeypatch):
@@ -78,6 +90,10 @@ def test_individual_failure_modes(
         state_path.write_text(json.dumps({"daemon_pid": 2_000_000, "fsm_state": "WAKE"}))
 
     elif scenario == "stale_socket_unconnectable":
+        if sys.platform == "win32":
+            pytest.skip(
+                "POSIX unix-socket file lifecycle; Windows uses TCP loopback + .daemon.port"
+            )
         sock_path.write_text("")
 
     elif scenario == "orphan_core_procs":
@@ -189,6 +205,7 @@ def test_exit_code_2_when_apply_cannot_fix(short_socket_paths, monkeypatch, caps
     assert "(e) daemon state file valid" in out
 
 
+@_posix_socket_only
 def test_check_b_returns_fail_when_socket_missing(short_socket_paths):
     _, sock_path, _ = short_socket_paths
     if sock_path.exists():
@@ -213,6 +230,7 @@ def test_check_e_passes_when_state_file_absent(short_socket_paths):
     assert "no state file" in result.detail
 
 
+@_posix_socket_only
 def test_check_b_passes_against_silent_listening_socket(short_socket_paths):
     import socket as _socket
     import threading
@@ -269,6 +287,7 @@ def test_check_b_passes_against_silent_listening_socket(short_socket_paths):
         th.join(timeout=1.0)
 
 
+@_posix_socket_only
 def test_check_b_fails_when_socket_is_regular_file(short_socket_paths):
     _, sock_path, _ = short_socket_paths
     if sock_path.exists():

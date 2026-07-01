@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -35,6 +36,22 @@ class HeartbeatEntry:
 def _is_pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
+
+    # os.kill(pid, 0) is the POSIX liveness idiom, but on Windows os.kill
+    # rejects signal 0 with OSError [WinError 87] (invalid parameter), which
+    # would otherwise escape scan() and surface as a doctor (m) FAIL. The pid
+    # here is a wrapper process (Claude/Codex), not the daemon, so this is a
+    # plain existence probe with no cmdline filtering.
+    if platform.system() == "Windows":
+        try:
+            import psutil
+        except ImportError:
+            return True
+        try:
+            return psutil.pid_exists(pid)
+        except Exception:  # noqa: BLE001 -- defensive against psutil backend quirks
+            return True
+
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

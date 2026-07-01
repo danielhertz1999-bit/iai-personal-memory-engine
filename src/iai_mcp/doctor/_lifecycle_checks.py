@@ -65,44 +65,64 @@ def check_a_daemon_alive() -> CheckResult:
             f"daemon_pid={pid!r} is not a valid PID (corrupt state?)",
         )
 
+    # os.kill(pid, 0) is the POSIX liveness idiom, but on Windows os.kill
+    # rejects signal 0 with OSError [WinError 87] (invalid parameter). Skip the
+    # probe there and rely on the psutil refinement below, which both confirms
+    # the pid exists and that it is actually an iai_mcp.daemon. Mirrors
+    # iai_mcp.lifecycle_lock._is_pid_alive.
+    if platform.system() != "Windows":
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return CheckResult(
+                "(a) daemon process alive",
+                False,
+                f"PID {pid} in state but no process found",
+            )
+        except PermissionError:
+            return CheckResult(
+                "(a) daemon process alive",
+                False,
+                f"PID {pid} exists but is not owned by this user",
+            )
+        except OSError as e:
+            return CheckResult(
+                "(a) daemon process alive",
+                False,
+                f"liveness probe failed: {type(e).__name__}: {e}",
+            )
+
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+        import psutil
+    except ImportError as e:
+        return CheckResult(
+            "(a) daemon process alive",
+            False,
+            f"could not verify PID {pid}: psutil unavailable ({e})",
+        )
+
+    try:
+        proc = psutil.Process(pid)
+        cmdline = " ".join(proc.cmdline() or [])
+    except psutil.NoSuchProcess:
         return CheckResult(
             "(a) daemon process alive",
             False,
             f"PID {pid} in state but no process found",
         )
-    except PermissionError:
-        return CheckResult(
-            "(a) daemon process alive",
-            False,
-            f"PID {pid} exists but is not owned by this user",
-        )
-    except OSError as e:
-        return CheckResult(
-            "(a) daemon process alive",
-            False,
-            f"liveness probe failed: {type(e).__name__}: {e}",
-        )
-
-    try:
-        import psutil
-
-        proc = psutil.Process(pid)
-        cmdline = " ".join(proc.cmdline() or [])
-        if "iai_mcp.daemon" not in cmdline:
-            return CheckResult(
-                "(a) daemon process alive",
-                False,
-                f"PID {pid} is NOT iai_mcp.daemon (got: {proc.name()!r})",
-            )
     except Exception as e:  # noqa: BLE001 — psutil edge cases all roll up here
         logger.debug("check_a: psutil verify PID %d failed: %s", pid, e)
         return CheckResult(
             "(a) daemon process alive",
             False,
             f"could not verify PID {pid}: {type(e).__name__}: {e}",
+        )
+
+    if "iai_mcp.daemon" not in cmdline:
+        return CheckResult(
+            "(a) daemon process alive",
+            False,
+            f"PID {pid} is NOT iai_mcp.daemon (got: {proc.name()!r})",
         )
 
     return CheckResult(
@@ -133,12 +153,19 @@ async def _socket_connect_probe(socket_path: Path, timeout: float) -> str | None
 
 
 def check_b_socket_fresh() -> CheckResult:
+    from iai_mcp._ipc import IS_WINDOWS, PORT_FILE
+
     socket_path = _resolve_socket_path()
-    if not socket_path.exists():
+    # On Windows the daemon listens on TCP loopback (127.0.0.1:<port>); there
+    # is no .daemon.sock file. The liveness marker is the port file
+    # (.daemon.port), and _socket_connect_probe -> open_ipc_connection ignores
+    # the path argument on Windows and dials the port file directly.
+    endpoint = PORT_FILE if IS_WINDOWS else socket_path
+    if not endpoint.exists():
         return CheckResult(
             "(b) socket file fresh",
             False,
-            f"{socket_path} does not exist",
+            f"{endpoint} does not exist",
         )
 
     t0 = time.monotonic()
@@ -156,12 +183,12 @@ def check_b_socket_fresh() -> CheckResult:
         return CheckResult(
             "(b) socket file fresh",
             False,
-            f"{socket_path} present but unreachable: {err}",
+            f"{endpoint} present but unreachable: {err}",
         )
     return CheckResult(
         "(b) socket file fresh",
         True,
-        f"{socket_path} connected in {elapsed_ms} ms",
+        f"{endpoint} connected in {elapsed_ms} ms",
     )
 
 
