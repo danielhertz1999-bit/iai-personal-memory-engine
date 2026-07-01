@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] — 2026-06-30
+
+### Fixed
+
+- `capture-hooks install` no longer wires the wheel-bundled MCP wrapper that ships
+  without its Node dependencies. That copy could not resolve `@modelcontextprotocol/sdk`,
+  so the `iai-mcp` MCP entry failed to start after install; install now prefers a
+  runnable wrapper. (#26)
+- HNSW boot-integrity check compares the live index element count instead of the
+  already-repopulated label-map size, so a stale on-disk index is rebuilt rather
+  than silently kept.
+- The SessionStart cache refreshes during active (WAKE) operation, not only after a
+  sleep cycle, so long-lived daemons serve current context.
+- macOS test suite: socket integration tests use short paths (Darwin `AF_UNIX`
+  limit) and corrected fixtures, restoring a green macOS CI run.
+
+### Added
+
+- `capture-hooks install --components` to opt out of re-registering the SessionStart
+  recall hook instead of always putting all three hooks back. (#26)
+
+Thanks to @danielhertz1999-bit and @Marsu6996.
+
 ## [1.2.0] — 2026-06-26
 
 ### Added
