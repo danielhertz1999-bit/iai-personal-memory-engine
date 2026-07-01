@@ -567,96 +567,118 @@ def _load_settings(path):
         return {}
 
 
+_VALID_HOOK_COMPONENTS: tuple[str, ...] = ("stop", "turn", "recall")
+
+
+def _parse_hook_components(raw: str | None) -> set[str]:
+    """Parse a ``--components`` value into a validated set of component names.
+
+    Empty / None selects all components (preserves the historical default).
+    Raises ``ValueError`` on an unknown component name.
+    """
+    if not raw or not raw.strip():
+        return set(_VALID_HOOK_COMPONENTS)
+    items = {c.strip().lower() for c in raw.split(",") if c.strip()}
+    unknown = items - set(_VALID_HOOK_COMPONENTS)
+    if unknown:
+        raise ValueError(
+            f"unknown capture component(s): {', '.join(sorted(unknown))}. "
+            f"valid: {', '.join(_VALID_HOOK_COMPONENTS)}"
+        )
+    return items or set(_VALID_HOOK_COMPONENTS)
+
+
 def cmd_capture_hooks_install(args: argparse.Namespace) -> int:
     from iai_mcp import cli as _cli
     import json as _json
     import stat
 
+    try:
+        components = _parse_hook_components(getattr(args, "components", None))
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=_cli.sys.stderr)
+        return 2
+
     src, dst, settings = _capture_hook_paths()
     turn_src, turn_dst = _turn_hook_paths()
 
-    if not src.exists():
+    # Fail loudly only for components the caller actually asked for.
+    if "stop" in components and not src.exists():
         print(f"ERROR: hook template missing in package data: {src}", file=_cli.sys.stderr)
         return 1
-    if not turn_src.exists():
+    if "turn" in components and not turn_src.exists():
         print(f"ERROR: turn-hook template missing in package data: {turn_src}", file=_cli.sys.stderr)
         return 1
 
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.write_bytes(src.read_bytes())
-    if hasattr(os, "chmod") and _platform.system() != "Windows":
-        dst.chmod(dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
-    print(f"installed: {dst}")
+    is_windows = _platform.system() == "Windows"
 
-    turn_dst.parent.mkdir(parents=True, exist_ok=True)
-    turn_dst.write_bytes(turn_src.read_bytes())
-    if hasattr(os, "chmod") and _platform.system() != "Windows":
-        turn_dst.chmod(turn_dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
-    print(f"installed: {turn_dst}")
+    def _hook_command(path: Path) -> str:
+        return (
+            f"powershell -ExecutionPolicy Bypass -File \"{path}\""
+            if is_windows else f"bash {path}"
+        )
+
+    def _install_template(template: Path, target: Path) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(template.read_bytes())
+        if hasattr(os, "chmod") and not is_windows:
+            target.chmod(target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
+        print(f"installed: {target}")
 
     settings.parent.mkdir(parents=True, exist_ok=True)
     data = _load_settings(settings)
     data.setdefault("hooks", {})
-    stop_list = data["hooks"].setdefault("Stop", [])
-    submit_list = data["hooks"].setdefault("UserPromptSubmit", [])
 
-    if _platform.system() == "Windows":
-        hook_cmd = f"powershell -ExecutionPolicy Bypass -File \"{dst}\""
-        turn_cmd = f"powershell -ExecutionPolicy Bypass -File \"{turn_dst}\""
-    else:
-        hook_cmd = f"bash {dst}"
-        turn_cmd = f"bash {turn_dst}"
-
-    already_stop = any(
-        any(_CAPTURE_HOOK_MARKER in (h.get("command") or "")
-            for h in (entry.get("hooks") or []))
-        for entry in stop_list
-    )
-    if already_stop:
-        print(f"settings.json already has Stop hook — no change")
-    else:
-        stop_list.append({"hooks": [{"type": "command", "command": hook_cmd, "timeout": 35}]})
-        print(f"patched: {settings} (Stop hook registered)")
-
-    already_turn = any(
-        any(_TURN_HOOK_MARKER in (h.get("command") or "")
-            for h in (entry.get("hooks") or []))
-        for entry in submit_list
-    )
-    if already_turn:
-        print(f"settings.json already has UserPromptSubmit hook — no change")
-    else:
-        submit_list.append({"hooks": [{"type": "command", "command": turn_cmd, "timeout": 5}]})
-        print(f"patched: {settings} (UserPromptSubmit hook registered)")
-
-    src_recall, dst_recall, _ = _session_recall_hook_paths()
-    if src_recall.exists():
-        dst_recall.parent.mkdir(parents=True, exist_ok=True)
-        dst_recall.write_bytes(src_recall.read_bytes())
-        if hasattr(os, "chmod") and _platform.system() != "Windows":
-            dst_recall.chmod(dst_recall.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
-        print(f"installed: {dst_recall}")
-
-        ss_list = data["hooks"].setdefault("SessionStart", [])
-        if _platform.system() == "Windows":
-            recall_cmd = f"powershell -ExecutionPolicy Bypass -File \"{dst_recall}\""
-        else:
-            recall_cmd = f"bash {dst_recall}"
-        already_recall = any(
-            any(_SESSION_RECALL_HOOK_MARKER in (h.get("command") or "")
+    if "stop" in components:
+        _install_template(src, dst)
+        stop_list = data["hooks"].setdefault("Stop", [])
+        already_stop = any(
+            any(_CAPTURE_HOOK_MARKER in (h.get("command") or "")
                 for h in (entry.get("hooks") or []))
-            for entry in ss_list
+            for entry in stop_list
         )
-        if already_recall:
-            print("settings.json already has SessionStart hook — no change")
+        if already_stop:
+            print("settings.json already has Stop hook — no change")
         else:
-            ss_list.append({
-                "matcher": "startup|resume|clear|compact",
-                "hooks": [{"type": "command", "command": recall_cmd, "timeout": 30}],
-            })
-            print(f"patched: {settings} (SessionStart hook registered)")
+            stop_list.append({"hooks": [{"type": "command", "command": _hook_command(dst), "timeout": 35}]})
+            print(f"patched: {settings} (Stop hook registered)")
+
+    if "turn" in components:
+        _install_template(turn_src, turn_dst)
+        submit_list = data["hooks"].setdefault("UserPromptSubmit", [])
+        already_turn = any(
+            any(_TURN_HOOK_MARKER in (h.get("command") or "")
+                for h in (entry.get("hooks") or []))
+            for entry in submit_list
+        )
+        if already_turn:
+            print("settings.json already has UserPromptSubmit hook — no change")
+        else:
+            submit_list.append({"hooks": [{"type": "command", "command": _hook_command(turn_dst), "timeout": 5}]})
+            print(f"patched: {settings} (UserPromptSubmit hook registered)")
+
+    if "recall" in components:
+        src_recall, dst_recall, _ = _session_recall_hook_paths()
+        if src_recall.exists():
+            _install_template(src_recall, dst_recall)
+            ss_list = data["hooks"].setdefault("SessionStart", [])
+            already_recall = any(
+                any(_SESSION_RECALL_HOOK_MARKER in (h.get("command") or "")
+                    for h in (entry.get("hooks") or []))
+                for entry in ss_list
+            )
+            if already_recall:
+                print("settings.json already has SessionStart hook — no change")
+            else:
+                ss_list.append({
+                    "matcher": "startup|resume|clear|compact",
+                    "hooks": [{"type": "command", "command": _hook_command(dst_recall), "timeout": 30}],
+                })
+                print(f"patched: {settings} (SessionStart hook registered)")
+        else:
+            print(f"WARN: recall hook template missing in package data: {src_recall}")
     else:
-        print(f"WARN: recall hook template missing in package data: {src_recall}")
+        print("skipped: SessionStart recall hook (not in --components)")
 
     settings.write_text(_json.dumps(data, indent=2), encoding="utf-8")
 

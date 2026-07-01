@@ -607,9 +607,23 @@ def _build_parser() -> argparse.ArgumentParser:
         help="install/uninstall/status the Claude Code Stop hook for ambient session capture",
     )
     ch_sub = ch.add_subparsers(dest="capture_hooks_cmd", required=True)
-    ch_sub.add_parser("install",
-                      help="copy Stop hook to ~/.claude/hooks/ and register in settings.json"
-                      ).set_defaults(func=cmd_capture_hooks_install)
+    ch_install = ch_sub.add_parser(
+        "install",
+        help="copy capture hooks to ~/.claude/hooks/ and register in settings.json",
+    )
+    ch_install.add_argument(
+        "--components",
+        default="stop,turn,recall",
+        metavar="LIST",
+        help=(
+            "comma-separated capture components to install (default: all). "
+            "Choices: stop (end-of-session capture), turn (per-prompt capture), "
+            "recall (SessionStart prefix injection). "
+            "e.g. --components=stop,turn installs capture WITHOUT the SessionStart "
+            "recall hook."
+        ),
+    )
+    ch_install.set_defaults(func=cmd_capture_hooks_install)
     ch_sub.add_parser("uninstall",
                       help="remove the Stop hook and its settings.json entry"
                       ).set_defaults(func=cmd_capture_hooks_uninstall)
