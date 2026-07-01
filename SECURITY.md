@@ -23,7 +23,7 @@ Please do **not** open a public issue for defects that have security implication
 
 Use GitHub Security Advisories on the repository:
 
-https://github.com/CodeAbra/iai-personal-memory-engine/security/advisories/new
+[https://github.com/CodeAbra/iai-personal-memory-engine/security/advisories/new](https://github.com/CodeAbra/iai-personal-memory-engine/security/advisories/new)
 
 Include:
 

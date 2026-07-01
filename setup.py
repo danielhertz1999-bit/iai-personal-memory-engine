@@ -21,8 +21,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from setuptools import setup
-from setuptools.command.build_py import build_py as _OrigBuildPy
+from setuptools import setup  # type: ignore[reportMissingModuleSource]
+from setuptools.command.build_py import build_py as _OrigBuildPy  # type: ignore[reportMissingModuleSource]
 
 _REPO_ROOT = Path(__file__).parent
 _WRAPPER_SRC = _REPO_ROOT / "mcp-wrapper"
