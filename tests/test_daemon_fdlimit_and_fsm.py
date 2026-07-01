@@ -137,9 +137,6 @@ class TestPlistRendersFdFloor:
         assert "NumberOfFiles" in text
 
     def test_rendered_plist_contains_fd_floor(self, tmp_path, monkeypatch):
-        import importlib
-        import os
-
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("USER", "testuser")
 
